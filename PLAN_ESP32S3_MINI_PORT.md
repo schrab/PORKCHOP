@@ -13,9 +13,10 @@
 |---|---|
 | Framework | PlatformIO + Arduino (keep existing, minimal rewrites) |
 | Display lib | TFT_eSPI with M5Canvas-compatible 3-canvas wrapper |
-| Audio | Passive piezo buzzer on configurable GPIO via ledc PWM |
-| Charging mode | Keep (battery ADC from WiFiTool) |
-| PIGGY BLUES (BLE) | Keep (ESP32-S3 has RAM for NimBLE + sprites) |
+| Audio | Passive piezo on GPIO 7 via ledc PWM |
+| Charging mode | Keep (battery ADC from WiFiTool, GPIO 8) |
+| PIGGY BLUES (BLE) | Keep (8MB PSRAM available for NimBLE + sprites) |
+| PSRAM strategy | 8MB PSRAM → sprites + BLE heap allocated there (like WiFiTool) |
 | CYD features to absorb | PORK PATROL, SNOUT MODE, SWINE RADAR, WEBUI |
 
 ---
@@ -35,6 +36,11 @@ board_build.flash_mode = dio
 board_build.flash_size = 16MB
 board_build.partitions = partitions_esp32s3_mini.csv
 
+; PSRAM: 8MB available, used for sprite buffers + BLE
+board_build.psram = enable
+board_build.psram_mode = quad
+board_build.psram_freq = 40MHz
+
 ; Custom sdkconfig for our board
 board_build.sdkconfig = sdkconfig.esp32s3_mini
 
@@ -46,14 +52,14 @@ build_flags =
     -DARDUINO_USB_MODE=1
     -DARDUINO_USB_CDC_ON_BOOT=1
     -DCORE_DEBUG_LEVEL=1
-    -DBOARD_HAS_PSRAM=0             ; explicit: no PSRAM on this board
+    -DBOARD_HAS_PSRAM=1             ; 8MB PSRAM available
     -DPORKCHOP_LOG_ENABLED=0
     -include src/core/logging.h
     ; Display SPI host
     -DDISPLAY_SPI_HOST=SPI3_HOST
-    ; NimBLE: PSRAM not available
-    -DCONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=0
-    -DCONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=1
+    ; NimBLE: use PSRAM for BLE heap (same as M5Cardputer)
+    -DCONFIG_BT_NIMBLE_MEM_ALLOC_MODE_EXTERNAL=1
+    -DCONFIG_BT_NIMBLE_MEM_ALLOC_MODE_INTERNAL=0
     -DCONFIG_BT_NIMBLE_LOG_LEVEL=1
     ; Allow muldefs for raw_frame_sanity_check override
     -Wl,-zmuldefs
@@ -68,9 +74,10 @@ lib_deps =
 ```
 
 ### sdkconfig.esp32s3_mini (new)
-Based on PORKCHOP `sdkconfig.defaults` + WiFiTool `sdkconfig` settings (IDF 5.4.2, 16MB DIO flash, no PSRAM — the WiFiTool PSRAM config is for its DevKit board, our MINI has no PSRAM):
+Based on PORKCHOP `sdkconfig.defaults` + WiFiTool `sdkconfig` (IDF 5.4.2, 16MB DIO flash at 80MHz, 8MB PSRAM quad at 40MHz):
 
 ```
+# PORKCHOP proven settings
 CONFIG_ESP_COREDUMP_ENABLE=n
 CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=2048
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=2048
@@ -82,20 +89,38 @@ CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=4
 CONFIG_ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM=8
 CONFIG_ESP32_WIFI_TX_BUFFER_TYPE=1
 CONFIG_ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM=16
+
+# Flash
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# PSRAM (8MB quad, 40MHz — matches WiFiTool)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_QUAD=y
+# CONFIG_SPIRAM_MODE_OCT is not set
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_CLK_IO=30
+CONFIG_SPIRAM_CS_IO=26
+# CONFIG_SPIRAM_SPEED_120M is not set
+# CONFIG_SPIRAM_SPEED_80M is not set
+CONFIG_SPIRAM_SPEED_40M=y
+CONFIG_SPIRAM_SPEED=40
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_MALLOC=y
 ```
 
 ### partitions_esp32s3_mini.csv (new)
-Single factory + spiffs (no OTA needed for single-board use):
+Dual OTA + spiffs (same layout as PORKCHOP, resized for 16MB flash — matching PORKCHOP's existing OTA infrastructure):
 
 ```
-# Name,   Type, SubType, Offset,  Size,  Flags
-nvs,      data, nvs,     0x9000,  0x6000,
-phy_init, data, phy,     0xf000,  0x1000,
-factory,  app,  factory, 0x10000, 8M,
-storage,  data, spiffs,  ,        2M,
+# Name,   Type, SubType,  Offset,   Size,      Flags
+nvs,      data, nvs,      0x9000,   0x6000,
+phy_init, data, phy,      0xf000,   0x1000,
+factory,  app,  factory,  0x10000,  3M,
+ota_0,    app,  ota_0,    ,         3M,
+ota_1,    app,  ota_1,    ,         3M,
+storage,  data, spiffs,   ,         4M,
 ```
 
 ---
@@ -134,6 +159,9 @@ NEOPIXEL:
 
 BATTERY (ADC):
   VOLTAGE=8
+
+PIEZO BUZZER:
+  GPIO=7 (ledc PWM)
 ```
 
 ### Display Wrapper — M5Canvas-compatible API
@@ -215,6 +243,8 @@ Keep:
 
 ## Phase 4: Input Handling — 5-Way Joystick
 
+The CYD port already defines 5 touchscreen zones mapped as UP/DOWN/LEFT/RIGHT/SELECT — this same 5-way concept maps directly to our joystick GPIOs. Key event codes stay the same; just replace the touch controller read with GPIO digitalRead.
+
 Map joystick to key events:
 
 | Joystick | Mapped Key | Action |
@@ -285,18 +315,16 @@ Modify `porkchop.cpp` `handleInput()`:
 
 ---
 
-## Phase 7: Audio
+## Phase 7: Audio (Piezo Buzzer)
 
-If speaker is present:
-- GPIO LEDC PWM (like CYD uses ledc on GPIO26)
-- Map SFX::init/play/stop to ledcWriteTone/ledcDetach
+Passive piezo on GPIO 7 driven via ledc PWM:
 
-If no speaker:
-- SFX::init() = no-op
-- SFX::play() = no-op
-- All sound calls are virtual no-ops
+- `SFX::init()` → ledc timer/channel setup on GPIO 7
+- `SFX::play(freq, duration)` → `ledcWriteTone()` for frequency, timer for duration
+- `SFX::stop()` → `ledcDetach()` / ledc_write(0)
+- Same tone patterns as original SFX (beeps, melodies) — pitch-controlled by ledc frequency
 
-Will check board config for speaker pin. Default: stub.
+No amplifier needed — direct GPIO drive is fine for a passive piezo (piezo is inductive, not a speaker coil). Just a series resistor (~100Ω) to limit current.
 
 ---
 
