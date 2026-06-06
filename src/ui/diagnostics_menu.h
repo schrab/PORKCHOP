@@ -9,7 +9,7 @@
 10|    static void hide();
 11|    static void update();
 12|    static bool isActive() { return active; }
-13|    static void draw(M5Canvas& canvas);
+13|    static void draw(DisplayCanvas& canvas);
 14|
 15|private:
 16|    static bool active;

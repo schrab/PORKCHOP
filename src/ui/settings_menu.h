@@ -14,7 +14,7 @@
 15|public:
 16|    static void init();
 17|    static void update();
-18|    static void draw(M5Canvas& canvas);
+18|    static void draw(DisplayCanvas& canvas);
 19|    
 20|    static void show();
 21|    static void hide();

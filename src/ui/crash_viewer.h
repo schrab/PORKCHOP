@@ -11,7 +11,7 @@
 12|    static void hide();
 13|    static void update();
 14|    static bool isActive() { return active; }
-15|    static void draw(M5Canvas& canvas);
+15|    static void draw(DisplayCanvas& canvas);
 16|    static void getStatusLine(char* out, size_t len);
 17|
 18|    struct LogLine { char text[80]; };
@@ -35,9 +35,9 @@
 36|
 37|    static void scanCrashFiles();
 38|    static void loadCrashFile(const char* path);
-39|    static void drawList(M5Canvas& canvas);
-40|    static void drawFile(M5Canvas& canvas);
-41|    static void drawNukeConfirm(M5Canvas& canvas);
+39|    static void drawList(DisplayCanvas& canvas);
+40|    static void drawFile(DisplayCanvas& canvas);
+41|    static void drawNukeConfirm(DisplayCanvas& canvas);
 42|    static void nukeCrashFiles();
 43|};
 44|

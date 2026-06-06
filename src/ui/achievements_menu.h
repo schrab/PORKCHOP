@@ -9,7 +9,7 @@
 10|    static void show();
 11|    static void hide();
 12|    static void update();
-13|    static void draw(M5Canvas& canvas);
+13|    static void draw(DisplayCanvas& canvas);
 14|    static bool isActive() { return active; }
 15|    static const uint8_t TOTAL_ACHIEVEMENTS = 63;  // 48 base + 12 DNH/BOAR + 3 CLIENT MONITOR
 16|    
@@ -23,7 +23,7 @@
 24|    static const uint8_t VISIBLE_ITEMS = 5;
 25|    
 26|    static void handleInput();
-27|    static void drawDetail(M5Canvas& canvas);
+27|    static void drawDetail(DisplayCanvas& canvas);
 28|    static void updateBottomOverlay();
 29|};
 30|

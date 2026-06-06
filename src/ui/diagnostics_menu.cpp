@@ -229,7 +229,7 @@
 228|    lastStatRefreshMs = millis();
 229|}
 230|
-231|void DiagnosticsMenu::draw(M5Canvas& canvas) {
+231|void DiagnosticsMenu::draw(DisplayCanvas& canvas) {
 232|    if (!active) return;
 233|
 234|    canvas.fillSprite(COLOR_BG);

@@ -37,7 +37,7 @@
 38|    static void show();
 39|    static void hide();
 40|    static void update();
-41|    static void draw(M5Canvas& canvas);
+41|    static void draw(DisplayCanvas& canvas);
 42|    static bool isActive() { return active; }
 43|    static size_t getCount() { return files.size(); }
 44|    static void getSelectedInfo(char* out, size_t len);
@@ -55,8 +55,8 @@
 56|    
 57|    static void scanFiles();
 58|    static void handleInput();
-59|    static void drawDetailView(M5Canvas& canvas);
-60|    static void drawNukeConfirm(M5Canvas& canvas);
+59|    static void drawDetailView(DisplayCanvas& canvas);
+60|    static void drawNukeConfirm(DisplayCanvas& canvas);
 61|    static void nukeTrack();
 62|    static void formatSize(char* out, size_t len, uint32_t bytes);
 63|    
@@ -89,7 +89,7 @@
 90|    // Sync operations
 91|    static void startSync();
 92|    static void processSyncState();
-93|    static void drawSyncModal(M5Canvas& canvas);
+93|    static void drawSyncModal(DisplayCanvas& canvas);
 94|    static void cancelSync();
 95|    static bool connectToWiFi();
 96|    static void disconnectWiFi();

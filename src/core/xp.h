@@ -276,11 +276,11 @@
 277|    static void addDistance(uint32_t meters);
 278|    
 279|    // Draw XP bar on canvas
-280|    static void drawBar(M5Canvas& canvas);
+280|    static void drawBar(DisplayCanvas& canvas);
 281|    
 282|    // XP notification for top bar (Option B: flash on gain)
 283|    static bool shouldShowXPNotification();  // True if within 5 sec of last XP gain
-284|    static void drawTopBarXP(M5Canvas& topBar);  // Draw inverted XP info on top bar
+284|    static void drawTopBarXP(DisplayCanvas& topBar);  // Draw inverted XP info on top bar
 285|    static uint16_t getLastXPGainAmount();
 286|    
 287|    // Level up callback (set by display to show popup)

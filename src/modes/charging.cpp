@@ -380,7 +380,7 @@ int ChargingMode::estimateMinutesToFull() {
     return estimate;
 }
 
-void ChargingMode::draw(M5Canvas& canvas) {
+void ChargingMode::draw(DisplayCanvas& canvas) {
     uint16_t fg = getColorFG();
     uint16_t bg = getColorBG();
     

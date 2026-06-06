@@ -7,7 +7,7 @@
 8|public:
 9|    static void init();
 10|    static void update();
-11|    static void draw(M5Canvas& canvas);
+11|    static void draw(DisplayCanvas& canvas);
 12|    static void saveMood();  // Phase 10: Save mood to NVS
 13|    
 14|    // Mood triggers

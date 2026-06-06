@@ -5,7 +5,7 @@
 TFT_eSPI g_Display = TFT_eSPI();
 
 // ============================================================
-// DisplayCanvas — M5Canvas-compatible wrapper using TFT_eSprite
+// DisplayCanvas — DisplayCanvas-compatible wrapper using TFT_eSprite
 // ============================================================
 
 DisplayCanvas::DisplayCanvas(TFT_eSPI* display)

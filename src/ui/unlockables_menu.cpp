@@ -1,9 +1,10 @@
 // Unlockables Menu - Secret challenges for the worthy
 
 #include "unlockables_menu.h"
-#include <M5Cardputer.h>
+#include "../hal/hal_input.h"
 #include <mbedtls/sha256.h>
 #include "display.h"
+#include "../core/config.h"
 #include "../core/xp.h"
 #include "../piglet/mood.h"
 #include <string.h>
@@ -105,7 +106,7 @@ bool UnlockablesMenu::validatePhrase(const char* phrase, const char* expectedHas
 }
 
 void UnlockablesMenu::handleInput() {
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    bool anyPressed = hal_input_anyHeld();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -121,10 +122,10 @@ void UnlockablesMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = M5Cardputer.Keyboard.keysState();
+    // auto keys = M5Cardputer.Keyboard.keysState();
     
     // Navigation with ; (up) and . (down)
-    if (M5Cardputer.Keyboard.isKeyPressed(';')) {
+    if (hal_input_wasPressed(KEY_UP)) {
         if (selectedIndex > 0 && TOTAL_UNLOCKABLES > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -134,7 +135,7 @@ void UnlockablesMenu::handleInput() {
         }
     }
     
-    if (M5Cardputer.Keyboard.isKeyPressed('.')) {
+    if (hal_input_wasPressed(KEY_DOWN)) {
         if (TOTAL_UNLOCKABLES > 0 && selectedIndex < TOTAL_UNLOCKABLES - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {
@@ -145,7 +146,7 @@ void UnlockablesMenu::handleInput() {
     }
     
     // Enter to attempt unlock
-    if (keys.enter && TOTAL_UNLOCKABLES > 0 && selectedIndex < TOTAL_UNLOCKABLES) {
+    if (hal_input_wasPressed(KEY_ENTER) && TOTAL_UNLOCKABLES > 0 && selectedIndex < TOTAL_UNLOCKABLES) {
         // Check if already unlocked
         if (XP::hasUnlockable(UNLOCKABLES[selectedIndex].bitIndex)) {
             Display::showToast("ALREADY YOURS");
@@ -158,23 +159,23 @@ void UnlockablesMenu::handleInput() {
     }
     
     // Backspace - go back
-    if (M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE)) {
+    if (hal_input_wasPressed(KEY_BACKSPACE)) {
         exitRequested = true;
         hide();
     }
 }
 
 void UnlockablesMenu::handleTextInput() {
-    auto keys = M5Cardputer.Keyboard.keysState();
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    // auto keys = M5Cardputer.Keyboard.keysState();
+    bool anyPressed = hal_input_anyHeld();
     
     if (!anyPressed) {
         keyWasPressed = false;
         return;
     }
     
-    bool hasPrintableChar = !keys.word.empty();
-    bool hasActionKey = keys.enter || keys.del;
+    bool hasPrintableChar = false;  // 5-way joystick can't produce text
+    bool hasActionKey = hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_BACKSPACE);
     
     if (!hasPrintableChar && !hasActionKey) {
         return;
@@ -184,7 +185,7 @@ void UnlockablesMenu::handleTextInput() {
     keyWasPressed = true;
     
     // Enter to submit
-    if (keys.enter) {
+    if (hal_input_wasPressed(KEY_ENTER)) {
         // Safety check
         if (TOTAL_UNLOCKABLES == 0 || selectedIndex >= TOTAL_UNLOCKABLES) {
             textEditing = false;
@@ -217,34 +218,20 @@ void UnlockablesMenu::handleTextInput() {
     }
     
     // Backspace to delete
-    if (keys.del) {
+    if (hal_input_wasPressed(KEY_BACKSPACE)) {
         if (textLen > 0) {
             textBuffer[--textLen] = '\0';
         }
         return;
     }
     
-    // Backtick to cancel
-    for (char c : keys.word) {
-        if (c == '`') {
-            textEditing = false;
-            textBuffer[0] = '\0'; textLen = 0;
-            return;
-        }
-    }
+    // Backtick to cancel — not available on 5-way joystick
+    // Keys are entirely from joystick, no text character input possible
     
-    // Add typed characters (max 32)
-    if (textLen < 32) {
-        for (char c : keys.word) {
-            if (c >= 32 && c <= 126 && c != '`' && textLen < 32) {
-                textBuffer[textLen++] = c;
-                textBuffer[textLen] = '\0';
-            }
-        }
-    }
+    // Add typed characters — not available on 5-way joystick
 }
 
-void UnlockablesMenu::draw(M5Canvas& canvas) {
+void UnlockablesMenu::draw(DisplayCanvas& canvas) {
     if (!active) return;
     
     // If text editing, show input overlay
@@ -299,7 +286,7 @@ void UnlockablesMenu::draw(M5Canvas& canvas) {
     }
 }
 
-void UnlockablesMenu::drawTextInput(M5Canvas& canvas) {
+void UnlockablesMenu::drawTextInput(DisplayCanvas& canvas) {
     canvas.fillSprite(COLOR_BG);
     
     // Toast-style input box

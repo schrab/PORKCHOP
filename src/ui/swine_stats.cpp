@@ -7,7 +7,7 @@
 #include "../piglet/mood.h"
 #include "../piglet/weather.h"
 #include "../web/wigle.h"
-#include <M5Cardputer.h>
+#include "../hal/hal_input.h"
 
 // Static member initialization
 bool SwineStats::active = false;
@@ -129,7 +129,7 @@ void SwineStats::update() {
 }
 
 void SwineStats::handleInput() {
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    bool anyPressed = hal_input_anyHeld();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -140,7 +140,7 @@ void SwineStats::handleInput() {
     keyWasPressed = true;
     
     // Tab cycling: ',' cycles left, '/' cycles right
-    if (M5Cardputer.Keyboard.isKeyPressed(',')) {
+    if (hal_input_wasPressed(KEY_LEFT)) {
         // Cycle left: STATS -> WIGLE -> BOOSTS -> STATS
         switch (currentTab) {
             case StatsTab::STATS:
@@ -155,7 +155,7 @@ void SwineStats::handleInput() {
         }
         return;
     }
-    if (M5Cardputer.Keyboard.isKeyPressed('/')) {
+    if (hal_input_wasPressed(KEY_RIGHT)) {
         // Cycle right: STATS -> BOOSTS -> WIGLE -> STATS
         switch (currentTab) {
             case StatsTab::STATS:
@@ -172,7 +172,7 @@ void SwineStats::handleInput() {
     }
     
     // Enter key cycles through available title overrides (only on STATS tab)
-    if (M5Cardputer.Keyboard.isKeyPressed(KEY_ENTER) && currentTab == StatsTab::STATS) {
+    if (hal_input_wasPressed(KEY_ENTER) && currentTab == StatsTab::STATS) {
         TitleOverride next = XP::getNextAvailableOverride();
         XP::setTitleOverride(next);
         
@@ -189,7 +189,7 @@ void SwineStats::handleInput() {
     }
     
     // Backspace - go back
-    if (M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE)) {
+    if (hal_input_wasPressed(KEY_BACKSPACE)) {
         hide();
     }
 }
@@ -574,7 +574,7 @@ const char* SwineStats::getDebuffDesc(PorkDebuff d) {
     }
 }
 
-void SwineStats::draw(M5Canvas& canvas) {
+void SwineStats::draw(DisplayCanvas& canvas) {
     if (!active) return;
     
     canvas.fillSprite(COLOR_BG);
@@ -595,7 +595,7 @@ void SwineStats::draw(M5Canvas& canvas) {
 
 }
 
-void SwineStats::drawTabBar(M5Canvas& canvas) {
+void SwineStats::drawTabBar(DisplayCanvas& canvas) {
     canvas.setTextSize(1);
     const int tabY = 0;
     const int tabH = 12;
@@ -640,7 +640,7 @@ void SwineStats::drawTabBar(M5Canvas& canvas) {
     canvas.setTextColor(COLOR_FG);
 }
 
-void SwineStats::drawStatsTab(M5Canvas& canvas) {
+void SwineStats::drawStatsTab(DisplayCanvas& canvas) {
     canvas.setTextSize(1);
     canvas.setTextDatum(top_left);
     
@@ -687,7 +687,7 @@ void SwineStats::drawStatsTab(M5Canvas& canvas) {
     drawStats(canvas);
 }
 
-void SwineStats::drawBuffsTab(M5Canvas& canvas) {
+void SwineStats::drawBuffsTab(DisplayCanvas& canvas) {
     canvas.setTextSize(1);
     canvas.setTextDatum(top_left);
     
@@ -762,7 +762,7 @@ void SwineStats::drawBuffsTab(M5Canvas& canvas) {
     }
 }
 
-void SwineStats::drawStats(M5Canvas& canvas) {
+void SwineStats::drawStats(DisplayCanvas& canvas) {
     const PorkXPData& data = XP::getData();
     
     canvas.setTextSize(1);
@@ -830,7 +830,7 @@ void SwineStats::drawStats(M5Canvas& canvas) {
 // statistics from the WiGLE service and displays them in a simple
 // key/value format. If no cache is available, a placeholder message
 // instructs the user to refresh the WiGLE menu.
-void SwineStats::drawWigleTab(M5Canvas& canvas) {
+void SwineStats::drawWigleTab(DisplayCanvas& canvas) {
     canvas.setTextSize(1);
     canvas.setTextDatum(top_left);
     int y = 14;

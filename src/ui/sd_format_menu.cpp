@@ -158,7 +158,7 @@ void SdFormatMenu::doReboot() {
 // ============================================================================
 
 void SdFormatMenu::handleInput() {
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    bool anyPressed = hal_input_anyHeld();
     if (!anyPressed) {
         keyWasPressed = false;
         return;
@@ -166,20 +166,20 @@ void SdFormatMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
 
-    bool up = M5Cardputer.Keyboard.isKeyPressed(';');
-    bool down = M5Cardputer.Keyboard.isKeyPressed('.');
-    bool back = M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE);
+    bool up = hal_input_wasPressed(KEY_UP);
+    bool down = hal_input_wasPressed(KEY_DOWN);
+    bool back = hal_input_wasPressed(KEY_BACKSPACE);
 
     // ---- CONFIRM_ENTRY STATE ----
     // Entry warning dialog: Y to enter, N to bail
     if (state == State::CONFIRM_ENTRY) {
-        if (M5Cardputer.Keyboard.isKeyPressed('y') || M5Cardputer.Keyboard.isKeyPressed('Y')) {
+        if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
             // User confirmed entry - stop everything and proceed
             stopEverything();
             state = State::SELECT;
             return;
         }
-        if (M5Cardputer.Keyboard.isKeyPressed('n') || M5Cardputer.Keyboard.isKeyPressed('N') || back) {
+        if (hal_input_wasPressed('n') || hal_input_wasPressed('N') || back) {
             // User cancelled - return to menu (nothing stopped)
             active = false;
             barsHidden = false;
@@ -191,14 +191,14 @@ void SdFormatMenu::handleInput() {
 
     // ---- CONFIRM STATE (format confirmation) ----
     if (state == State::CONFIRM) {
-        if (M5Cardputer.Keyboard.isKeyPressed('y') || M5Cardputer.Keyboard.isKeyPressed('Y')) {
+        if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
             // SAFETY: Require external power to prevent data corruption from power loss
             if (!hal_battery_isCharging()) {
                 Display::notify(NoticeKind::WARNING, "PLUG IN POWER!", 2000);
                 return;
             }
             state = State::WORKING;
-        } else if (M5Cardputer.Keyboard.isKeyPressed('n') || M5Cardputer.Keyboard.isKeyPressed('N') || back) {
+        } else if (hal_input_wasPressed('n') || hal_input_wasPressed('N') || back) {
             state = State::SELECT;
         }
         return;
@@ -219,7 +219,7 @@ void SdFormatMenu::handleInput() {
                 : SDFormat::FormatMode::QUICK;
             return;
         }
-        if (M5Cardputer.Keyboard.isKeyPressed(KEY_ENTER)) {
+        if (hal_input_wasPressed(KEY_ENTER)) {
             // SD was already validated when entering the menu - proceed to confirm
             state = State::CONFIRM;
             return;
@@ -261,7 +261,7 @@ void SdFormatMenu::onFormatProgress(const char* stage, uint8_t percent) {
 // DRAWING - Full screen (no bars) for maximum RAM
 // ============================================================================
 
-void SdFormatMenu::draw(M5Canvas& canvas) {
+void SdFormatMenu::draw(DisplayCanvas& canvas) {
     if (!active) return;
 
     uint16_t fg = getColorFG();
@@ -304,7 +304,7 @@ void SdFormatMenu::draw(M5Canvas& canvas) {
     }
 }
 
-void SdFormatMenu::drawConfirmEntry(M5Canvas& canvas) {
+void SdFormatMenu::drawConfirmEntry(DisplayCanvas& canvas) {
     uint16_t fg = getColorFG();
 
     canvas.setTextDatum(top_center);
@@ -333,7 +333,7 @@ void SdFormatMenu::drawConfirmEntry(M5Canvas& canvas) {
     canvas.drawString("[Y] ENTER  [N] CANCEL", centerX, y);
 }
 
-void SdFormatMenu::drawSelect(M5Canvas& canvas) {
+void SdFormatMenu::drawSelect(DisplayCanvas& canvas) {
     uint16_t fg = getColorFG();
     uint16_t bg = getColorBG();  // Used for inverted selection highlight
 
@@ -392,7 +392,7 @@ void SdFormatMenu::drawSelect(M5Canvas& canvas) {
     canvas.drawString("^v NAV  ENTER=OK", DISPLAY_W / 2, y);
 }
 
-void SdFormatMenu::drawWorking(M5Canvas& canvas) {
+void SdFormatMenu::drawWorking(DisplayCanvas& canvas) {
     uint16_t fg = getColorFG();
 
     canvas.setTextDatum(top_center);
@@ -432,7 +432,7 @@ void SdFormatMenu::drawWorking(M5Canvas& canvas) {
     canvas.drawString("DO NOT POWER OFF", DISPLAY_W / 2, y);
 }
 
-void SdFormatMenu::drawResult(M5Canvas& canvas) {
+void SdFormatMenu::drawResult(DisplayCanvas& canvas) {
     // fg/bg already set by parent draw() - no local color vars needed
 
     canvas.setTextDatum(top_center);
@@ -464,7 +464,7 @@ void SdFormatMenu::drawResult(M5Canvas& canvas) {
     canvas.drawString("TO REBOOT DEVICE", DISPLAY_W / 2, y);
 }
 
-void SdFormatMenu::drawConfirm(M5Canvas& canvas) {
+void SdFormatMenu::drawConfirm(DisplayCanvas& canvas) {
     uint16_t fg = getColorFG();
     uint16_t bg = getColorBG();
 

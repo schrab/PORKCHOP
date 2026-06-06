@@ -23,10 +23,10 @@
 24|// === DRAWING ===
 25|// Draw all weather layers (clouds, rain, wind particles)
 26|// Call after Avatar::draw() to overlay effects
-27|void draw(M5Canvas& canvas, uint16_t colorFG, uint16_t colorBG);
+27|void draw(DisplayCanvas& canvas, uint16_t colorFG, uint16_t colorBG);
 28|
 29|// Draw just clouds (parallax layer, call before avatar if desired)
-30|void drawClouds(M5Canvas& canvas, uint16_t colorFG);
+30|void drawClouds(DisplayCanvas& canvas, uint16_t colorFG);
 31|
 32|// === THUNDER FLASH ===
 33|// Query for thunder flash state (affects screen colors)

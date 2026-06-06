@@ -1,8 +1,8 @@
 // Unlockables Menu - Secret challenges for the worthy
 #pragma once
-
-#include <M5GFX.h>
 #include <cstdint>
+
+class DisplayCanvas; // Forward declaration
 
 // Unlockable item definition
 struct UnlockableItem {
@@ -18,7 +18,7 @@ public:
     static void show();
     static void hide();
     static void update();
-    static void draw(M5Canvas& canvas);
+    static void draw(DisplayCanvas& canvas);
     static bool isActive() { return active; }
     static bool wantsExit() { return exitRequested; }
     static void clearExit() { exitRequested = false; }
@@ -26,7 +26,7 @@ public:
 private:
     static void handleInput();
     static void handleTextInput();
-    static void drawTextInput(M5Canvas& canvas);
+    static void drawTextInput(DisplayCanvas& canvas);
     static bool validatePhrase(const char* phrase, const char* expectedHash);
     static void updateBottomOverlay();
     

@@ -15,7 +15,7 @@
 16|class Avatar {
 17|public:
 18|    static void init();
-19|    static void draw(M5Canvas& canvas);
+19|    static void draw(DisplayCanvas& canvas);
 20|    static void setState(AvatarState state);
 21|    static AvatarState getState() { return currentState; }
 22|    static bool isFacingRight();  // Get current facing direction
@@ -79,8 +79,8 @@
 80|
 81|    static void initStarPositions();
 82|    static void updateStars();
-83|    static void drawStars(M5Canvas& canvas);
-84|    static void fillPigBoundingBox(M5Canvas& canvas);
+83|    static void drawStars(DisplayCanvas& canvas);
+84|    static void fillPigBoundingBox(DisplayCanvas& canvas);
 85|    static AvatarState currentState;
 86|    static bool isBlinking;
 87|    static bool isSniffing;
@@ -113,8 +113,8 @@
 114|    static uint16_t grassSpeed;  // ms per shift
 115|    static char grassPattern[32];  // Wider for full screen coverage
 116|    
-117|    static void drawFrame(M5Canvas& canvas, const char** frame, uint8_t lines, bool blink = false, bool faceRight = true, bool sniff = false);
-118|    static void drawGrass(M5Canvas& canvas);
+117|    static void drawFrame(DisplayCanvas& canvas, const char** frame, uint8_t lines, bool blink = false, bool faceRight = true, bool sniff = false);
+118|    static void drawGrass(DisplayCanvas& canvas);
 119|    static void updateGrass();
 120|};
 121|

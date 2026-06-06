@@ -124,7 +124,7 @@
 123|    }
 124|}
 125|
-126|void BountyStatusMenu::draw(M5Canvas& canvas) {
+126|void BountyStatusMenu::draw(DisplayCanvas& canvas) {
 127|    canvas.fillSprite(COLOR_BG);
 128|    canvas.setTextColor(COLOR_FG);
 129|    canvas.setTextSize(1);
@@ -139,7 +139,7 @@
 138|    }
 139|}
 140|
-141|void BountyStatusMenu::drawList(M5Canvas& canvas) {
+141|void BountyStatusMenu::drawList(DisplayCanvas& canvas) {
 142|    // Uses cached bounties from draw()
 143|    size_t count = cachedBounties.size();
 144|    
@@ -190,7 +190,7 @@
 189|    }
 190|}
 191|
-192|void BountyStatusMenu::drawEmpty(M5Canvas& canvas) {
+192|void BountyStatusMenu::drawEmpty(DisplayCanvas& canvas) {
 193|    // Toast-style empty state (centered rounded box, inverted colors)
 194|    const int boxW = 180;
 195|    const int boxH = 50;

@@ -855,7 +855,7 @@ void SpectrumMode::handleClientMonitorInput() {
     }
 }
 
-void SpectrumMode::draw(M5Canvas& canvas) {
+void SpectrumMode::draw(DisplayCanvas& canvas) {
     canvas.fillSprite(COLOR_BG);
     
     // Draw client overlay when monitoring, otherwise spectrum
@@ -901,7 +901,7 @@ void SpectrumMode::draw(M5Canvas& canvas) {
     // XP now shows in top bar on gain (Option B)
 }
 
-void SpectrumMode::drawAxis(M5Canvas& canvas) {
+void SpectrumMode::drawAxis(DisplayCanvas& canvas) {
     // Y-axis line
     canvas.drawFastVLine(SPECTRUM_LEFT - 2, SPECTRUM_TOP, SPECTRUM_BOTTOM - SPECTRUM_TOP, COLOR_FG);
     
@@ -924,7 +924,7 @@ void SpectrumMode::drawAxis(M5Canvas& canvas) {
     canvas.drawFastHLine(SPECTRUM_LEFT, SPECTRUM_BOTTOM, SPECTRUM_RIGHT - SPECTRUM_LEFT, COLOR_FG);
 }
 
-void SpectrumMode::drawChannelMarkers(M5Canvas& canvas) {
+void SpectrumMode::drawChannelMarkers(DisplayCanvas& canvas) {
     canvas.setTextSize(1);
     canvas.setTextColor(COLOR_FG);
     canvas.setTextDatum(top_center);
@@ -993,7 +993,7 @@ void SpectrumMode::drawChannelMarkers(M5Canvas& canvas) {
 }
 
 // Draw filter indicator bar at Y=91 (old XP bar area)
-void SpectrumMode::drawFilterBar(M5Canvas& canvas) {
+void SpectrumMode::drawFilterBar(DisplayCanvas& canvas) {
     // Count networks matching current filter
     int matchCount = 0;
     for (const auto& net : networks) {
@@ -1043,7 +1043,7 @@ void SpectrumMode::drawFilterBar(M5Canvas& canvas) {
 }
 
 // Draw dial mode info bar (top-right when device upright)
-void SpectrumMode::drawDialInfo(M5Canvas& canvas) {
+void SpectrumMode::drawDialInfo(DisplayCanvas& canvas) {
     if (!dialMode && !renderSelected.valid) return;
     
     // Show channel info at top-right, above spectrum
@@ -1074,7 +1074,7 @@ void SpectrumMode::drawDialInfo(M5Canvas& canvas) {
 
 // Draw animated noise floor at spectrum baseline
 // Creates realistic "grass" effect like a real spectrum analyzer
-void SpectrumMode::drawNoiseFloor(M5Canvas& canvas) {
+void SpectrumMode::drawNoiseFloor(DisplayCanvas& canvas) {
     int baseY = SPECTRUM_BOTTOM;
     
     // Draw noise floor line with random jitter
@@ -1172,7 +1172,7 @@ void SpectrumMode::updateWaterfall() {
 }
 
 // Draw waterfall display - historical spectrum scrolling down
-void SpectrumMode::drawWaterfall(M5Canvas& canvas) {
+void SpectrumMode::drawWaterfall(DisplayCanvas& canvas) {
     // Draw horizontal separator line above waterfall
     canvas.drawFastHLine(SPECTRUM_LEFT, WATERFALL_TOP - 1, SPECTRUM_WIDTH, COLOR_FG);
     
@@ -1215,7 +1215,7 @@ void SpectrumMode::drawWaterfall(M5Canvas& canvas) {
 }
 
 // Draw client monitoring overlay [P3] [P12] [P14] [P15]
-void SpectrumMode::drawClientOverlay(M5Canvas& canvas) {
+void SpectrumMode::drawClientOverlay(DisplayCanvas& canvas) {
     // [P12] Draw in mainCanvas area only (y=0 to y=90 max)
     // XP bar is at y=91, drawn separately in draw()
     
@@ -1352,7 +1352,7 @@ void SpectrumMode::drawClientOverlay(M5Canvas& canvas) {
 }
 
 // Draw client detail popup - modal overlay with full client info
-void SpectrumMode::drawClientDetail(M5Canvas& canvas) {
+void SpectrumMode::drawClientDetail(DisplayCanvas& canvas) {
     // Bounds validation - close popup if client no longer exists
     if (!renderMonitor.valid) {
         clientDetailActive = false;
@@ -1429,7 +1429,7 @@ void SpectrumMode::drawClientDetail(M5Canvas& canvas) {
     canvas.setTextDatum(top_left);
 }
 
-void SpectrumMode::drawSpectrum(M5Canvas& canvas) {
+void SpectrumMode::drawSpectrum(DisplayCanvas& canvas) {
     // Copy pointers to avoid heap allocations in render loop
     const size_t maxCount = renderCount;
     const size_t cap = (maxCount > MAX_SPECTRUM_NETWORKS) ? MAX_SPECTRUM_NETWORKS : maxCount;
@@ -1502,7 +1502,7 @@ static float getGaussianAmplitude(float dist) {
     return GAUSSIAN_LUT[lutIdx] + frac * (GAUSSIAN_LUT[lutIdx + 1] - GAUSSIAN_LUT[lutIdx]);
 }
 
-void SpectrumMode::drawGaussianLobe(M5Canvas& canvas, float centerFreqMHz, 
+void SpectrumMode::drawGaussianLobe(DisplayCanvas& canvas, float centerFreqMHz, 
                                      int8_t rssi, bool filled, uint16_t activityPps, uint8_t seed) {
     // Sinc-based carrier wave rendering with visible side lobes
     // Real RF signals have sinc shape: main lobe + decaying side lobes

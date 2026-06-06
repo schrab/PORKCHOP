@@ -264,7 +264,7 @@ void Avatar::cuteJump() {
     jumpStartTime = millis();
 }
 
-void Avatar::draw(M5Canvas& canvas) {
+void Avatar::draw(DisplayCanvas& canvas) {
     uint32_t now = millis();
     
     // Sniff animation times out after SNIFF_DURATION_MS
@@ -480,7 +480,7 @@ void Avatar::draw(M5Canvas& canvas) {
     drawFrame(canvas, frame, 3, shouldBlink, facingRight, isSniffing);
 }
 
-void Avatar::drawFrame(M5Canvas& canvas, const char** frame, uint8_t lines, bool blink, bool faceRight, bool sniff) {
+void Avatar::drawFrame(DisplayCanvas& canvas, const char** frame, uint8_t lines, bool blink, bool faceRight, bool sniff) {
     // Star system background layer (behind pig)
     updateStars();
     drawStars(canvas);
@@ -727,7 +727,7 @@ void Avatar::updateGrass() {
     }
 }
 
-void Avatar::drawGrass(M5Canvas& canvas) {
+void Avatar::drawGrass(DisplayCanvas& canvas) {
     updateGrass();
     
     canvas.setTextSize(2);  // Same as menu items
@@ -749,9 +749,9 @@ bool Avatar::isNightTime() {
     }
     lastNightCheck = now;
 
-    struct timeval tv = 0; gettimeofday(auto dt = M5.Rtc.getDateTime();tv, NULL); struct tm dt = *localtime(&tv.tv_sec);
-    if (dt.date.year >= 2024) {
-        uint8_t hour = dt.time.hours;
+    struct timeval tv; gettimeofday(&tv, NULL); struct tm* dt = localtime(&tv.tv_sec);
+    if ((dt->tm_year + 1900) >= 2024) {
+        uint8_t hour = dt->tm_hour;
         cachedNightMode = (hour >= 20 || hour < 6);
         return cachedNightMode;
     }
@@ -839,7 +839,7 @@ void Avatar::updateStars() {
     }
 }
 
-void Avatar::fillPigBoundingBox(M5Canvas& canvas) {
+void Avatar::fillPigBoundingBox(DisplayCanvas& canvas) {
     if (!starsActive || starCount == 0) return;
 
     int boxX = currentX - 25;
@@ -854,7 +854,7 @@ void Avatar::fillPigBoundingBox(M5Canvas& canvas) {
     canvas.fillRect(boxX, boxY, boxW, boxH, getBGColor());
 }
 
-void Avatar::drawStars(M5Canvas& canvas) {
+void Avatar::drawStars(DisplayCanvas& canvas) {
     if (!starsActive || starCount == 0) return;
 
     uint32_t now = millis();

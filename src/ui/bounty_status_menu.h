@@ -10,7 +10,7 @@
 11|    static void show();
 12|    static void hide();
 13|    static void update();
-14|    static void draw(M5Canvas& canvas);
+14|    static void draw(DisplayCanvas& canvas);
 15|    static bool isActive() { return active; }
 16|    static void getSelectedInfo(char* out, size_t len);
 17|    
@@ -26,7 +26,7 @@
 27|    static const int COL_LEFT = 4;           // Left margin
 28|    
 29|    static void handleInput();
-30|    static void drawList(M5Canvas& canvas);
-31|    static void drawEmpty(M5Canvas& canvas);
+30|    static void drawList(DisplayCanvas& canvas);
+31|    static void drawEmpty(DisplayCanvas& canvas);
 32|};
 33|

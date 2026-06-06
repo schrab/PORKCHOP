@@ -15,7 +15,7 @@ enum m5_textdatum_t {
     bottom_right   = 8,
 };
 
-// Thin wrapper around TFT_eSprite to match M5Canvas API used by PORKCHOP
+// Thin wrapper around TFT_eSprite to match DisplayCanvas API used by PORKCHOP
 class DisplayCanvas {
 public:
     DisplayCanvas(TFT_eSPI* display);

@@ -1846,9 +1846,9 @@ void Mood::onLowBattery() {
 
 // Helper: get current hour from RTC or Unix time (same fallback as Avatar::isNightTime)
 static int8_t getCurrentHour() {
-    struct timeval tv = 0; gettimeofday(auto dt = M5.Rtc.getDateTime();tv, NULL); struct tm dt = *localtime(&tv.tv_sec);
-    if (dt.date.year >= 2024) {
-        return (int8_t)dt.time.hours;
+    struct timeval tv; gettimeofday(&tv, NULL); struct tm* dt = localtime(&tv.tv_sec);
+    if ((dt->tm_year + 1900) >= 2024) {
+        return (int8_t)dt->tm_hour;
     }
     time_t unixNow = time(nullptr);
     if (unixNow >= 1700000000) {
@@ -1911,8 +1911,8 @@ bool Mood::pickTimePhraseIfDue(uint32_t now) {
     // Special times first (exact hour matches)
     if (hour == 13) {
         // Check minute for 1337 (13:37)
-        struct timeval tv = 0; gettimeofday(auto dt = M5.Rtc.getDateTime();tv, NULL); struct tm dt = *localtime(&tv.tv_sec);
-        if (dt.date.year >= 2024 && dt.time.minutes >= 35 && dt.time.minutes <= 39) {
+        struct timeval tv; gettimeofday(&tv, NULL); struct tm* dt = localtime(&tv.tv_sec);
+        if ((dt->tm_year + 1900) >= 2024 && dt->tm_min >= 35 && dt->tm_min <= 39) {
             SET_PHRASE(currentPhrase, PHRASES_TIME_SPECIAL[0]);  // "13:37. pig approves."
             return true;
         }
@@ -2615,7 +2615,7 @@ void Mood::updateAvatarState() {
     }
 }
 
-void Mood::draw(M5Canvas& canvas) {
+void Mood::draw(DisplayCanvas& canvas) {
     // === WEATHER SYSTEM ===
     // Weather update is handled in Display::update() to avoid stuck flashes in non-avatar screens.
     int effectiveMood = getEffectiveHappiness();
@@ -2707,7 +2707,7 @@ void Mood::draw(M5Canvas& canvas) {
     
     if (drawToTopBar) {
         // Get topBar canvas and draw bubble there too
-        M5Canvas& topBar = Display::getTopBar();
+        DisplayCanvas& topBar = Display::getTopBar();
         
         // Convert mainCanvas Y to topBar Y (physical coordinates)
         // mainCanvas Y=0 is physical Y=TOP_BAR_H (14)
@@ -2762,7 +2762,7 @@ void Mood::draw(M5Canvas& canvas) {
         
         // Draw text to topBar if it falls in that area
         if (drawToTopBar && lineY < 0) {
-            M5Canvas& topBar = Display::getTopBar();
+            DisplayCanvas& topBar = Display::getTopBar();
             topBar.setTextSize(1);
             topBar.setTextDatum(top_left);
             topBar.setTextColor(COLOR_BG);

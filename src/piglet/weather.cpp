@@ -404,7 +404,7 @@ bool isRaining() {
 }
 
 // === DRAWING ===
-void drawClouds(M5Canvas& canvas, uint16_t colorFG) {
+void drawClouds(DisplayCanvas& canvas, uint16_t colorFG) {
     // During thunder flash, use inverted color (matches sirloin's getDrawColor)
     uint16_t drawColor = isThunderFlashing() ? getColorBG() : colorFG;
     
@@ -417,7 +417,7 @@ void drawClouds(M5Canvas& canvas, uint16_t colorFG) {
     canvas.drawString(cloudPattern, 0, cloudY);
 }
 
-void draw(M5Canvas& canvas, uint16_t colorFG, uint16_t colorBG) {
+void draw(DisplayCanvas& canvas, uint16_t colorFG, uint16_t colorBG) {
     // During thunder flash, invert colors for rain/wind (matches sirloin)
     uint16_t drawColor = isThunderFlashing() ? colorBG : colorFG;
     

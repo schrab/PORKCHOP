@@ -1748,7 +1748,7 @@ void XP::setLevelUpCallback(void (*callback)(uint8_t, uint8_t)) {
     levelUpCallback = callback;
 }
 
-void XP::drawBar(M5Canvas& canvas) {
+void XP::drawBar(DisplayCanvas& canvas) {
     // Draw XP bar at TOP of main canvas (y=0) with inverted colors for visibility
     // Format: "L## TITLE_FULL      ######.......... 100%"
     // Progress bar and percentage aligned to right edge
@@ -1860,7 +1860,7 @@ uint16_t XP::getLastXPGainAmount() {
     return lastXPGainAmount;
 }
 
-void XP::drawTopBarXP(M5Canvas& topBar) {
+void XP::drawTopBarXP(DisplayCanvas& topBar) {
     // Draw inverted XP bar in top bar (replaces normal top bar content)
     // Format: "L## TITLE +XX XP!" or "L## TITLE ####.... %%"
     

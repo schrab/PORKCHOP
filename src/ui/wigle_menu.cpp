@@ -1,7 +1,7 @@
 // WiGLE Menu - View wardriving files with sync support
 
 #include "wigle_menu.h"
-#include <M5Cardputer.h>
+#include "../hal/hal_input.h"
 #include <SD.h>
 #include <WiFi.h>
 #include <string.h>
@@ -224,7 +224,7 @@ void WigleMenu::processAsyncScan() {
 }
 
 void WigleMenu::handleInput() {
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    bool anyPressed = hal_input_anyHeld();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -234,20 +234,20 @@ void WigleMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = M5Cardputer.Keyboard.keysState();
+    // auto keys = M5Cardputer.Keyboard.keysState();
     
     // Handle sync modal
     if (syncModalActive) {
         if (syncState == WigleSyncState::ERROR || syncState == WigleSyncState::COMPLETE) {
-            // Enter closes the modal after completion/error
-            if (keys.enter || M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE)) {
+            // Enter or backspace closes the modal after completion/error
+            if (hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_BACKSPACE)) {
                 syncModalActive = false;
                 syncState = WigleSyncState::IDLE;
                 scanFiles();  // Rescan files after sync
             }
         } else {
-            // ESC cancels during sync
-            if (M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE)) {
+            // Backspace cancels during sync
+            if (hal_input_wasPressed(KEY_BACKSPACE)) {
                 cancelSync();
             }
         }
@@ -262,14 +262,14 @@ void WigleMenu::handleInput() {
     
     // Handle nuke confirmation modal
     if (nukeConfirmActive) {
-        if (M5Cardputer.Keyboard.isKeyPressed('y') || M5Cardputer.Keyboard.isKeyPressed('Y')) {
+        if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
             nukeTrack();
             nukeConfirmActive = false;
             Display::clearBottomOverlay();
             return;
         }
-        if (M5Cardputer.Keyboard.isKeyPressed('n') || M5Cardputer.Keyboard.isKeyPressed('N') ||
-            M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE)) {
+        if (hal_input_wasPressed('n') || hal_input_wasPressed('N') ||
+            hal_input_wasPressed(KEY_BACKSPACE)) {
             nukeConfirmActive = false;  // Cancel
             Display::clearBottomOverlay();
             return;
@@ -278,13 +278,13 @@ void WigleMenu::handleInput() {
     }
     
     // Backspace - go back
-    if (M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE)) {
+    if (hal_input_wasPressed(KEY_BACKSPACE)) {
         hide();
         return;
     }
     
-    // Navigation with ; (prev) and . (next)
-    if (M5Cardputer.Keyboard.isKeyPressed(';')) {
+    // Navigation with UP and DOWN
+    if (hal_input_wasPressed(KEY_UP)) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -293,7 +293,7 @@ void WigleMenu::handleInput() {
         }
     }
     
-    if (M5Cardputer.Keyboard.isKeyPressed('.')) {
+    if (hal_input_wasPressed(KEY_DOWN)) {
         if (!files.empty() && selectedIndex < files.size() - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {
@@ -303,17 +303,17 @@ void WigleMenu::handleInput() {
     }
     
     // Enter - show detail view
-    if (keys.enter && !files.empty()) {
+    if (hal_input_wasPressed(KEY_ENTER) && !files.empty()) {
         detailViewActive = true;
     }
     
-    // S key triggers WiGLE sync
-    if (M5Cardputer.Keyboard.isKeyPressed('s') || M5Cardputer.Keyboard.isKeyPressed('S')) {
+    // S key triggers WiGLE sync — kept for non-joystick compatibility
+    if (hal_input_wasPressed('s') || hal_input_wasPressed('S')) {
         startSync();
     }
     
     // D key - nuke selected track
-    if ((M5Cardputer.Keyboard.isKeyPressed('d') || M5Cardputer.Keyboard.isKeyPressed('D')) && !files.empty()) {
+    if ((hal_input_wasPressed('d') || hal_input_wasPressed('D')) && !files.empty()) {
         if (selectedIndex < files.size()) {
             nukeConfirmActive = true;
             Display::setBottomOverlay("PERMANENT | NO UNDO");
@@ -354,7 +354,7 @@ void WigleMenu::update() {
     handleInput();
 }
 
-void WigleMenu::draw(M5Canvas& canvas) {
+void WigleMenu::draw(DisplayCanvas& canvas) {
     if (!active) return;
     
     canvas.fillSprite(COLOR_BG);
@@ -479,7 +479,7 @@ void WigleMenu::draw(M5Canvas& canvas) {
     }
 }
 
-void WigleMenu::drawDetailView(M5Canvas& canvas) {
+void WigleMenu::drawDetailView(DisplayCanvas& canvas) {
     if (files.empty() || selectedIndex >= files.size()) return;
 
     const WigleFileInfo& file = files[selectedIndex];
@@ -520,7 +520,7 @@ void WigleMenu::drawDetailView(M5Canvas& canvas) {
     canvas.setTextDatum(top_left);
 }
 
-void WigleMenu::drawNukeConfirm(M5Canvas& canvas) {
+void WigleMenu::drawNukeConfirm(DisplayCanvas& canvas) {
     if (files.empty() || selectedIndex >= files.size()) return;
     
     const WigleFileInfo& file = files[selectedIndex];
@@ -755,7 +755,7 @@ void WigleMenu::processSyncState() {
     }
 }
 
-void WigleMenu::drawSyncModal(M5Canvas& canvas) {
+void WigleMenu::drawSyncModal(DisplayCanvas& canvas) {
     // Modal box dimensions
     const int boxW = 200;
     const int boxH = 85;

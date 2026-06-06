@@ -61,7 +61,7 @@
 62|    static void show();
 63|    static void hide();
 64|    static void update();
-65|    static void draw(M5Canvas& canvas);
+65|    static void draw(DisplayCanvas& canvas);
 66|    static bool isActive() { return active; }
 67|    
 68|    // Buff/debuff calculation (called by modes)
@@ -97,13 +97,13 @@
 98|    static StatsTab currentTab;
 99|    
 100|    static void handleInput();
-101|    static void drawStatsTab(M5Canvas& canvas);
-102|    static void drawBuffsTab(M5Canvas& canvas);
-103|    static void drawTabBar(M5Canvas& canvas);
-104|    static void drawStats(M5Canvas& canvas);  // Stat grid helper
+101|    static void drawStatsTab(DisplayCanvas& canvas);
+102|    static void drawBuffsTab(DisplayCanvas& canvas);
+103|    static void drawTabBar(DisplayCanvas& canvas);
+104|    static void drawStats(DisplayCanvas& canvas);  // Stat grid helper
 105|
 106|    // Draw the WiGLE statistics tab. This tab displays the user's rank
 107|    // and total observations as read from the WiGLE stats cache. See
 108|    // WiGLE::getUserStats() for details.
-109|    static void drawWigleTab(M5Canvas& canvas);
+109|    static void drawWigleTab(DisplayCanvas& canvas);
 110|};

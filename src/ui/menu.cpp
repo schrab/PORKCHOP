@@ -503,7 +503,7 @@ void Menu::handleInput() {
 // DRAWING
 // ============================================================================
 
-void Menu::draw(M5Canvas& canvas) {
+void Menu::draw(DisplayCanvas& canvas) {
     if (!active) return;
     
     // Always draw root
@@ -515,7 +515,7 @@ void Menu::draw(M5Canvas& canvas) {
     }
 }
 
-void Menu::drawRoot(M5Canvas& canvas) {
+void Menu::drawRoot(DisplayCanvas& canvas) {
     uint16_t fg = getColorFG();
     uint16_t bg = getColorBG();
     uint16_t accent = fg;  // Same as COLOR_ACCENT
@@ -611,7 +611,7 @@ void Menu::drawRoot(M5Canvas& canvas) {
     }
 }
 
-void Menu::drawModal(M5Canvas& canvas) {
+void Menu::drawModal(DisplayCanvas& canvas) {
     uint16_t fg = getColorFG();
     uint16_t bg = getColorBG();
     

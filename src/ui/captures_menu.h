@@ -41,7 +41,7 @@
 42|    static void show();
 43|    static void hide();
 44|    static void update();
-45|    static void draw(M5Canvas& canvas);
+45|    static void draw(DisplayCanvas& canvas);
 46|    
 47|    // Emergency cleanup for low heap situations
 48|    static void emergencyCleanup();
@@ -62,8 +62,8 @@
 63|    
 64|    static bool scanCaptures();  // Returns true if successful, false if SD access failed
 65|    static void handleInput();
-66|    static void drawNukeConfirm(M5Canvas& canvas);
-67|    static void drawDetailView(M5Canvas& canvas);
+66|    static void drawNukeConfirm(DisplayCanvas& canvas);
+67|    static void drawDetailView(DisplayCanvas& canvas);
 68|    static void nukeLoot();
 69|    static void updateWPASecStatus();
 70|    static void formatTime(char* out, size_t len, time_t t);
@@ -107,7 +107,7 @@
 108|    // Sync operations
 109|    static void startSync();
 110|    static void processSyncState();
-111|    static void drawSyncModal(M5Canvas& canvas);
+111|    static void drawSyncModal(DisplayCanvas& canvas);
 112|    static void cancelSync();
 113|    static bool connectToWiFi();
 114|    static void disconnectWiFi();

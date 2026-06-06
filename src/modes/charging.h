@@ -8,7 +8,7 @@
 9|    static void start();
 10|    static void stop();
 11|    static void update();
-12|    static void draw(M5Canvas& canvas);
+12|    static void draw(DisplayCanvas& canvas);
 13|    
 14|    static bool isRunning() { return running; }
 15|    static bool shouldExit() { return exitRequested; }

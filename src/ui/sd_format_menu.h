@@ -9,7 +9,7 @@
 10|    static void hide();
 11|    static void update();
 12|    static bool isActive() { return active; }
-13|    static void draw(M5Canvas& canvas);
+13|    static void draw(DisplayCanvas& canvas);
 14|    static const char* getSelectedDescription();
 15|    
 16|    // Bar-less mode: SD format runs without top/bottom bars to save RAM
@@ -45,11 +45,11 @@
 46|    static void startFormat();
 47|    static void stopEverything();     // Stop NetworkRecon, FileServer, WiFi
 48|    static void doReboot();           // Reboot with countdown
-49|    static void drawConfirmEntry(M5Canvas& canvas);
-50|    static void drawSelect(M5Canvas& canvas);
-51|    static void drawConfirm(M5Canvas& canvas);
-52|    static void drawWorking(M5Canvas& canvas);
-53|    static void drawResult(M5Canvas& canvas);
+49|    static void drawConfirmEntry(DisplayCanvas& canvas);
+50|    static void drawSelect(DisplayCanvas& canvas);
+51|    static void drawConfirm(DisplayCanvas& canvas);
+52|    static void drawWorking(DisplayCanvas& canvas);
+53|    static void drawResult(DisplayCanvas& canvas);
 54|    static void onFormatProgress(const char* stage, uint8_t percent);
 55|};
 56|

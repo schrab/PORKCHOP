@@ -90,7 +90,7 @@
 91|    static void start();
 92|    static void stop();
 93|    static void update();
-94|    static void draw(M5Canvas& canvas);
+94|    static void draw(DisplayCanvas& canvas);
 95|    static bool isRunning() { return running; }
 96|    
 97|    // For promiscuous callback - updates network RSSI
@@ -173,16 +173,16 @@
 174|    
 175|    static void handleInput();
 176|    static void handleClientMonitorInput();  // Input when monitoring
-177|    static void drawSpectrum(M5Canvas& canvas);
-178|    static void drawClientOverlay(M5Canvas& canvas);  // Client list overlay
-179|    static void drawClientDetail(M5Canvas& canvas);   // Client detail popup
-180|    static void drawGaussianLobe(M5Canvas& canvas, float centerFreqMHz, int8_t rssi, bool filled, uint16_t activityPps, uint8_t seed);
-181|    static void drawAxis(M5Canvas& canvas);
-182|    static void drawChannelMarkers(M5Canvas& canvas);
-183|    static void drawFilterBar(M5Canvas& canvas);     // Filter indicator bar
-184|    static void drawDialInfo(M5Canvas& canvas);      // Dial mode info bar
-185|    static void drawNoiseFloor(M5Canvas& canvas);    // Animated noise at baseline
-186|    static void drawWaterfall(M5Canvas& canvas);     // Historical spectrum waterfall
+177|    static void drawSpectrum(DisplayCanvas& canvas);
+178|    static void drawClientOverlay(DisplayCanvas& canvas);  // Client list overlay
+179|    static void drawClientDetail(DisplayCanvas& canvas);   // Client detail popup
+180|    static void drawGaussianLobe(DisplayCanvas& canvas, float centerFreqMHz, int8_t rssi, bool filled, uint16_t activityPps, uint8_t seed);
+181|    static void drawAxis(DisplayCanvas& canvas);
+182|    static void drawChannelMarkers(DisplayCanvas& canvas);
+183|    static void drawFilterBar(DisplayCanvas& canvas);     // Filter indicator bar
+184|    static void drawDialInfo(DisplayCanvas& canvas);      // Dial mode info bar
+185|    static void drawNoiseFloor(DisplayCanvas& canvas);    // Animated noise at baseline
+186|    static void drawWaterfall(DisplayCanvas& canvas);     // Historical spectrum waterfall
 187|    static void updateSpectrumBuffers();             // Populate buffers from network data
 188|    static void updateWaterfall();                   // Push to waterfall history
 189|    static void pruneStale();            // Remove networks not seen recently

@@ -16,7 +16,7 @@
 17|    static void show();
 18|    static void hide();
 19|    static void update();
-20|    static void draw(M5Canvas& canvas);
+20|    static void draw(DisplayCanvas& canvas);
 21|    static bool isActive() { return active; }
 22|    static size_t getCount();
 23|    static void getSelectedInfo(char* out, size_t len);
@@ -34,7 +34,7 @@
 35|    static void handleInput();
 36|    static void loadBros();
 37|    static void deleteSelected();
-38|    static void drawDeleteConfirm(M5Canvas& canvas);
+38|    static void drawDeleteConfirm(DisplayCanvas& canvas);
 39|    static void formatBSSID(uint64_t bssid, char* out, size_t len);
 40|};
 41|

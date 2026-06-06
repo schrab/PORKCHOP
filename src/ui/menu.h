@@ -50,7 +50,7 @@
 51|public:
 52|    static void init();
 53|    static void update();
-54|    static void draw(M5Canvas& canvas);
+54|    static void draw(DisplayCanvas& canvas);
 55|    
 56|    static void setCallback(MenuCallback cb);
 57|    
@@ -104,8 +104,8 @@
 105|    
 106|    // Helpers
 107|    static void handleInput();
-108|    static void drawRoot(M5Canvas& canvas);
-109|    static void drawModal(M5Canvas& canvas);
+108|    static void drawRoot(DisplayCanvas& canvas);
+109|    static void drawModal(DisplayCanvas& canvas);
 110|    static bool isRootSelectable(uint8_t idx);
 111|    static const MenuItem* getGroupItems(GroupId group);
 112|    static uint8_t getGroupSize(GroupId group);

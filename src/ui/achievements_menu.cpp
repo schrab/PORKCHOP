@@ -173,7 +173,7 @@
 172|    }
 173|}
 174|
-175|void AchievementsMenu::draw(M5Canvas& canvas) {
+175|void AchievementsMenu::draw(DisplayCanvas& canvas) {
 176|    if (!active) return;
 177|    
 178|    // If showing detail popup, draw that instead
@@ -229,7 +229,7 @@
 228|    }
 229|}
 230|
-231|void AchievementsMenu::drawDetail(M5Canvas& canvas) {
+231|void AchievementsMenu::drawDetail(DisplayCanvas& canvas) {
 232|    canvas.fillScreen(COLOR_BG);
 233|    
 234|    bool hasIt = (XP::getAchievements() & ACHIEVEMENTS[selectedIndex].flag) != 0;

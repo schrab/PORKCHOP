@@ -232,7 +232,7 @@
 231|    dir.close();
 232|}
 233|
-234|void CrashViewer::drawList(M5Canvas& canvas) {
+234|void CrashViewer::drawList(DisplayCanvas& canvas) {
 235|    canvas.fillSprite(COLOR_BG);
 236|    canvas.setTextColor(COLOR_FG, COLOR_BG);
 237|    canvas.setTextSize(1);
@@ -285,7 +285,7 @@
 284|    }
 285|}
 286|
-287|void CrashViewer::drawFile(M5Canvas& canvas) {
+287|void CrashViewer::drawFile(DisplayCanvas& canvas) {
 288|    canvas.fillSprite(COLOR_BG);
 289|    canvas.setTextColor(COLOR_FG, COLOR_BG);
 290|    canvas.setTextSize(1);
@@ -319,7 +319,7 @@
 318|    }
 319|}
 320|
-321|void CrashViewer::drawNukeConfirm(M5Canvas& canvas) {
+321|void CrashViewer::drawNukeConfirm(DisplayCanvas& canvas) {
 322|    const int boxW = 200;
 323|    const int boxH = 70;
 324|    const int boxX = (canvas.width() - boxW) / 2;
@@ -419,7 +419,7 @@
 418|    }
 419|}
 420|
-421|void CrashViewer::draw(M5Canvas& canvas) {
+421|void CrashViewer::draw(DisplayCanvas& canvas) {
 422|    if (!active) return;
 423|
 424|    if (fileViewActive) {

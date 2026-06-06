@@ -8,7 +8,7 @@
 #include "../core/sd_layout.h"
 #include "../core/sdlog.h"
 #include "../gps/gps.h"
-#include <M5Cardputer.h>
+#include "../hal/hal_input.h"
 #include <SD.h>
 #include <string.h>
 
@@ -561,7 +561,7 @@ static bool setSettingValue(SettingId id, int value) {
             if (Config::personality().brightness == newVal) return false;
             Config::personality().brightness = newVal;
             Display::resetDimTimer();
-            M5.Display.setBrightness(newVal * 255 / 100);
+            g_Display.setBrightness(newVal * 255 / 100);
             return true;
         }
         case SET_SOUND: {
@@ -917,7 +917,7 @@ void SettingsMenu::saveIfDirty(bool showToast) {
     }
 }
 void SettingsMenu::handleInput() {
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    bool anyPressed = hal_input_anyHeld();
 
     if (!anyPressed) {
         keyWasPressed = false;
@@ -934,10 +934,10 @@ void SettingsMenu::handleInput() {
 
     lastInputMs = millis();
 
-    auto keys = M5Cardputer.Keyboard.keysState();
-    bool up = M5Cardputer.Keyboard.isKeyPressed(';');
-    bool down = M5Cardputer.Keyboard.isKeyPressed('.');
-    bool back = M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE);
+    // auto keys = M5Cardputer.Keyboard.keysState();
+    bool up = hal_input_wasPressed(KEY_UP);
+    bool down = hal_input_wasPressed(KEY_DOWN);
+    bool back = hal_input_wasPressed(KEY_BACKSPACE);
 
     GroupId group = static_cast<GroupId>(activeGroup);
     const size_t rootCount = sizeof(kRootEntries) / sizeof(kRootEntries[0]);
@@ -1124,16 +1124,18 @@ void SettingsMenu::handleInput() {
     }
 }
 void SettingsMenu::handleTextInput() {
-    auto keys = M5Cardputer.Keyboard.keysState();
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    // auto keys = M5Cardputer.Keyboard.keysState();
+    bool anyPressed = hal_input_anyHeld();
 
     if (!anyPressed) {
         keyWasPressed = false;
         return;
     }
 
-    bool hasPrintable = !keys.word.empty();
-    bool hasActionKey = keys.enter || keys.del;
+    // 5-way joystick can't produce text characters — text editing is disabled
+    // Enter = accept current value, Backspace = go back to menu
+    bool hasPrintable = false;  // no text input from joystick
+    bool hasActionKey = hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_BACKSPACE);
 
     if (!hasPrintable && !hasActionKey) {
         return;
@@ -1196,7 +1198,7 @@ const char* SettingsMenu::getSelectedDescription() {
     return entries[groupIndex].description;
 }
 
-void SettingsMenu::draw(M5Canvas& canvas) {
+void SettingsMenu::draw(DisplayCanvas& canvas) {
     canvas.fillSprite(COLOR_FG);
     canvas.setTextColor(COLOR_BG);
     canvas.setTextSize(2);

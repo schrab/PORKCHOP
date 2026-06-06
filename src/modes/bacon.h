@@ -39,7 +39,7 @@
 40|    static void start();
 41|    static void stop();
 42|    static void update();
-43|    static void draw(M5Canvas& canvas);  // Called by Display::update()
+43|    static void draw(DisplayCanvas& canvas);  // Called by Display::update()
 44|    static bool isRunning() { return running; }
 45|    
 46|    // Getters for Display bottom bar

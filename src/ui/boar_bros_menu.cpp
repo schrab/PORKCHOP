@@ -226,7 +226,7 @@
 225|    Display::notify(NoticeKind::STATUS, "BRO REMOVED!");
 226|}
 227|
-228|void BoarBrosMenu::draw(M5Canvas& canvas) {
+228|void BoarBrosMenu::draw(DisplayCanvas& canvas) {
 229|    if (!active) return;
 230|    
 231|    canvas.fillSprite(COLOR_BG);
@@ -299,7 +299,7 @@
 298|    }
 299|}
 300|
-301|void BoarBrosMenu::drawDeleteConfirm(M5Canvas& canvas) {
+301|void BoarBrosMenu::drawDeleteConfirm(DisplayCanvas& canvas) {
 302|    // Modal box dimensions - matches other confirmation dialogs
 303|    const int boxW = 180;
 304|    const int boxH = 55;
