@@ -418,7 +418,7 @@ static void updateBatteryBias(uint32_t now) {
     }
     lastBatteryCheckMs = now;
 
-    int percent = M5.Power.getBatteryLevel();
+    int percent = hal_battery_read_percent();
     if (percent < 0 || percent > 100) {
         return;
     }
@@ -1470,7 +1470,7 @@ void Mood::onHandshakeCaptured(const char* apName) {
     XP::addXP(XPEvent::HANDSHAKE_CAPTURED);
     
     // Bonus XP for low battery clutch capture
-    if (M5.Power.getBatteryLevel() < 20) {
+    if (hal_battery_read_percent() < 20) {
         XP::addXP(XPEvent::LOW_BATTERY_CAPTURE);
     }
     
@@ -1561,7 +1561,7 @@ void Mood::onPMKIDCaptured(const char* apName) {
     }
     
     // Bonus XP for low battery clutch capture
-    if (M5.Power.getBatteryLevel() < 10) {
+    if (hal_battery_read_percent() < 10) {
         XP::addXP(XPEvent::LOW_BATTERY_CAPTURE);
     }
     
@@ -1846,7 +1846,7 @@ void Mood::onLowBattery() {
 
 // Helper: get current hour from RTC or Unix time (same fallback as Avatar::isNightTime)
 static int8_t getCurrentHour() {
-    auto dt = M5.Rtc.getDateTime();
+    struct timeval tv = 0; gettimeofday(auto dt = M5.Rtc.getDateTime();tv, NULL); struct tm dt = *localtime(&tv.tv_sec);
     if (dt.date.year >= 2024) {
         return (int8_t)dt.time.hours;
     }
@@ -1911,7 +1911,7 @@ bool Mood::pickTimePhraseIfDue(uint32_t now) {
     // Special times first (exact hour matches)
     if (hour == 13) {
         // Check minute for 1337 (13:37)
-        auto dt = M5.Rtc.getDateTime();
+        struct timeval tv = 0; gettimeofday(auto dt = M5.Rtc.getDateTime();tv, NULL); struct tm dt = *localtime(&tv.tv_sec);
         if (dt.date.year >= 2024 && dt.time.minutes >= 35 && dt.time.minutes <= 39) {
             SET_PHRASE(currentPhrase, PHRASES_TIME_SPECIAL[0]);  // "13:37. pig approves."
             return true;
@@ -2254,7 +2254,7 @@ bool Mood::pickChargingPhraseIfDue(uint32_t now) {
     if (now - lastChargeCheckMs < 5000) return false;
     lastChargeCheckMs = now;
 
-    auto chargeState = M5.Power.isCharging();
+    auto chargeState = hal_battery_isCharging();
     int8_t charging = (chargeState == m5::Power_Class::is_charging_t::is_charging) ? 1 : 0;
 
     if (lastChargingState == -1) {
@@ -2273,7 +2273,7 @@ bool Mood::pickChargingPhraseIfDue(uint32_t now) {
         triggered = true;
     } else if (!charging && lastChargingState) {
         // Just unplugged
-        int batt = M5.Power.getBatteryLevel();
+        int batt = hal_battery_read_percent();
         if (batt >= 0 && batt < 20) {
             char buf[40];
             snprintf(buf, sizeof(buf), PHRASES_CHARGING_OFF_LOW, batt);

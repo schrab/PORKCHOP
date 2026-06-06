@@ -749,7 +749,7 @@ bool Avatar::isNightTime() {
     }
     lastNightCheck = now;
 
-    auto dt = M5.Rtc.getDateTime();
+    struct timeval tv = 0; gettimeofday(auto dt = M5.Rtc.getDateTime();tv, NULL); struct tm dt = *localtime(&tv.tv_sec);
     if (dt.date.year >= 2024) {
         uint8_t hour = dt.time.hours;
         cachedNightMode = (hour >= 20 || hour < 6);

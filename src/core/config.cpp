@@ -1,1023 +1,501 @@
-// src/core/config.cpp
-// Configuration management implementation
-
-#include "config.h"
-#include "sdlog.h"
-#include "sd_layout.h"
-#include <M5Cardputer.h>
-#include <SD.h>
-#include <SPIFFS.h>
-#include <SPI.h>
-#include <driver/gpio.h>
-
-// ---- Cardputer microSD wiring (explicit, per Cardputer v1.1 schematic) ----
-// ESP32-S3FN8:
-//   microSD Socket  CS   MOSI  CLK   MISO
-//                  G12  G14   G40   G39
-//
-// (Your previous patch used ESP32 “classic” pins + CS=4, which breaks SD on Cardputer/StampS3.)
-static constexpr int SD_CS_PIN   = 12;  // CS
-static constexpr int SD_MOSI_PIN = 14;  // MOSI
-static constexpr int SD_MISO_PIN = 39;  // MISO
-static constexpr int SD_SCK_PIN  = 40;  // SCK/CLK
-
-// Dedicated SPI bus instance for SD.
-// Cardputer microSD pinmap (from M5 docs): CS=12 MOSI=14 CLK=40 MISO=39.
-// In practice, Arduino-ESP32/PlatformIO combos vary; using FSPI with explicit
-// pins is the most reliable on Cardputer builds.
-static SPIClass sdSPI(FSPI);
-static bool sdSpiBegun = false;
-
-// Static member initialization
-GPSConfig Config::gpsConfig;
-MLConfig Config::mlConfig;
-WiFiConfig Config::wifiConfig;
-BLEConfig Config::bleConfig;
-PersonalityConfig Config::personalityConfig;
-bool Config::initialized = false;
-static bool sdAvailable = false;
-
-// ---- Binary config blob (zero heap allocation) ----
-static constexpr uint32_t CONFIG_MAGIC   = 0x504F524B;  // 'PORK'
-static constexpr uint16_t CONFIG_VERSION = 1;
-#define CONFIG_BIN_FILE "/porkchop.dat"
-
-static const char* configBinPathSD() {
-    return SDLayout::usingNewLayout()
-        ? "/m5porkchop/config/porkchop.dat"
-        : "/porkchop.dat";
-}
-
-struct __attribute__((packed)) ConfigBlob {
-    uint32_t magic;
-    uint16_t version;
-    uint16_t blobSize;
-
-    // GPS
-    uint8_t  gpsEnabled;
-    uint8_t  gpsSource;
-    uint8_t  gpsRxPin;
-    uint8_t  gpsTxPin;
-    uint32_t gpsBaudRate;
-    uint16_t gpsUpdateInterval;
-    uint16_t gpsSleepTimeMs;
-    uint8_t  gpsPowerSave;
-    int8_t   gpsTimezoneOffset;
-
-    // WiFi
-    uint16_t channelHopInterval;
-    uint16_t spectrumHopInterval;
-    uint16_t lockTime;
-    uint8_t  enableDeauth;
-    uint8_t  randomizeMAC;
-    int8_t   spectrumMinRssi;
-    int8_t   attackMinRssi;
-    uint8_t  spectrumTopN;
-    uint16_t spectrumStaleMs;
-    uint8_t  spectrumCollapseSsid;
-    uint8_t  spectrumTiltEnabled;
-    char     otaSSID[33];
-    char     otaPassword[65];
-    uint8_t  autoConnect;
-    char     wpaSecKey[33];
-    char     wigleApiName[65];
-    char     wigleApiToken[65];
-
-    // BLE
-    uint16_t burstInterval;
-    uint16_t advDuration;
-
-    // ML (disabled but preserved for future)
-    uint8_t  mlEnabled;
-    uint8_t  mlCollectionMode;
-    char     mlModelPath[64];
-    float    mlConfidenceThreshold;
-    float    mlRogueApThreshold;
-    float    mlVulnScorerThreshold;
-    uint8_t  mlAutoUpdate;
-    char     mlUpdateUrl[128];
-};
-
-static void populateBlob(ConfigBlob& b, const GPSConfig& gps, const WiFiConfig& wifi,
-                          const BLEConfig& ble, const MLConfig& ml) {
-    memset(&b, 0, sizeof(b));
-    b.magic    = CONFIG_MAGIC;
-    b.version  = CONFIG_VERSION;
-    b.blobSize = sizeof(ConfigBlob);
-
-    b.gpsEnabled        = gps.enabled ? 1 : 0;
-    b.gpsSource         = static_cast<uint8_t>(gps.source);
-    b.gpsRxPin          = gps.rxPin;
-    b.gpsTxPin          = gps.txPin;
-    b.gpsBaudRate       = gps.baudRate;
-    b.gpsUpdateInterval = gps.updateInterval;
-    b.gpsSleepTimeMs    = gps.sleepTimeMs;
-    b.gpsPowerSave      = gps.powerSave ? 1 : 0;
-    b.gpsTimezoneOffset = gps.timezoneOffset;
-
-    b.channelHopInterval   = wifi.channelHopInterval;
-    b.spectrumHopInterval  = wifi.spectrumHopInterval;
-    b.lockTime             = wifi.lockTime;
-    b.enableDeauth         = wifi.enableDeauth ? 1 : 0;
-    b.randomizeMAC         = wifi.randomizeMAC ? 1 : 0;
-    b.spectrumMinRssi      = wifi.spectrumMinRssi;
-    b.attackMinRssi        = wifi.attackMinRssi;
-    b.spectrumTopN         = wifi.spectrumTopN;
-    b.spectrumStaleMs      = wifi.spectrumStaleMs;
-    b.spectrumCollapseSsid = wifi.spectrumCollapseSsid ? 1 : 0;
-    b.spectrumTiltEnabled  = wifi.spectrumTiltEnabled ? 1 : 0;
-    strncpy(b.otaSSID,       wifi.otaSSID,       sizeof(b.otaSSID) - 1);
-    strncpy(b.otaPassword,   wifi.otaPassword,   sizeof(b.otaPassword) - 1);
-    b.autoConnect = wifi.autoConnect ? 1 : 0;
-    strncpy(b.wpaSecKey,     wifi.wpaSecKey,     sizeof(b.wpaSecKey) - 1);
-    strncpy(b.wigleApiName,  wifi.wigleApiName,  sizeof(b.wigleApiName) - 1);
-    strncpy(b.wigleApiToken, wifi.wigleApiToken, sizeof(b.wigleApiToken) - 1);
-
-    b.burstInterval = ble.burstInterval;
-    b.advDuration   = ble.advDuration;
-
-    b.mlEnabled              = ml.enabled ? 1 : 0;
-    b.mlCollectionMode       = static_cast<uint8_t>(ml.collectionMode);
-    strncpy(b.mlModelPath, ml.modelPath, sizeof(b.mlModelPath) - 1);
-    b.mlConfidenceThreshold  = ml.confidenceThreshold;
-    b.mlRogueApThreshold     = ml.rogueApThreshold;
-    b.mlVulnScorerThreshold  = ml.vulnScorerThreshold;
-    b.mlAutoUpdate           = ml.autoUpdate ? 1 : 0;
-    strncpy(b.mlUpdateUrl, ml.updateUrl, sizeof(b.mlUpdateUrl) - 1);
-}
-
-static bool writeBlobTo(fs::FS& fs, const char* path, const ConfigBlob& b) {
-    File file = fs.open(path, FILE_WRITE);
-    if (!file) {
-        Serial.printf("[CONFIG] writeBlobTo: failed to open '%s'\n", path);
-        return false;
-    }
-    size_t written = file.write((const uint8_t*)&b, sizeof(b));
-    file.close();
-    Serial.printf("[CONFIG] writeBlobTo: %u/%u bytes -> '%s'\n",
-                  written, sizeof(b), path);
-    return written == sizeof(b);
-}
-
-static bool readBlobFrom(fs::FS& fs, const char* path, ConfigBlob& b) {
-    File file = fs.open(path, FILE_READ);
-    if (!file) return false;
-
-    size_t fileSize = file.size();
-    if (fileSize < 8) { file.close(); return false; }  // too small for header
-
-    size_t readSize = (fileSize < sizeof(b)) ? fileSize : sizeof(b);
-    memset(&b, 0, sizeof(b));
-    size_t got = file.read((uint8_t*)&b, readSize);
-    file.close();
-
-    if (got < 8 || b.magic != CONFIG_MAGIC) return false;
-    Serial.printf("[CONFIG] readBlobFrom: '%s' v%u, %u bytes\n", path, b.version, got);
-    return true;
-}
-
-static void extractBlob(const ConfigBlob& b, GPSConfig& gps, WiFiConfig& wifi,
-                         BLEConfig& ble, MLConfig& ml) {
-    gps.enabled        = b.gpsEnabled != 0;
-    gps.source         = static_cast<GPSSource>(b.gpsSource);
-    gps.rxPin          = b.gpsRxPin;
-    gps.txPin          = b.gpsTxPin;
-    gps.baudRate       = b.gpsBaudRate;
-    gps.updateInterval = b.gpsUpdateInterval;
-    gps.sleepTimeMs    = b.gpsSleepTimeMs;
-    gps.powerSave      = b.gpsPowerSave != 0;
-    gps.timezoneOffset = b.gpsTimezoneOffset;
-
-    // Auto-set pins based on source (same as JSON loader)
-    if (gps.source == GPSSource::CAP_LORA) {
-        gps.rxPin = 15; gps.txPin = 13;
-    } else if (gps.source == GPSSource::GROVE) {
-        gps.rxPin = 1;  gps.txPin = 2;
-    }
-
-    wifi.channelHopInterval   = b.channelHopInterval;
-    wifi.spectrumHopInterval  = b.spectrumHopInterval;
-    wifi.lockTime             = b.lockTime;
-    wifi.enableDeauth         = b.enableDeauth != 0;
-    wifi.randomizeMAC         = b.randomizeMAC != 0;
-    wifi.spectrumMinRssi      = b.spectrumMinRssi;
-    wifi.attackMinRssi        = b.attackMinRssi;
-    wifi.spectrumTopN         = b.spectrumTopN;
-    wifi.spectrumStaleMs      = b.spectrumStaleMs;
-    wifi.spectrumCollapseSsid = b.spectrumCollapseSsid != 0;
-    wifi.spectrumTiltEnabled  = b.spectrumTiltEnabled != 0;
-    strncpy(wifi.otaSSID,       b.otaSSID,       sizeof(wifi.otaSSID) - 1);
-    wifi.otaSSID[sizeof(wifi.otaSSID) - 1] = '\0';
-    strncpy(wifi.otaPassword,   b.otaPassword,   sizeof(wifi.otaPassword) - 1);
-    wifi.otaPassword[sizeof(wifi.otaPassword) - 1] = '\0';
-    wifi.autoConnect = b.autoConnect != 0;
-    strncpy(wifi.wpaSecKey,     b.wpaSecKey,     sizeof(wifi.wpaSecKey) - 1);
-    wifi.wpaSecKey[sizeof(wifi.wpaSecKey) - 1] = '\0';
-    strncpy(wifi.wigleApiName,  b.wigleApiName,  sizeof(wifi.wigleApiName) - 1);
-    wifi.wigleApiName[sizeof(wifi.wigleApiName) - 1] = '\0';
-    strncpy(wifi.wigleApiToken, b.wigleApiToken, sizeof(wifi.wigleApiToken) - 1);
-    wifi.wigleApiToken[sizeof(wifi.wigleApiToken) - 1] = '\0';
-
-    ble.burstInterval = b.burstInterval;
-    ble.advDuration   = b.advDuration;
-
-    ml.enabled              = b.mlEnabled != 0;
-    ml.collectionMode       = static_cast<MLCollectionMode>(b.mlCollectionMode);
-    strncpy(ml.modelPath, b.mlModelPath, sizeof(ml.modelPath) - 1);
-    ml.modelPath[sizeof(ml.modelPath) - 1] = '\0';
-    ml.confidenceThreshold  = b.mlConfidenceThreshold;
-    ml.rogueApThreshold     = b.mlRogueApThreshold;
-    ml.vulnScorerThreshold  = b.mlVulnScorerThreshold;
-    ml.autoUpdate           = b.mlAutoUpdate != 0;
-    strncpy(ml.updateUrl, b.mlUpdateUrl, sizeof(ml.updateUrl) - 1);
-    ml.updateUrl[sizeof(ml.updateUrl) - 1] = '\0';
-}
-
-static uint16_t clampU16(uint32_t value, uint16_t minVal, uint16_t maxVal) {
-    if (value < minVal) return minVal;
-    if (value > maxVal) return maxVal;
-    return static_cast<uint16_t>(value);
-}
-
-static int8_t clampI8(int value, int8_t minVal, int8_t maxVal) {
-    if (value < minVal) return minVal;
-    if (value > maxVal) return maxVal;
-    return static_cast<int8_t>(value);
-}
-
-static void sanitizeWiFiConfig(WiFiConfig& cfg) {
-    cfg.channelHopInterval = clampU16(cfg.channelHopInterval, 50, 2000);
-    cfg.spectrumHopInterval = clampU16(cfg.spectrumHopInterval, 50, 2000);
-    cfg.spectrumMinRssi = clampI8(cfg.spectrumMinRssi, -95, -30);
-    cfg.attackMinRssi = clampI8(cfg.attackMinRssi, -90, -50);
-    if (cfg.spectrumTopN > 100) cfg.spectrumTopN = 100;
-    cfg.spectrumStaleMs = clampU16(cfg.spectrumStaleMs, 1000, 20000);
-}
-
-static void ensureSdSpiReady() {
-    // Re-init SD SPI bus cleanly
-    if (sdSpiBegun) {
-        sdSPI.end();
-        sdSpiBegun = false;
-        delay(20);
-    }
-
-    // Make sure CS is a sane GPIO output and deasserted before touching the bus.
-    // This prevents random Select Failed errors on some cards.
-    pinMode(SD_CS_PIN, OUTPUT);
-    digitalWrite(SD_CS_PIN, HIGH);
-
-    // SCK, MISO, MOSI, SS/CS
-    sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
-    sdSpiBegun = true;
-    delay(20);
-}
-
-bool Config::init() {
-    // Initialize SPIFFS first (always available)
-    if (!SPIFFS.begin(false)) {
-        Serial.println("[CONFIG] SPIFFS mount failed, attempting format...");
-        if (!SPIFFS.begin(true)) {
-            Serial.println("[CONFIG] SPIFFS format failed! Personality settings will not persist.");
-        } else {
-            Serial.println("[CONFIG] SPIFFS formatted and mounted OK");
-        }
-    }
-
-    // Allow buses to stabilize after M5.begin()
-    delay(50);
-
-    // Ensure SD has a proper SPI bus configured
-    ensureSdSpiReady();
-
-    // Retry with progressive SPI speeds for reliability
-    sdAvailable = false;
-    const int maxRetries = 6;
-    const uint32_t speeds[] = {
-        25000000, // 25 MHz
-        20000000, // 20 MHz
-        10000000, // 10 MHz
-        8000000,  // 8 MHz
-        4000000,  // 4 MHz
-        1000000   // 1 MHz
-    };
-
-    for (int attempt = 0; attempt < maxRetries && !sdAvailable; attempt++) {
-        uint32_t speed = speeds[attempt];
-        Serial.printf("[CONFIG] SD init attempt %d/%d at %luMHz\n",
-                      attempt + 1, maxRetries, speed / 1000000);
-
-        if (attempt > 0) {
-            SD.end();     // Clean up previous failed attempt
-            delay(80);    // Allow bus to settle
-            ensureSdSpiReady();
-        }
-
-        // Use explicit CS + dedicated SPI + explicit speed
-        if (SD.begin(SD_CS_PIN, sdSPI, speed)) {
-            Serial.printf("[CONFIG] SD card mounted at %luMHz\n", speed / 1000000);
-            sdAvailable = true;
-        }
-    }
-
-    if (!sdAvailable) {
-        SDLayout::setUseNewLayout(false);
-        Serial.println("[CONFIG] SD card init failed after retries, using SPIFFS");
-    } else {
-        SDLayout::migrateIfNeeded();
-        SDLayout::ensureDirs();
-        SDLog::log("CFG", "SD card mounted OK");
-    }
-
-    // Load personality from SPIFFS (always available)
-    if (!loadPersonality()) {
-        Serial.println("[CONFIG] Creating default personality");
-        createDefaultPersonality();
-        savePersonalityToSPIFFS();
-    }
-
-    // Load main config: SD primary, SPIFFS fallback
-    Serial.printf("[CONFIG] Pre-load state: sdAvailable=%d, newLayout=%d\n",
-                  sdAvailable, SDLayout::usingNewLayout());
-    if (!load()) {
-        Serial.println("[CONFIG] Creating default config");
-        createDefaultConfig();
-        save();
-    }
-
-    // Try to load keys from files (auto-deletes after import)
-    if (loadWpaSecKeyFromFile()) {
-        Serial.println("[CONFIG] WPA-SEC key loaded from file");
-    }
-    if (loadWigleKeyFromFile()) {
-        Serial.println("[CONFIG] WiGLE API keys loaded from file");
-    }
-
-    // Merge creds from JSON porkchop.conf if present (handles the case where
-    // binary config already exists but user dropped a new .conf with creds)
-    if (importCredsFromJsonConf()) {
-        Serial.println("[CONFIG] Credentials imported from porkchop.conf");
-    }
-
-    initialized = true;
-    return true;
-}
-
-bool Config::isSDAvailable() {
-    return sdAvailable;
-}
-
-void Config::prepareSDBus() {
-    ensureSdSpiReady();
-}
-
-SPIClass& Config::sdSpi() {
-    return sdSPI;
-}
-
-int Config::sdCsPin() {
-    return SD_CS_PIN;
-}
-
-void Config::prepareCapLoraGpio() {
-    // GPIO 13 is ESP32-S3 default FSPIQ (MISO) via IOMUX. Even though SD remaps
-    // FSPI MISO to G39, the default IOMUX linkage on G13 can disrupt the FSPI
-    // peripheral when Serial2 reconfigures G13 as UART TX output.
-    // gpio_reset_pin() clears IOMUX function, disconnects peripheral signals,
-    // and returns the pin to plain GPIO mode.
-    gpio_reset_pin(static_cast<gpio_num_t>(CapLoraPins::GPS_TX));   // G13
-
-    // Reset SX1262 LoRa chip to known state. The CapLoRa868 LoRa SPI shares
-    // MOSI(G14)/MISO(G39)/SCK(G40) with SD card. After reset the SX1262
-    // enters STANDBY_RC with all IOs high-impedance, preventing bus contention.
-    pinMode(CapLoraPins::LORA_RESET, OUTPUT);
-    digitalWrite(CapLoraPins::LORA_RESET, LOW);   // Assert NRESET (active low)
-    delay(10);                                      // SX1262 datasheet: >100us
-    digitalWrite(CapLoraPins::LORA_RESET, HIGH);   // Release reset
-    delay(10);                                      // Wait for standby entry
-
-    // Deassert LoRa chip select (HIGH = not selected, MISO tri-stated)
-    pinMode(CapLoraPins::LORA_CS, OUTPUT);
-    digitalWrite(CapLoraPins::LORA_CS, HIGH);
-
-    // Configure control pins as inputs (don't drive)
-    pinMode(CapLoraPins::LORA_BUSY, INPUT);
-    pinMode(CapLoraPins::LORA_DIO1, INPUT);
-
-    Serial.println("[CONFIG] CapLoRa868: SX1262 reset, CS deasserted, G13 IOMUX cleared");
-}
-
-bool Config::reinitSD() {
-    // Quick check: SD still accessible? Skip destructive reinit if so.
-    if (sdAvailable && SD.exists("/")) {
-        Serial.println("[CONFIG] SD still accessible after GPS init, skipping reinit");
-        return true;
-    }
-
-    Serial.println("[CONFIG] SD access lost, attempting re-initialization...");
-
-    // Save current state to restore on failure
-    bool wasSdAvailable = sdAvailable;
-    bool wasNewLayout = SDLayout::usingNewLayout();
-
-    // Clean up any existing SD state
-    SD.end();
-    delay(80);
-
-    // Re-init SD SPI bus explicitly
-    ensureSdSpiReady();
-
-    // Retry with progressive SPI speeds
-    sdAvailable = false;
-    const int maxRetries = 6;
-    const uint32_t speeds[] = {
-        25000000,
-        20000000,
-        10000000,
-        8000000,
-        4000000,
-        1000000
-    };
-
-    for (int attempt = 0; attempt < maxRetries && !sdAvailable; attempt++) {
-        uint32_t speed = speeds[attempt];
-        Serial.printf("[CONFIG] SD reinit attempt %d/%d at %luMHz\n",
-                      attempt + 1, maxRetries, speed / 1000000);
-
-        if (attempt > 0) {
-            SD.end();
-            delay(80);
-            ensureSdSpiReady();
-        }
-
-        if (SD.begin(SD_CS_PIN, sdSPI, speed)) {
-            Serial.printf("[CONFIG] SD card mounted at %luMHz\n", speed / 1000000);
-            sdAvailable = true;
-        }
-    }
-
-    if (sdAvailable) {
-        // Success: verify layout by checking marker directly (no full migration)
-        if (SD.exists(SDLayout::migrationMarkerPath())) {
-            SDLayout::setUseNewLayout(true);
-        } else if (wasNewLayout) {
-            // Marker unreadable but we were using new layout — keep it
-            SDLayout::setUseNewLayout(true);
-        }
-        SDLayout::ensureDirs();
-        SDLog::log("CFG", "SD card re-initialized OK");
-    } else {
-        // FAIL: Restore previous state — don't corrupt flags
-        sdAvailable = wasSdAvailable;
-        SDLayout::setUseNewLayout(wasNewLayout);
-        Serial.println("[CONFIG] SD reinit failed, keeping previous SD state");
-    }
-
-    return sdAvailable;
-}
-
-bool Config::loadFrom(fs::FS& fs, const char* path) {
-    File file = fs.open(path, FILE_READ);
-    if (!file) return false;
-
-    size_t fileSize = file.size();
-    Serial.printf("[CONFIG] loadFrom(): '%s' size=%u bytes\n", path, fileSize);
-    if (fileSize == 0) { file.close(); return false; }
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, file);
-    file.close();
-
-    if (err) {
-        Serial.printf("[CONFIG] loadFrom(): JSON error: %s ('%s')\n", err.c_str(), path);
-        return false;
-    }
-
-    // Populate config from parsed JSON — shared with load()
-    return applyJson(doc);
-}
-
-bool Config::applyJson(const JsonDocument& doc) {
-    // GPS config
-    if (doc["gps"].is<JsonObject>()) {
-        gpsConfig.enabled = doc["gps"]["enabled"] | true;
-        gpsConfig.source = static_cast<GPSSource>(doc["gps"]["gpsSource"] | 0);
-
-        // Auto-set pins based on source, or load custom pins
-        if (gpsConfig.source == GPSSource::CAP_LORA) {
-            gpsConfig.rxPin = 15;  // Cap LoRa868 GPS RX
-            gpsConfig.txPin = 13;  // Cap LoRa868 GPS TX
-        } else if (gpsConfig.source == GPSSource::GROVE) {
-            gpsConfig.rxPin = 1;   // Grove GPS RX
-            gpsConfig.txPin = 2;   // Grove GPS TX
-        } else {
-            // CUSTOM: load pins from config
-            gpsConfig.rxPin = doc["gps"]["rxPin"] | 1;
-            gpsConfig.txPin = doc["gps"]["txPin"] | 2;
-        }
-
-        gpsConfig.baudRate = doc["gps"]["baudRate"] | 115200;
-        gpsConfig.updateInterval = doc["gps"]["updateInterval"] | 5;
-        gpsConfig.sleepTimeMs = doc["gps"]["sleepTimeMs"] | 5000;
-        gpsConfig.powerSave = doc["gps"]["powerSave"] | true;
-        gpsConfig.timezoneOffset = doc["gps"]["timezoneOffset"] | 0;
-    }
-
-    // ML config
-    if (doc["ml"].is<JsonObject>()) {
-        mlConfig.enabled = doc["ml"]["enabled"] | true;
-        mlConfig.collectionMode = static_cast<MLCollectionMode>(doc["ml"]["collectionMode"] | 0);
-        const char* mp = doc["ml"]["modelPath"] | "/m5porkchop/models/porkchop_model.bin";
-        strncpy(mlConfig.modelPath, mp, sizeof(mlConfig.modelPath) - 1);
-        mlConfig.modelPath[sizeof(mlConfig.modelPath) - 1] = '\0';
-        if (sdAvailable && SDLayout::usingNewLayout()) {
-            if (strncmp(mlConfig.modelPath, "/models/", 8) == 0) {
-                char tmp[64];
-                snprintf(tmp, sizeof(tmp), "%s%s", SDLayout::modelsDir(), mlConfig.modelPath + 7);
-                strncpy(mlConfig.modelPath, tmp, sizeof(mlConfig.modelPath) - 1);
-                mlConfig.modelPath[sizeof(mlConfig.modelPath) - 1] = '\0';
-            }
-        }
-        mlConfig.confidenceThreshold = doc["ml"]["confidenceThreshold"] | 0.7f;
-        mlConfig.rogueApThreshold = doc["ml"]["rogueApThreshold"] | 0.8f;
-        mlConfig.vulnScorerThreshold = doc["ml"]["vulnScorerThreshold"] | 0.6f;
-        mlConfig.autoUpdate = doc["ml"]["autoUpdate"] | false;
-        const char* uu = doc["ml"]["updateUrl"] | "";
-        strncpy(mlConfig.updateUrl, uu, sizeof(mlConfig.updateUrl) - 1);
-        mlConfig.updateUrl[sizeof(mlConfig.updateUrl) - 1] = '\0';
-    }
-
-    // WiFi config
-    if (doc["wifi"].is<JsonObject>()) {
-        int hopInterval = doc["wifi"]["channelHopInterval"] | 150;
-        wifiConfig.channelHopInterval = clampU16(hopInterval, 50, 2000);
-        int spectrumHop = doc["wifi"]["spectrumHopInterval"] | 150;
-        wifiConfig.spectrumHopInterval = clampU16(spectrumHop, 50, 2000);
-        wifiConfig.lockTime = doc["wifi"]["lockTime"] | 12000;
-        wifiConfig.enableDeauth = doc["wifi"]["enableDeauth"] | true;
-        wifiConfig.randomizeMAC = doc["wifi"]["randomizeMAC"] | true;
-        int attackRssi = doc["wifi"]["attackMinRssi"] | -70;
-        wifiConfig.attackMinRssi = clampI8(attackRssi, -90, -50);
-        int minRssi = doc["wifi"]["spectrumMinRssi"] | -95;
-        wifiConfig.spectrumMinRssi = clampI8(minRssi, -95, -30);
-        int topN = doc["wifi"]["spectrumTopN"] | 0;
-        if (topN < 0) topN = 0;
-        if (topN > 100) topN = 100;
-        wifiConfig.spectrumTopN = static_cast<uint8_t>(topN);
-        int staleMs = doc["wifi"]["spectrumStaleMs"] | 5000;
-        wifiConfig.spectrumStaleMs = clampU16(staleMs, 1000, 20000);
-        wifiConfig.spectrumCollapseSsid = doc["wifi"]["spectrumCollapseSsid"] | false;
-        wifiConfig.spectrumTiltEnabled = doc["wifi"]["spectrumTiltEnabled"] | true;
-        const char* ssid = doc["wifi"]["otaSSID"] | "";
-        strncpy(wifiConfig.otaSSID, ssid, sizeof(wifiConfig.otaSSID) - 1);
-        wifiConfig.otaSSID[sizeof(wifiConfig.otaSSID) - 1] = '\0';
-        const char* password = doc["wifi"]["otaPassword"] | "";
-        strncpy(wifiConfig.otaPassword, password, sizeof(wifiConfig.otaPassword) - 1);
-        wifiConfig.otaPassword[sizeof(wifiConfig.otaPassword) - 1] = '\0';
-        wifiConfig.autoConnect = doc["wifi"]["autoConnect"] | false;
-        const char* key = doc["wifi"]["wpaSecKey"] | "";
-        strncpy(wifiConfig.wpaSecKey, key, sizeof(wifiConfig.wpaSecKey) - 1);
-        wifiConfig.wpaSecKey[sizeof(wifiConfig.wpaSecKey) - 1] = '\0';
-        const char* apiName = doc["wifi"]["wigleApiName"] | "";
-        strncpy(wifiConfig.wigleApiName, apiName, sizeof(wifiConfig.wigleApiName) - 1);
-        wifiConfig.wigleApiName[sizeof(wifiConfig.wigleApiName) - 1] = '\0';
-        const char* apiToken = doc["wifi"]["wigleApiToken"] | "";
-        strncpy(wifiConfig.wigleApiToken, apiToken, sizeof(wifiConfig.wigleApiToken) - 1);
-        wifiConfig.wigleApiToken[sizeof(wifiConfig.wigleApiToken) - 1] = '\0';
-    }
-    sanitizeWiFiConfig(wifiConfig);
-
-    // BLE config (PIGGY BLUES)
-    if (doc["ble"].is<JsonObject>()) {
-        bleConfig.burstInterval = doc["ble"]["burstInterval"] | 200;
-        bleConfig.advDuration = doc["ble"]["advDuration"] | 100;
-    }
-
-    Serial.printf("[CONFIG] Loaded OK: wpaKey=%s, wigleName=%s, wigleToken=%s, otaSSID=%s, deauth=%d, gps=%d\n",
-                  strlen(wifiConfig.wpaSecKey) > 0 ? "(SET)" : "(EMPTY)",
-                  strlen(wifiConfig.wigleApiName) > 0 ? "(SET)" : "(EMPTY)",
-                  strlen(wifiConfig.wigleApiToken) > 0 ? "(SET)" : "(EMPTY)",
-                  strlen(wifiConfig.otaSSID) > 0 ? wifiConfig.otaSSID : "(EMPTY)",
-                  wifiConfig.enableDeauth,
-                  static_cast<int>(gpsConfig.source));
-    return true;
-}
-
-bool Config::load() {
-    Serial.printf("[CONFIG] load(): sdAvail=%d, newLayout=%d\n",
-                  sdAvailable, SDLayout::usingNewLayout());
-
-    ConfigBlob blob;
-
-    // 1. Try binary from SD (current layout path)
-    if (sdAvailable && readBlobFrom((fs::FS&)SD, configBinPathSD(), blob)) {
-        extractBlob(blob, gpsConfig, wifiConfig, bleConfig, mlConfig);
-        sanitizeWiFiConfig(wifiConfig);
-        Serial.println("[CONFIG] Loaded binary from SD");
-        // Mirror to SPIFFS
-        writeBlobTo((fs::FS&)SPIFFS, CONFIG_BIN_FILE, blob);
-        return true;
-    }
-
-    // 1b. Try legacy binary path on SD (migration may not have moved porkchop.dat)
-    if (sdAvailable && SDLayout::usingNewLayout()) {
-        if (readBlobFrom((fs::FS&)SD, "/porkchop.dat", blob)) {
-            extractBlob(blob, gpsConfig, wifiConfig, bleConfig, mlConfig);
-            sanitizeWiFiConfig(wifiConfig);
-            Serial.println("[CONFIG] Loaded binary from legacy SD path, migrating...");
-            // Move to new location and mirror to SPIFFS
-            writeBlobTo((fs::FS&)SD, configBinPathSD(), blob);
-            writeBlobTo((fs::FS&)SPIFFS, CONFIG_BIN_FILE, blob);
-            SD.remove("/porkchop.dat");
-            Serial.println("[CONFIG] Migrated porkchop.dat to new layout path");
-            return true;
-        }
-    }
-
-    // 2. Try binary from SPIFFS
-    if (readBlobFrom((fs::FS&)SPIFFS, CONFIG_BIN_FILE, blob)) {
-        extractBlob(blob, gpsConfig, wifiConfig, bleConfig, mlConfig);
-        sanitizeWiFiConfig(wifiConfig);
-        Serial.println("[CONFIG] Loaded binary from SPIFFS");
-        return true;
-    }
-
-    // 3. JSON migration: try SD paths
-    if (sdAvailable) {
-        const char* sdPath = SDLayout::configPathSD();
-        if (loadFrom((fs::FS&)SD, sdPath)) {
-            Serial.printf("[CONFIG] Migrated JSON from SD: '%s'\n", sdPath);
-            save();           // write binary to both SD + SPIFFS
-            SD.remove(sdPath);  // delete old JSON
-            Serial.printf("[CONFIG] Deleted old JSON: '%s'\n", sdPath);
-            return true;
-        }
-        if (SDLayout::usingNewLayout()) {
-            const char* legacyPath = SDLayout::legacyConfigPath();
-            if (loadFrom((fs::FS&)SD, legacyPath)) {
-                Serial.printf("[CONFIG] Migrated JSON from SD legacy: '%s'\n", legacyPath);
-                save();
-                SD.remove(legacyPath);
-                return true;
-            }
-        }
-    }
-
-    // 4. JSON migration: try SPIFFS
-    if (loadFrom((fs::FS&)SPIFFS, CONFIG_FILE)) {
-        Serial.println("[CONFIG] Migrated JSON from SPIFFS");
-        save();                      // write binary
-        SPIFFS.remove(CONFIG_FILE);  // delete old JSON
-        return true;
-    }
-
-    Serial.println("[CONFIG] No config found (binary or JSON)");
-    return false;
-}
-
-bool Config::loadPersonality() {
-    // Load from SPIFFS (always available)
-    File file = SPIFFS.open(PERSONALITY_FILE, FILE_READ);
-    if (!file) {
-        Serial.println("[CONFIG] Personality file not found in SPIFFS");
-        return false;
-    }
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, file);
-    file.close();
-
-    if (err) {
-        Serial.printf("[CONFIG] Personality JSON error: %s\n", err.c_str());
-        return false;
-    }
-
-    const char* name = doc["name"] | "Porkchop";
-    strncpy(personalityConfig.name, name, sizeof(personalityConfig.name) - 1);
-    personalityConfig.name[sizeof(personalityConfig.name) - 1] = '\0';
-
-    const char* callsign = doc["callsign"] | "";
-    strncpy(personalityConfig.callsign, callsign, sizeof(personalityConfig.callsign) - 1);
-    personalityConfig.callsign[sizeof(personalityConfig.callsign) - 1] = '\0';
-
-    personalityConfig.mood = doc["mood"] | 50;
-    personalityConfig.experience = doc["experience"] | 0;
-    personalityConfig.curiosity = doc["curiosity"] | 0.7f;
-    personalityConfig.aggression = doc["aggression"] | 0.3f;
-    personalityConfig.patience = doc["patience"] | 0.5f;
-    personalityConfig.soundEnabled = doc["soundEnabled"] | true;
-    personalityConfig.brightness = doc["brightness"] | 80;
-    personalityConfig.dimLevel = doc["dimLevel"] | 20;
-    personalityConfig.dimTimeout = doc["dimTimeout"] | 30;
-    personalityConfig.themeIndex = doc["themeIndex"] | 0;
-    uint8_t g0Action = doc["g0Action"] | static_cast<uint8_t>(G0Action::SCREEN_TOGGLE);
-    if (g0Action >= G0_ACTION_COUNT) {
-        g0Action = static_cast<uint8_t>(G0Action::SCREEN_TOGGLE);
-    }
-    personalityConfig.g0Action = static_cast<G0Action>(g0Action);
-    uint8_t bootMode = doc["bootMode"] | static_cast<uint8_t>(BootMode::IDLE);
-    if (bootMode >= BOOT_MODE_COUNT) {
-        bootMode = static_cast<uint8_t>(BootMode::IDLE);
-    }
-    personalityConfig.bootMode = static_cast<BootMode>(bootMode);
-
-    Serial.printf("[CONFIG] Personality: %s (mood: %d, sound: %s, bright: %d%%, dim: %ds, theme: %d)\n",
-                  personalityConfig.name,
-                  personalityConfig.mood,
-                  personalityConfig.soundEnabled ? "ON" : "OFF",
-                  personalityConfig.brightness,
-                  personalityConfig.dimTimeout,
-                  personalityConfig.themeIndex);
-    return true;
-}
-
-void Config::savePersonalityToSPIFFS() {
-    JsonDocument doc;
-    doc["name"] = personalityConfig.name;
-    doc["callsign"] = personalityConfig.callsign;
-    doc["mood"] = personalityConfig.mood;
-    doc["experience"] = personalityConfig.experience;
-    doc["curiosity"] = personalityConfig.curiosity;
-    doc["aggression"] = personalityConfig.aggression;
-    doc["patience"] = personalityConfig.patience;
-    doc["soundEnabled"] = personalityConfig.soundEnabled;
-    doc["brightness"] = personalityConfig.brightness;
-    doc["dimLevel"] = personalityConfig.dimLevel;
-    doc["dimTimeout"] = personalityConfig.dimTimeout;
-    doc["themeIndex"] = personalityConfig.themeIndex;
-    doc["g0Action"] = static_cast<uint8_t>(personalityConfig.g0Action);
-    doc["bootMode"] = static_cast<uint8_t>(personalityConfig.bootMode);
-
-    File file = SPIFFS.open(PERSONALITY_FILE, FILE_WRITE);
-    if (file) {
-        serializeJsonPretty(doc, file);
-        file.close();
-        Serial.printf("[CONFIG] Saved personality to SPIFFS (sound: %s)\n",
-                      personalityConfig.soundEnabled ? "ON" : "OFF");
-    } else {
-        Serial.println("[CONFIG] Failed to save personality to SPIFFS");
-    }
-}
-
-bool Config::save() {
-    ConfigBlob blob;
-    populateBlob(blob, gpsConfig, wifiConfig, bleConfig, mlConfig);
-
-    Serial.printf("[CONFIG] save(): sdAvail=%d, wpaKey=%s, wigle=%s\n",
-                  sdAvailable,
-                  strlen(wifiConfig.wpaSecKey) > 0 ? "(SET)" : "(EMPTY)",
-                  strlen(wifiConfig.wigleApiName) > 0 ? "(SET)" : "(EMPTY)");
-
-    bool ok = false;
-    if (sdAvailable) {
-        ok = writeBlobTo((fs::FS&)SD, configBinPathSD(), blob);
-    }
-
-    // Always mirror to SPIFFS
-    bool spiffsOk = writeBlobTo((fs::FS&)SPIFFS, CONFIG_BIN_FILE, blob);
-    if (!sdAvailable) ok = spiffsOk;
-
-    return ok;
-}
-
-bool Config::createDefaultConfig() {
-    gpsConfig = GPSConfig();
-    mlConfig = MLConfig();
-    wifiConfig = WiFiConfig();
-    sanitizeWiFiConfig(wifiConfig);
-    bleConfig = BLEConfig();
-    return true;
-}
-
-bool Config::createDefaultPersonality() {
-    strncpy(personalityConfig.name, "Porkchop", sizeof(personalityConfig.name) - 1);
-    personalityConfig.name[sizeof(personalityConfig.name) - 1] = '\0';
-    personalityConfig.mood = 50;
-    personalityConfig.experience = 0;
-    personalityConfig.curiosity = 0.7f;
-    personalityConfig.aggression = 0.3f;
-    personalityConfig.patience = 0.5f;
-    personalityConfig.soundEnabled = true;
-    personalityConfig.g0Action = G0Action::SCREEN_TOGGLE;
-    personalityConfig.bootMode = BootMode::IDLE;
-    return true;
-}
-
-void Config::setGPS(const GPSConfig& cfg) {
-    gpsConfig = cfg;
-    save();
-}
-
-void Config::setML(const MLConfig& cfg) {
-    mlConfig = cfg;
-    save();
-}
-
-void Config::setWiFi(const WiFiConfig& cfg) {
-    wifiConfig = cfg;
-    sanitizeWiFiConfig(wifiConfig);
-    save();
-}
-
-void Config::setBLE(const BLEConfig& cfg) {
-    bleConfig = cfg;
-    save();
-}
-
-void Config::setPersonality(const PersonalityConfig& cfg) {
-    personalityConfig = cfg;
-    savePersonalityToSPIFFS();
-}
-
-bool Config::loadWpaSecKeyFromFile() {
-    const char* keyFile = SDLayout::wpasecKeyPath();
-    const char* legacyKeyFile = SDLayout::legacyWpasecKeyPath();
-
-    if (!sdAvailable) {
-        return false;
-    }
-    if (!SD.exists(keyFile) && SD.exists(legacyKeyFile)) {
-        keyFile = legacyKeyFile;
-    }
-    if (!SD.exists(keyFile)) {
-        return false;
-    }
-
-    File f = SD.open(keyFile, FILE_READ);
-    if (!f) {
-        Serial.println("[CONFIG] Failed to open WPA-SEC key file");
-        return false;
-    }
-
-    char key[64];
-    size_t keyLen = f.readBytesUntil('\n', key, sizeof(key) - 1);
-    key[keyLen] = '\0';
-    f.close();
-    // Trim trailing whitespace
-    while (keyLen > 0 && (key[keyLen - 1] == '\r' || key[keyLen - 1] == ' ')) {
-        key[--keyLen] = '\0';
-    }
-
-    if (keyLen != 32) {
-        Serial.printf("[CONFIG] Invalid WPA-SEC key length: %d (expected 32)\n", (int)keyLen);
-        return false;
-    }
-
-    for (int i = 0; i < 32; i++) {
-        if (!isxdigit(key[i])) {
-            Serial.printf("[CONFIG] Invalid hex char in WPA-SEC key at position %d\n", i);
-            return false;
-        }
-    }
-
-    strncpy(wifiConfig.wpaSecKey, key, sizeof(wifiConfig.wpaSecKey) - 1);
-    wifiConfig.wpaSecKey[sizeof(wifiConfig.wpaSecKey) - 1] = '\0';
-    save();
-
-    if (SD.remove(keyFile)) {
-        Serial.println("[CONFIG] Deleted WPA-SEC key file after import");
-        SDLog::log("CFG", "WPA-SEC key imported from file");
-    } else {
-        Serial.println("[CONFIG] Warning: Could not delete WPA-SEC key file");
-    }
-
-    return true;
-}
-
-bool Config::loadWigleKeyFromFile() {
-    const char* keyFile = SDLayout::wigleKeyPath();
-    const char* legacyKeyFile = SDLayout::legacyWigleKeyPath();
-
-    if (!sdAvailable) {
-        return false;
-    }
-    if (!SD.exists(keyFile) && SD.exists(legacyKeyFile)) {
-        keyFile = legacyKeyFile;
-    }
-    if (!SD.exists(keyFile)) {
-        return false;
-    }
-
-    File f = SD.open(keyFile, FILE_READ);
-    if (!f) {
-        Serial.println("[CONFIG] Failed to open WiGLE key file");
-        return false;
-    }
-
-    char content[160];
-    size_t cLen = f.readBytesUntil('\n', content, sizeof(content) - 1);
-    content[cLen] = '\0';
-    f.close();
-    // Trim trailing whitespace
-    while (cLen > 0 && (content[cLen - 1] == '\r' || content[cLen - 1] == ' ')) {
-        content[--cLen] = '\0';
-    }
-
-    char* colonPos = strchr(content, ':');
-    if (!colonPos || colonPos == content) {
-        Serial.println("[CONFIG] Invalid WiGLE key format (expected name:token)");
-        return false;
-    }
-
-    *colonPos = '\0';  // Split into two strings
-    const char* apiName = content;
-    const char* apiToken = colonPos + 1;
-    // Trim leading spaces from token
-    while (*apiToken == ' ') apiToken++;
-
-    if (apiName[0] == '\0' || apiToken[0] == '\0') {
-        Serial.println("[CONFIG] WiGLE API name or token is empty");
-        return false;
-    }
-
-    // Use strncpy to safely copy strings to char arrays
-    strncpy(wifiConfig.wigleApiName, apiName, sizeof(wifiConfig.wigleApiName) - 1);
-    wifiConfig.wigleApiName[sizeof(wifiConfig.wigleApiName) - 1] = '\0';
-
-    strncpy(wifiConfig.wigleApiToken, apiToken, sizeof(wifiConfig.wigleApiToken) - 1);
-    wifiConfig.wigleApiToken[sizeof(wifiConfig.wigleApiToken) - 1] = '\0';
-    save();
-
-    if (SD.remove(keyFile)) {
-        Serial.println("[CONFIG] Deleted WiGLE key file after import");
-        SDLog::log("CFG", "WiGLE API keys imported from file");
-    } else {
-        Serial.println("[CONFIG] Warning: Could not delete WiGLE key file");
-    }
-
-    return true;
-}
-
-bool Config::importCredsFromJsonConf() {
-    if (!sdAvailable) return false;
-
-    // Check both new and legacy JSON config paths
-    const char* confPath = SDLayout::configPathSD();
-    if (!SD.exists(confPath)) {
-        if (SDLayout::usingNewLayout()) {
-            confPath = SDLayout::legacyConfigPath();
-            if (!SD.exists(confPath)) return false;
-        } else {
-            return false;
-        }
-    }
-
-    File file = SD.open(confPath, FILE_READ);
-    if (!file) return false;
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, file);
-    file.close();
-
-    if (err) {
-        Serial.printf("[CONFIG] importCreds: JSON parse error: %s ('%s')\n", err.c_str(), confPath);
-        return false;
-    }
-
-    if (!doc["wifi"].is<JsonObject>()) {
-        Serial.printf("[CONFIG] importCreds: no 'wifi' object in '%s'\n", confPath);
-        SD.remove(confPath);
-        return false;
-    }
-
-    bool merged = false;
-
-    // Import WPA-SEC key
-    const char* key = doc["wifi"]["wpaSecKey"] | "";
-    if (key[0] != '\0') {
-        strncpy(wifiConfig.wpaSecKey, key, sizeof(wifiConfig.wpaSecKey) - 1);
-        wifiConfig.wpaSecKey[sizeof(wifiConfig.wpaSecKey) - 1] = '\0';
-        Serial.println("[CONFIG] importCreds: WPA-SEC key merged from porkchop.conf");
-        merged = true;
-    }
-
-    // Import WiGLE API name
-    const char* apiName = doc["wifi"]["wigleApiName"] | "";
-    if (apiName[0] != '\0') {
-        strncpy(wifiConfig.wigleApiName, apiName, sizeof(wifiConfig.wigleApiName) - 1);
-        wifiConfig.wigleApiName[sizeof(wifiConfig.wigleApiName) - 1] = '\0';
-        Serial.println("[CONFIG] importCreds: WiGLE API name merged from porkchop.conf");
-        merged = true;
-    }
-
-    // Import WiGLE API token
-    const char* apiToken = doc["wifi"]["wigleApiToken"] | "";
-    if (apiToken[0] != '\0') {
-        strncpy(wifiConfig.wigleApiToken, apiToken, sizeof(wifiConfig.wigleApiToken) - 1);
-        wifiConfig.wigleApiToken[sizeof(wifiConfig.wigleApiToken) - 1] = '\0';
-        Serial.println("[CONFIG] importCreds: WiGLE API token merged from porkchop.conf");
-        merged = true;
-    }
-
-    if (merged) {
-        save();
-        SDLog::log("CFG", "Credentials imported from porkchop.conf");
-    }
-
-    // Delete the JSON conf after import (same pattern as key files)
-    if (SD.remove(confPath)) {
-        Serial.printf("[CONFIG] importCreds: deleted '%s' after import\n", confPath);
-    }
-
-    return merged;
-}
+1|// src/core/config.cpp
+2|// Configuration management implementation
+3|
+4|#include "config.h"
+5|#include "sdlog.h"
+6|#include "sd_layout.h"
+7|// No M5Cardputer on ESP32-S3 Mini
+8|#include <SD.h>
+9|#include <SPIFFS.h>
+10|#include <SPI.h>
+11|#include <driver/gpio.h>
+12|
+13|// ---- Cardputer microSD wiring (explicit, per Cardputer v1.1 schematic) ----
+14|// ESP32-S3FN8:
+15|//   microSD Socket  CS   MOSI  CLK   MISO
+16|//                  G12  G14   G40   G39
+17|//
+18|// (Your previous patch used ESP32 “classic” pins + CS=4, which breaks SD on Cardputer/StampS3.)
+19|static constexpr int SD_CS_PIN   = 12;  // CS
+20|static constexpr int SD_MOSI_PIN = 14;  // MOSI
+21|static constexpr int SD_MISO_PIN = 39;  // MISO
+22|static constexpr int SD_SCK_PIN  = 40;  // SCK/CLK
+23|
+24|// Dedicated SPI bus instance for SD.
+25|// Cardputer microSD pinmap (from M5 docs): CS=12 MOSI=14 CLK=40 MISO=39.
+26|// In practice, Arduino-ESP32/PlatformIO combos vary; using FSPI with explicit
+27|// pins is the most reliable on Cardputer builds.
+28|static SPIClass sdSPI(FSPI);
+29|static bool sdSpiBegun = false;
+30|
+31|// Static member initialization
+32|GPSConfig Config::gpsConfig;
+33|MLConfig Config::mlConfig;
+34|WiFiConfig Config::wifiConfig;
+35|BLEConfig Config::bleConfig;
+36|PersonalityConfig Config::personalityConfig;
+37|bool Config::initialized = false;
+38|static bool sdAvailable = false;
+39|
+40|// ---- Binary config blob (zero heap allocation) ----
+41|static constexpr uint32_t CONFIG_MAGIC   = 0x504F524B;  // 'PORK'
+42|static constexpr uint16_t CONFIG_VERSION = 1;
+43|#define CONFIG_BIN_FILE "/porkchop.dat"
+44|
+45|static const char* configBinPathSD() {
+46|    return SDLayout::usingNewLayout()
+47|        ? "/m5porkchop/config/porkchop.dat"
+48|        : "/porkchop.dat";
+49|}
+50|
+51|struct __attribute__((packed)) ConfigBlob {
+52|    uint32_t magic;
+53|    uint16_t version;
+54|    uint16_t blobSize;
+55|
+56|    // GPS
+57|    uint8_t  gpsEnabled;
+58|    uint8_t  gpsSource;
+59|    uint8_t  gpsRxPin;
+60|    uint8_t  gpsTxPin;
+61|    uint32_t gpsBaudRate;
+62|    uint16_t gpsUpdateInterval;
+63|    uint16_t gpsSleepTimeMs;
+64|    uint8_t  gpsPowerSave;
+65|    int8_t   gpsTimezoneOffset;
+66|
+67|    // WiFi
+68|    uint16_t channelHopInterval;
+69|    uint16_t spectrumHopInterval;
+70|    uint16_t lockTime;
+71|    uint8_t  enableDeauth;
+72|    uint8_t  randomizeMAC;
+73|    int8_t   spectrumMinRssi;
+74|    int8_t   attackMinRssi;
+75|    uint8_t  spectrumTopN;
+76|    uint16_t spectrumStaleMs;
+77|    uint8_t  spectrumCollapseSsid;
+78|    uint8_t  spectrumTiltEnabled;
+79|    char     otaSSID[33];
+80|    char     otaPassword[65];
+81|    uint8_t  autoConnect;
+82|    char     wpaSecKey[33];
+83|    char     wigleApiName[65];
+84|    char     wigleApiToken[65];
+85|
+86|    // BLE
+87|    uint16_t burstInterval;
+88|    uint16_t advDuration;
+89|
+90|    // ML (disabled but preserved for future)
+91|    uint8_t  mlEnabled;
+92|    uint8_t  mlCollectionMode;
+93|    char     mlModelPath[64];
+94|    float    mlConfidenceThreshold;
+95|    float    mlRogueApThreshold;
+96|    float    mlVulnScorerThreshold;
+97|    uint8_t  mlAutoUpdate;
+98|    char     mlUpdateUrl[128];
+99|};
+100|
+101|static void populateBlob(ConfigBlob& b, const GPSConfig& gps, const WiFiConfig& wifi,
+102|                          const BLEConfig& ble, const MLConfig& ml) {
+103|    memset(&b, 0, sizeof(b));
+104|    b.magic    = CONFIG_MAGIC;
+105|    b.version  = CONFIG_VERSION;
+106|    b.blobSize = sizeof(ConfigBlob);
+107|
+108|    b.gpsEnabled        = gps.enabled ? 1 : 0;
+109|    b.gpsSource         = static_cast<uint8_t>(gps.source);
+110|    b.gpsRxPin          = gps.rxPin;
+111|    b.gpsTxPin          = gps.txPin;
+112|    b.gpsBaudRate       = gps.baudRate;
+113|    b.gpsUpdateInterval = gps.updateInterval;
+114|    b.gpsSleepTimeMs    = gps.sleepTimeMs;
+115|    b.gpsPowerSave      = gps.powerSave ? 1 : 0;
+116|    b.gpsTimezoneOffset = gps.timezoneOffset;
+117|
+118|    b.channelHopInterval   = wifi.channelHopInterval;
+119|    b.spectrumHopInterval  = wifi.spectrumHopInterval;
+120|    b.lockTime             = wifi.lockTime;
+121|    b.enableDeauth         = wifi.enableDeauth ? 1 : 0;
+122|    b.randomizeMAC         = wifi.randomizeMAC ? 1 : 0;
+123|    b.spectrumMinRssi      = wifi.spectrumMinRssi;
+124|    b.attackMinRssi        = wifi.attackMinRssi;
+125|    b.spectrumTopN         = wifi.spectrumTopN;
+126|    b.spectrumStaleMs      = wifi.spectrumStaleMs;
+127|    b.spectrumCollapseSsid = wifi.spectrumCollapseSsid ? 1 : 0;
+128|    b.spectrumTiltEnabled  = wifi.spectrumTiltEnabled ? 1 : 0;
+129|    strncpy(b.otaSSID,       wifi.otaSSID,       sizeof(b.otaSSID) - 1);
+130|    strncpy(b.otaPassword,   wifi.otaPassword,   sizeof(b.otaPassword) - 1);
+131|    b.autoConnect = wifi.autoConnect ? 1 : 0;
+132|    strncpy(b.wpaSecKey,     wifi.wpaSecKey,     sizeof(b.wpaSecKey) - 1);
+133|    strncpy(b.wigleApiName,  wifi.wigleApiName,  sizeof(b.wigleApiName) - 1);
+134|    strncpy(b.wigleApiToken, wifi.wigleApiToken, sizeof(b.wigleApiToken) - 1);
+135|
+136|    b.burstInterval = ble.burstInterval;
+137|    b.advDuration   = ble.advDuration;
+138|
+139|    b.mlEnabled              = ml.enabled ? 1 : 0;
+140|    b.mlCollectionMode       = static_cast<uint8_t>(ml.collectionMode);
+141|    strncpy(b.mlModelPath, ml.modelPath, sizeof(b.mlModelPath) - 1);
+142|    b.mlConfidenceThreshold  = ml.confidenceThreshold;
+143|    b.mlRogueApThreshold     = ml.rogueApThreshold;
+144|    b.mlVulnScorerThreshold  = ml.vulnScorerThreshold;
+145|    b.mlAutoUpdate           = ml.autoUpdate ? 1 : 0;
+146|    strncpy(b.mlUpdateUrl, ml.updateUrl, sizeof(b.mlUpdateUrl) - 1);
+147|}
+148|
+149|static bool writeBlobTo(fs::FS& fs, const char* path, const ConfigBlob& b) {
+150|    File file = fs.open(path, FILE_WRITE);
+151|    if (!file) {
+152|        Serial.printf("[CONFIG] writeBlobTo: failed to open '%s'\n", path);
+153|        return false;
+154|    }
+155|    size_t written = file.write((const uint8_t*)&b, sizeof(b));
+156|    file.close();
+157|    Serial.printf("[CONFIG] writeBlobTo: %u/%u bytes -> '%s'\n",
+158|                  written, sizeof(b), path);
+159|    return written == sizeof(b);
+160|}
+161|
+162|static bool readBlobFrom(fs::FS& fs, const char* path, ConfigBlob& b) {
+163|    File file = fs.open(path, FILE_READ);
+164|    if (!file) return false;
+165|
+166|    size_t fileSize = file.size();
+167|    if (fileSize < 8) { file.close(); return false; }  // too small for header
+168|
+169|    size_t readSize = (fileSize < sizeof(b)) ? fileSize : sizeof(b);
+170|    memset(&b, 0, sizeof(b));
+171|    size_t got = file.read((uint8_t*)&b, readSize);
+172|    file.close();
+173|
+174|    if (got < 8 || b.magic != CONFIG_MAGIC) return false;
+175|    Serial.printf("[CONFIG] readBlobFrom: '%s' v%u, %u bytes\n", path, b.version, got);
+176|    return true;
+177|}
+178|
+179|static void extractBlob(const ConfigBlob& b, GPSConfig& gps, WiFiConfig& wifi,
+180|                         BLEConfig& ble, MLConfig& ml) {
+181|    gps.enabled        = b.gpsEnabled != 0;
+182|    gps.source         = static_cast<GPSSource>(b.gpsSource);
+183|    gps.rxPin          = b.gpsRxPin;
+184|    gps.txPin          = b.gpsTxPin;
+185|    gps.baudRate       = b.gpsBaudRate;
+186|    gps.updateInterval = b.gpsUpdateInterval;
+187|    gps.sleepTimeMs    = b.gpsSleepTimeMs;
+188|    gps.powerSave      = b.gpsPowerSave != 0;
+189|    gps.timezoneOffset = b.gpsTimezoneOffset;
+190|
+191|    // Auto-set pins based on source (same as JSON loader)
+192|    if (gps.source == GPSSource::CAP_LORA) {
+193|        gps.rxPin = 15; gps.txPin = 13;
+194|    } else if (gps.source == GPSSource::GROVE) {
+195|        gps.rxPin = 1;  gps.txPin = 2;
+196|    }
+197|
+198|    wifi.channelHopInterval   = b.channelHopInterval;
+199|    wifi.spectrumHopInterval  = b.spectrumHopInterval;
+200|    wifi.lockTime             = b.lockTime;
+201|    wifi.enableDeauth         = b.enableDeauth != 0;
+202|    wifi.randomizeMAC         = b.randomizeMAC != 0;
+203|    wifi.spectrumMinRssi      = b.spectrumMinRssi;
+204|    wifi.attackMinRssi        = b.attackMinRssi;
+205|    wifi.spectrumTopN         = b.spectrumTopN;
+206|    wifi.spectrumStaleMs      = b.spectrumStaleMs;
+207|    wifi.spectrumCollapseSsid = b.spectrumCollapseSsid != 0;
+208|    wifi.spectrumTiltEnabled  = b.spectrumTiltEnabled != 0;
+209|    strncpy(wifi.otaSSID,       b.otaSSID,       sizeof(wifi.otaSSID) - 1);
+210|    wifi.otaSSID[sizeof(wifi.otaSSID) - 1] = '\0';
+211|    strncpy(wifi.otaPassword,   b.otaPassword,   sizeof(wifi.otaPassword) - 1);
+212|    wifi.otaPassword[sizeof(wifi.otaPassword) - 1] = '\0';
+213|    wifi.autoConnect = b.autoConnect != 0;
+214|    strncpy(wifi.wpaSecKey,     b.wpaSecKey,     sizeof(wifi.wpaSecKey) - 1);
+215|    wifi.wpaSecKey[sizeof(wifi.wpaSecKey) - 1] = '\0';
+216|    strncpy(wifi.wigleApiName,  b.wigleApiName,  sizeof(wifi.wigleApiName) - 1);
+217|    wifi.wigleApiName[sizeof(wifi.wigleApiName) - 1] = '\0';
+218|    strncpy(wifi.wigleApiToken, b.wigleApiToken, sizeof(wifi.wigleApiToken) - 1);
+219|    wifi.wigleApiToken[sizeof(wifi.wigleApiToken) - 1] = '\0';
+220|
+221|    ble.burstInterval = b.burstInterval;
+222|    ble.advDuration   = b.advDuration;
+223|
+224|    ml.enabled              = b.mlEnabled != 0;
+225|    ml.collectionMode       = static_cast<MLCollectionMode>(b.mlCollectionMode);
+226|    strncpy(ml.modelPath, b.mlModelPath, sizeof(ml.modelPath) - 1);
+227|    ml.modelPath[sizeof(ml.modelPath) - 1] = '\0';
+228|    ml.confidenceThreshold  = b.mlConfidenceThreshold;
+229|    ml.rogueApThreshold     = b.mlRogueApThreshold;
+230|    ml.vulnScorerThreshold  = b.mlVulnScorerThreshold;
+231|    ml.autoUpdate           = b.mlAutoUpdate != 0;
+232|    strncpy(ml.updateUrl, b.mlUpdateUrl, sizeof(ml.updateUrl) - 1);
+233|    ml.updateUrl[sizeof(ml.updateUrl) - 1] = '\0';
+234|}
+235|
+236|static uint16_t clampU16(uint32_t value, uint16_t minVal, uint16_t maxVal) {
+237|    if (value < minVal) return minVal;
+238|    if (value > maxVal) return maxVal;
+239|    return static_cast<uint16_t>(value);
+240|}
+241|
+242|static int8_t clampI8(int value, int8_t minVal, int8_t maxVal) {
+243|    if (value < minVal) return minVal;
+244|    if (value > maxVal) return maxVal;
+245|    return static_cast<int8_t>(value);
+246|}
+247|
+248|static void sanitizeWiFiConfig(WiFiConfig& cfg) {
+249|    cfg.channelHopInterval = clampU16(cfg.channelHopInterval, 50, 2000);
+250|    cfg.spectrumHopInterval = clampU16(cfg.spectrumHopInterval, 50, 2000);
+251|    cfg.spectrumMinRssi = clampI8(cfg.spectrumMinRssi, -95, -30);
+252|    cfg.attackMinRssi = clampI8(cfg.attackMinRssi, -90, -50);
+253|    if (cfg.spectrumTopN > 100) cfg.spectrumTopN = 100;
+254|    cfg.spectrumStaleMs = clampU16(cfg.spectrumStaleMs, 1000, 20000);
+255|}
+256|
+257|static void ensureSdSpiReady() {
+258|    // Re-init SD SPI bus cleanly
+259|    if (sdSpiBegun) {
+260|        sdSPI.end();
+261|        sdSpiBegun = false;
+262|        delay(20);
+263|    }
+264|
+265|    // Make sure CS is a sane GPIO output and deasserted before touching the bus.
+266|    // This prevents random Select Failed errors on some cards.
+267|    pinMode(SD_CS_PIN, OUTPUT);
+268|    digitalWrite(SD_CS_PIN, HIGH);
+269|
+270|    // SCK, MISO, MOSI, SS/CS
+271|    sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+272|    sdSpiBegun = true;
+273|    delay(20);
+274|}
+275|
+276|bool Config::init() {
+277|    // Initialize SPIFFS first (always available)
+278|    if (!SPIFFS.begin(false)) {
+279|        Serial.println("[CONFIG] SPIFFS mount failed, attempting format...");
+280|        if (!SPIFFS.begin(true)) {
+281|            Serial.println("[CONFIG] SPIFFS format failed! Personality settings will not persist.");
+282|        } else {
+283|            Serial.println("[CONFIG] SPIFFS formatted and mounted OK");
+284|        }
+285|    }
+286|
+287|    // Allow buses to stabilize after HAL init
+288|    delay(50);
+289|
+290|    // Ensure SD has a proper SPI bus configured
+291|    ensureSdSpiReady();
+292|
+293|    // Retry with progressive SPI speeds for reliability
+294|    sdAvailable = false;
+295|    const int maxRetries = 6;
+296|    const uint32_t speeds[] = {
+297|        25000000, // 25 MHz
+298|        20000000, // 20 MHz
+299|        10000000, // 10 MHz
+300|        8000000,  // 8 MHz
+301|        4000000,  // 4 MHz
+302|        1000000   // 1 MHz
+303|    };
+304|
+305|    for (int attempt = 0; attempt < maxRetries && !sdAvailable; attempt++) {
+306|        uint32_t speed = speeds[attempt];
+307|        Serial.printf("[CONFIG] SD init attempt %d/%d at %luMHz\n",
+308|                      attempt + 1, maxRetries, speed / 1000000);
+309|
+310|        if (attempt > 0) {
+311|            SD.end();     // Clean up previous failed attempt
+312|            delay(80);    // Allow bus to settle
+313|            ensureSdSpiReady();
+314|        }
+315|
+316|        // Use explicit CS + dedicated SPI + explicit speed
+317|        if (SD.begin(SD_CS_PIN, sdSPI, speed)) {
+318|            Serial.printf("[CONFIG] SD card mounted at %luMHz\n", speed / 1000000);
+319|            sdAvailable = true;
+320|        }
+321|    }
+322|
+323|    if (!sdAvailable) {
+324|        SDLayout::setUseNewLayout(false);
+325|        Serial.println("[CONFIG] SD card init failed after retries, using SPIFFS");
+326|    } else {
+327|        SDLayout::migrateIfNeeded();
+328|        SDLayout::ensureDirs();
+329|        SDLog::log("CFG", "SD card mounted OK");
+330|    }
+331|
+332|    // Load personality from SPIFFS (always available)
+333|    if (!loadPersonality()) {
+334|        Serial.println("[CONFIG] Creating default personality");
+335|        createDefaultPersonality();
+336|        savePersonalityToSPIFFS();
+337|    }
+338|
+339|    // Load main config: SD primary, SPIFFS fallback
+340|    Serial.printf("[CONFIG] Pre-load state: sdAvailable=%d, newLayout=%d\n",
+341|                  sdAvailable, SDLayout::usingNewLayout());
+342|    if (!load()) {
+343|        Serial.println("[CONFIG] Creating default config");
+344|        createDefaultConfig();
+345|        save();
+346|    }
+347|
+348|    // Try to load keys from files (auto-deletes after import)
+349|    if (loadWpaSecKeyFromFile()) {
+350|        Serial.println("[CONFIG] WPA-SEC key loaded from file");
+351|    }
+352|    if (loadWigleKeyFromFile()) {
+353|        Serial.println("[CONFIG] WiGLE API keys loaded from file");
+354|    }
+355|
+356|    // Merge creds from JSON porkchop.conf if present (handles the case where
+357|    // binary config already exists but user dropped a new .conf with creds)
+358|    if (importCredsFromJsonConf()) {
+359|        Serial.println("[CONFIG] Credentials imported from porkchop.conf");
+360|    }
+361|
+362|    initialized = true;
+363|    return true;
+364|}
+365|
+366|bool Config::isSDAvailable() {
+367|    return sdAvailable;
+368|}
+369|
+370|void Config::prepareSDBus() {
+371|    ensureSdSpiReady();
+372|}
+373|
+374|SPIClass& Config::sdSpi() {
+375|    return sdSPI;
+376|}
+377|
+378|int Config::sdCsPin() {
+379|    return SD_CS_PIN;
+380|}
+381|
+382|void Config::prepareCapLoraGpio() {
+383|    // GPIO 13 is ESP32-S3 default FSPIQ (MISO) via IOMUX. Even though SD remaps
+384|    // FSPI MISO to G39, the default IOMUX linkage on G13 can disrupt the FSPI
+385|    // peripheral when Serial2 reconfigures G13 as UART TX output.
+386|    // gpio_reset_pin() clears IOMUX function, disconnects peripheral signals,
+387|    // and returns the pin to plain GPIO mode.
+388|    gpio_reset_pin(static_cast<gpio_num_t>(CapLoraPins::GPS_TX));   // G13
+389|
+390|    // Reset SX1262 LoRa chip to known state. The CapLoRa868 LoRa SPI shares
+391|    // MOSI(G14)/MISO(G39)/SCK(G40) with SD card. After reset the SX1262
+392|    // enters STANDBY_RC with all IOs high-impedance, preventing bus contention.
+393|    pinMode(CapLoraPins::LORA_RESET, OUTPUT);
+394|    digitalWrite(CapLoraPins::LORA_RESET, LOW);   // Assert NRESET (active low)
+395|    delay(10);                                      // SX1262 datasheet: >100us
+396|    digitalWrite(CapLoraPins::LORA_RESET, HIGH);   // Release reset
+397|    delay(10);                                      // Wait for standby entry
+398|
+399|    // Deassert LoRa chip select (HIGH = not selected, MISO tri-stated)
+400|    pinMode(CapLoraPins::LORA_CS, OUTPUT);
+401|    digitalWrite(CapLoraPins::LORA_CS, HIGH);
+402|
+403|    // Configure control pins as inputs (don't drive)
+404|    pinMode(CapLoraPins::LORA_BUSY, INPUT);
+405|    pinMode(CapLoraPins::LORA_DIO1, INPUT);
+406|
+407|    Serial.println("[CONFIG] CapLoRa868: SX1262 reset, CS deasserted, G13 IOMUX cleared");
+408|}
+409|
+410|bool Config::reinitSD() {
+411|    // Quick check: SD still accessible? Skip destructive reinit if so.
+412|    if (sdAvailable && SD.exists("/")) {
+413|        Serial.println("[CONFIG] SD still accessible after GPS init, skipping reinit");
+414|        return true;
+415|    }
+416|
+417|    Serial.println("[CONFIG] SD access lost, attempting re-initialization...");
+418|
+419|    // Save current state to restore on failure
+420|    bool wasSdAvailable = sdAvailable;
+421|    bool wasNewLayout = SDLayout::usingNewLayout();
+422|
+423|    // Clean up any existing SD state
+424|    SD.end();
+425|    delay(80);
+426|
+427|    // Re-init SD SPI bus explicitly
+428|    ensureSdSpiReady();
+429|
+430|    // Retry with progressive SPI speeds
+431|    sdAvailable = false;
+432|    const int maxRetries = 6;
+433|    const uint32_t speeds[] = {
+434|        25000000,
+435|        20000000,
+436|        10000000,
+437|        8000000,
+438|        4000000,
+439|        1000000
+440|    };
+441|
+442|    for (int attempt = 0; attempt < maxRetries && !sdAvailable; attempt++) {
+443|        uint32_t speed = speeds[attempt];
+444|        Serial.printf("[CONFIG] SD reinit attempt %d/%d at %luMHz\n",
+445|                      attempt + 1, maxRetries, speed / 1000000);
+446|
+447|        if (attempt > 0) {
+448|            SD.end();
+449|            delay(80);
+450|            ensureSdSpiReady();
+451|        }
+452|
+453|        if (SD.begin(SD_CS_PIN, sdSPI, speed)) {
+454|            Serial.printf("[CONFIG] SD card mounted at %luMHz\n", speed / 1000000);
+455|            sdAvailable = true;
+456|        }
+457|    }
+458|
+459|    if (sdAvailable) {
+460|        // Success: verify layout by checking marker directly (no full migration)
+461|        if (SD.exists(SDLayout::migrationMarkerPath())) {
+462|            SDLayout::setUseNewLayout(true);
+463|        } else if (wasNewLayout) {
+464|            // Marker unreadable but we were using new layout — keep it
+465|            SDLayout::setUseNewLayout(true);
+466|        }
+467|        SDLayout::ensureDirs();
+468|        SDLog::log("CFG", "SD card re-initialized OK");
+469|    } else {
+470|        // FAIL: Restore previous state — don't corrupt flags
+471|        sdAvailable = wasSdAvailable;
+472|        SDLayout::setUseNewLayout(wasNewLayout);
+473|        Serial.println("[CONFIG] SD reinit failed, keeping previous SD state");
+474|    }
+475|
+476|    return sdAvailable;
+477|}
+478|
+479|bool Config::loadFrom(fs::FS& fs, const char* path) {
+480|    File file = fs.open(path, FILE_READ);
+481|    if (!file) return false;
+482|
+483|    size_t fileSize = file.size();
+484|    Serial.printf("[CONFIG] loadFrom(): '%s' size=%u bytes\n", path, fileSize);
+485|    if (fileSize == 0) { file.close(); return false; }
+486|
+487|    JsonDocument doc;
+488|    DeserializationError err = deserializeJson(doc, file);
+489|    file.close();
+490|
+491|    if (err) {
+492|        Serial.printf("[CONFIG] loadFrom(): JSON error: %s ('%s')\n", err.c_str(), path);
+493|        return false;
+494|    }
+495|
+496|    // Populate config from parsed JSON — shared with load()
+497|    return applyJson(doc);
+498|}
+499|
+500|bool Config::applyJson(const JsonDocument& doc) {
+501|

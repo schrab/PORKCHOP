@@ -1,7 +1,7 @@
 // Porkchop core state machine implementation
 
 #include "porkchop.h"
-#include <M5Cardputer.h>
+#include "../hal/hal_input.h"
 #include "../ui/display.h"
 #include "../ui/menu.h"
 #include "../ui/settings_menu.h"
@@ -634,14 +634,14 @@ void Porkchop::handleInput() {
         g0WasPressed = false;
     }
     
-    if (!M5Cardputer.Keyboard.isChange()) return;
+    if (!hal_input_isChange()) return;
     
     // Any keyboard input resets the screen dim timer
     Display::resetDimTimer();
     
-    auto keys = M5Cardputer.Keyboard.keysState();
+    //auto keys = M5Cardputer.Keyboard.keysState();
     // ESC maps to the key above Tab (shares ` / ~)
-    bool escPressed = M5Cardputer.Keyboard.isKeyPressed('`');
+    bool escPressed = hal_input_wasPressed(KEY_ESC);
 
     // ESC to return to IDLE from any active mode
     if (escPressed && currentMode != PorkchopMode::IDLE) {
@@ -676,19 +676,19 @@ void Porkchop::handleInput() {
 
         // Handle device navigation (up/down) - only if devices exist
         if (deviceCount > 0) {
-            if (M5Cardputer.Keyboard.isKeyPressed(';')) {
+            if (hal_input_wasPressed(KEY_UP)) {
                 // Up arrow - select previous device
                 PigSyncMode::selectDevice(PigSyncMode::getSelectedIndex() > 0 ?
                     PigSyncMode::getSelectedIndex() - 1 : deviceCount - 1);
             }
-            if (M5Cardputer.Keyboard.isKeyPressed('.')) {
+            if (hal_input_wasPressed(KEY_DOWN)) {
                 // Down arrow - select next device
                 PigSyncMode::selectDevice((PigSyncMode::getSelectedIndex() + 1) % deviceCount);
             }
         }
 
         // Enter to connect to selected device
-        if (M5Cardputer.Keyboard.isKeyPressed(KEY_ENTER) && PigSyncMode::getDeviceCount() > 0) {
+        if (hal_input_wasPressed(KEY_ENTER) && PigSyncMode::getDeviceCount() > 0) {
             uint8_t selectedIdx = PigSyncMode::getSelectedIndex();
             if (selectedIdx < PigSyncMode::getDeviceCount()) {
                 PigSyncMode::connectTo(selectedIdx);
@@ -696,19 +696,19 @@ void Porkchop::handleInput() {
         }
 
         // A to abort sync (when connected)
-        if (PigSyncMode::isConnected() && M5Cardputer.Keyboard.isKeyPressed('a')) {
+        if (PigSyncMode::isConnected() && hal_input_wasPressed('a')) {
             if (PigSyncMode::isSyncing()) {
                 PigSyncMode::abortSync();
             }
         }
 
         // D to disconnect (when connected)
-        if (PigSyncMode::isConnected() && M5Cardputer.Keyboard.isKeyPressed('d')) {
+        if (PigSyncMode::isConnected() && hal_input_wasPressed('d')) {
             PigSyncMode::disconnect();
         }
 
         // R to rescan (when not connected)
-        if (!PigSyncMode::isConnected() && M5Cardputer.Keyboard.isKeyPressed('r')) {
+        if (!PigSyncMode::isConnected() && hal_input_wasPressed('r')) {
             PigSyncMode::startScan();
         }
 
@@ -717,13 +717,13 @@ void Porkchop::handleInput() {
     
     // Backtick opens menu from IDLE (kept out of back/exit flow)
     if (currentMode == PorkchopMode::IDLE &&
-        M5Cardputer.Keyboard.isKeyPressed('`')) {
+        hal_input_wasPressed(KEY_ESC)) {
         setMode(PorkchopMode::MENU);
         return;
     }
     
     // Screenshot with P key (global, works in any mode)
-    if (M5Cardputer.Keyboard.isKeyPressed('p') || M5Cardputer.Keyboard.isKeyPressed('P')) {
+    if (hal_input_wasPressed('p') || hal_input_wasPressed('P')) {
         if (!Display::isSnapping()) {
             Display::takeScreenshot();
         }
@@ -733,7 +733,7 @@ void Porkchop::handleInput() {
     // T key stress test cycle disabled
     
     // Enter key in About mode - easter egg
-    if (M5Cardputer.Keyboard.isKeyPressed(KEY_ENTER)) {
+    if (hal_input_wasPressed(KEY_ENTER)) {
         if (currentMode == PorkchopMode::ABOUT) {
             Display::onAboutEnterPressed();
             return;
@@ -795,7 +795,7 @@ void Porkchop::handleInput() {
     if (currentMode == PorkchopMode::OINK_MODE) {
         // B key - add selected network to BOAR BROS exclusion list
         static bool bWasPressed = false;
-        bool bPressed = M5Cardputer.Keyboard.isKeyPressed('b') || M5Cardputer.Keyboard.isKeyPressed('B');
+        bool bPressed = hal_input_wasPressed('b') || hal_input_wasPressed('B');
         if (bPressed && !bWasPressed) {
             int idx = OinkMode::getSelectionIndex();
             if (OinkMode::excludeNetwork(idx)) {
@@ -811,7 +811,7 @@ void Porkchop::handleInput() {
         
         // D key - switch to DO NO HAM mode (seamless mode switch)
         static bool dWasPressed_oink = false;
-        bool dPressed = M5Cardputer.Keyboard.isKeyPressed('d') || M5Cardputer.Keyboard.isKeyPressed('D');
+        bool dPressed = hal_input_wasPressed('d') || hal_input_wasPressed('D');
         if (dPressed && !dWasPressed_oink) {
             // Track passive time for achievements
             SessionStats& sess = const_cast<SessionStats&>(XP::getSession());
@@ -832,7 +832,7 @@ void Porkchop::handleInput() {
     if (currentMode == PorkchopMode::DNH_MODE) {
         // O key - switch back to OINK mode (seamless mode switch)
         static bool oWasPressed_dnh = false;
-        bool oPressed = M5Cardputer.Keyboard.isKeyPressed('o') || M5Cardputer.Keyboard.isKeyPressed('O');
+        bool oPressed = hal_input_wasPressed('o') || hal_input_wasPressed('O');
         if (oPressed && !oWasPressed_dnh) {
             // Clear passive time tracking
             SessionStats& sess = const_cast<SessionStats&>(XP::getSession());

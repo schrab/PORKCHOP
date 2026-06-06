@@ -1,7 +1,7 @@
-// Display management for M5Cardputer
+// Display management for ESP32-S3 Mini
 #pragma once
 
-#include <M5Unified.h>
+#include "../hal/hal_display.h"
 
 // Forward declarations
 enum class PorkchopMode : uint8_t;
@@ -63,7 +63,7 @@ public:
     static void setUploadProgress(bool inProgress, uint8_t progress, const char* status);
     static void clearUploadProgress();
     static bool shouldShowUploadProgress();
-    static void drawUploadProgress(M5Canvas& topBar);
+    static void drawUploadProgress(DisplayCanvas& topBar);
     static void drawUploadProgressDirect();
 
     // Top bar status messaging (single-line)
@@ -73,9 +73,9 @@ public:
     static void requestTopBarMessage(const char* message, uint32_t durationMs = 0);
 
     // Canvas access for direct drawing
-    static M5Canvas& getTopBar() { return topBar; }
-    static M5Canvas& getMain() { return mainCanvas; }
-    static M5Canvas& getBottomBar() { return bottomBar; }
+    static DisplayCanvas& getTopBar() { return topBar; }
+    static DisplayCanvas& getMain() { return mainCanvas; }
+    static DisplayCanvas& getBottomBar() { return bottomBar; }
     
     // Helper functions
     static void pushAll();
@@ -93,7 +93,7 @@ public:
     static void showLevelUp(uint8_t oldLevel, uint8_t newLevel);  // RPG level up popup
 
     // Mode-specific UI functions
-    static void drawPigSyncDeviceSelect(M5Canvas& canvas);  // PigSync device selection UI
+    static void drawPigSyncDeviceSelect(DisplayCanvas& canvas);  // PigSync device selection UI
     static void showClassPromotion(const char* oldClass, const char* newClass);  // Class tier promotion popup
     static void showChallenges();  // Session challenges overlay (press '1')
     
@@ -124,9 +124,9 @@ public:
     static bool isSnapping() { return snapping; }  // True during screenshot save
     
 private:
-    static M5Canvas topBar;
-    static M5Canvas mainCanvas;
-    static M5Canvas bottomBar;
+    static DisplayCanvas topBar;
+    static DisplayCanvas mainCanvas;
+    static DisplayCanvas bottomBar;
     
     static bool gpsStatus;
     static bool wifiStatus;
@@ -159,10 +159,10 @@ private:
     static void drawTopBar();
     static void drawBottomBar();
     static void drawTopBarMessageTwoLineDirect();
-    static void drawModeInfo(M5Canvas& canvas, PorkchopMode mode);
-    static void drawSettingsScreen(M5Canvas& canvas);
-    static void drawAboutScreen(M5Canvas& canvas);
-    static void drawFileTransferScreen(M5Canvas& canvas);
+    static void drawModeInfo(DisplayCanvas& canvas, PorkchopMode mode);
+    static void drawSettingsScreen(DisplayCanvas& canvas);
+    static void drawAboutScreen(DisplayCanvas& canvas);
+    static void drawFileTransferScreen(DisplayCanvas& canvas);
     
 public:
     // About screen easter egg handlers (called from porkchop.cpp)

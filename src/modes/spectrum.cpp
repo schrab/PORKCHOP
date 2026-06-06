@@ -13,7 +13,8 @@
 #include "../core/heap_policy.h"
 #include "../core/xp.h"
 #include "../ui/display.h"
-#include <M5Cardputer.h>
+#include "../hal/hal_input.h"
+#include "../hal/hal_display.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <esp_heap_caps.h>  // For heap_caps_get_largest_free_block
@@ -676,7 +677,7 @@ void SpectrumMode::handleInput() {
         return;
     }
     
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    bool anyPressed = hal_input_anyHeld();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -688,18 +689,18 @@ void SpectrumMode::handleInput() {
     
     Display::resetDimTimer();
     
-    auto keys = M5Cardputer.Keyboard.keysState();
+    //auto keys = M5Cardputer.Keyboard.keysState();
     
     // Pan spectrum with , (left) and / (right)
-    if (M5Cardputer.Keyboard.isKeyPressed(',')) {
+    if (hal_input_wasPressed(KEY_LEFT)) {
         viewCenterMHz = fmax(MIN_CENTER_MHZ, viewCenterMHz - PAN_STEP_MHZ);
     }
-    if (M5Cardputer.Keyboard.isKeyPressed('/')) {
+    if (hal_input_wasPressed(KEY_RIGHT)) {
         viewCenterMHz = fmin(MAX_CENTER_MHZ, viewCenterMHz + PAN_STEP_MHZ);
     }
     
     // F key: cycle filter mode
-    if (M5Cardputer.Keyboard.isKeyPressed('f') || M5Cardputer.Keyboard.isKeyPressed('F')) {
+    if (hal_input_wasPressed('f') || hal_input_wasPressed('F')) {
         filter = static_cast<SpectrumFilter>((static_cast<int>(filter) + 1) % 4);
         // If selected network no longer matches filter, find first matching
         if (selectedIndex >= 0 && selectedIndex < (int)networks.size()) {
@@ -717,7 +718,7 @@ void SpectrumMode::handleInput() {
     }
     
     // Cycle through matching networks with ; and .
-    if (M5Cardputer.Keyboard.isKeyPressed(';') && !networks.empty()) {
+    if (hal_input_wasPressed(KEY_UP) && !networks.empty()) {
         int startIdx = selectedIndex;
         int count = 0;
         do {
@@ -731,7 +732,7 @@ void SpectrumMode::handleInput() {
             viewCenterMHz = channelToFreq(networks[selectedIndex].channel);
         }
     }
-    if (M5Cardputer.Keyboard.isKeyPressed('.') && !networks.empty()) {
+    if (hal_input_wasPressed(KEY_DOWN) && !networks.empty()) {
         int startIdx = selectedIndex;
         int count = 0;
         do {
@@ -747,14 +748,14 @@ void SpectrumMode::handleInput() {
     }
     
     // Enter: start monitoring selected network
-    if (keys.enter && !networks.empty()) {
+    if (hal_input_wasPressed(KEY_ENTER) && !networks.empty()) {
         if (selectedIndex >= 0 && selectedIndex < (int)networks.size()) {
             enterClientMonitor();
         }
     }
     
     // Space: toggle dial lock when in dial mode
-    if (M5Cardputer.Keyboard.isKeyPressed(' ') && dialMode) {
+    if (hal_input_wasPressed(' ') && dialMode) {
         dialLocked = !dialLocked;
         SFX::play(SFX::CLICK);
     }
@@ -762,7 +763,7 @@ void SpectrumMode::handleInput() {
 
 // Handle input when in client monitor overlay [P11] [P13] [P14]
 void SpectrumMode::handleClientMonitorInput() {
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    bool anyPressed = hal_input_anyHeld();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -787,19 +788,19 @@ void SpectrumMode::handleClientMonitorInput() {
     }
     
     // W key: enter reveal mode (broadcast deauth to discover clients)
-    if (M5Cardputer.Keyboard.isKeyPressed('w') || M5Cardputer.Keyboard.isKeyPressed('W')) {
+    if (hal_input_wasPressed('w') || hal_input_wasPressed('W')) {
         enterRevealMode();
         return;
     }
     
     // Backspace - go back
-    if (M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE)) {
+    if (hal_input_wasPressed(KEY_BACKSPACE)) {
         exitClientMonitor();
         return;
     }
     
     // B key: add to BOAR BROS and exit [P13]
-    if (M5Cardputer.Keyboard.isKeyPressed('b') || M5Cardputer.Keyboard.isKeyPressed('B')) {
+    if (hal_input_wasPressed('b') || hal_input_wasPressed('B')) {
         if (monitoredNetworkIndex >= 0 && 
             monitoredNetworkIndex < (int)networks.size()) {
             // Add to BOAR BROS via OinkMode
@@ -821,7 +822,7 @@ void SpectrumMode::handleClientMonitorInput() {
     
     // Navigation only if clients exist [P14]
     if (clientCount > 0) {
-        if (M5Cardputer.Keyboard.isKeyPressed(';')) {
+        if (hal_input_wasPressed(KEY_UP)) {
             selectedClientIndex = max(0, selectedClientIndex - 1);
             // Adjust scroll if needed
             if (selectedClientIndex < clientScrollOffset) {
@@ -829,7 +830,7 @@ void SpectrumMode::handleClientMonitorInput() {
             }
         }
         
-        if (M5Cardputer.Keyboard.isKeyPressed('.')) {
+        if (hal_input_wasPressed(KEY_DOWN)) {
             selectedClientIndex = min(clientCount - 1, selectedClientIndex + 1);
             // Adjust scroll if needed
             if (selectedClientIndex >= clientScrollOffset + VISIBLE_CLIENTS) {
@@ -838,7 +839,7 @@ void SpectrumMode::handleClientMonitorInput() {
         }
         
         // D key: show client detail popup
-        if (M5Cardputer.Keyboard.isKeyPressed('d') || M5Cardputer.Keyboard.isKeyPressed('D')) {
+        if (hal_input_wasPressed('d') || hal_input_wasPressed('D')) {
             if (selectedClientIndex >= 0 && selectedClientIndex < clientCount) {
                 // Store MAC of client we're viewing - close popup if this client disappears
                 memcpy(detailClientMAC, networks[monitoredNetworkIndex].clients[selectedClientIndex].mac, 6);
@@ -848,7 +849,7 @@ void SpectrumMode::handleClientMonitorInput() {
         }
         
         // Enter: deauth selected client [P14]
-        if (M5Cardputer.Keyboard.keysState().enter) {
+        if (hal_input_wasPressed(KEY_ENTER)) {
             deauthClient(selectedClientIndex);
         }
     }
@@ -1648,8 +1649,8 @@ float SpectrumMode::channelToFreq(uint8_t channel) {
 // ============================================================
 
 void SpectrumMode::updateDialChannel() {
-    // Skip if not Cardputer ADV (no accelerometer on regular Cardputer)
-    if (M5.getBoard() != m5::board_t::board_M5CardputerADV) return;
+    // Skip tilt-to-tune on non-Cardputer hardware (no accelerometer)
+    //if (M5.getBoard() != m5::board_t::board_M5CardputerADV) return;
     
     // Skip if tilt-to-tune is disabled
     if (!Config::wifi().spectrumTiltEnabled) {
@@ -1671,9 +1672,9 @@ void SpectrumMode::updateDialChannel() {
     if (staleMs < 1000) staleMs = 1000;
     if (staleMs > 60000) staleMs = 60000;
     
-    // ==[ READ IMU ]== accelerometer
+    // ==[ READ IMU ]== accelerometer (stubbed - no IMU on target board)
     float ax, ay, az;
-    M5.Imu.getAccel(&ax, &ay, &az);
+    ax = ay = az = 0;
     
     // ==[ AUTO FLT/UPS MODE SWITCH WITH HYSTERESIS ]==
     // FLT (flat): normal spectrum mode, auto-hopping

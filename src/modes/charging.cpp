@@ -7,7 +7,9 @@
 #include "../gps/gps.h"
 #include "../core/config.h"
 #include "../core/xp.h"
-#include <M5Cardputer.h>
+#include "../hal/hal_display.h"
+#include "../hal/hal_battery.h"
+#include "../hal/hal_input.h"
 #include <esp_wifi.h>
 #include <WiFi.h>
 #include <NimBLEDevice.h>
@@ -108,7 +110,7 @@ void ChargingMode::start() {
     }
     
     // Dim display to minimum
-    M5.Display.setBrightness(10);
+    g_Display.setBrightness(10);
     
     // Initialize state
     running = true;
@@ -160,7 +162,7 @@ void ChargingMode::stop() {
     
     // Restore display brightness
     uint8_t brightness = Config::personality().brightness;
-    M5.Display.setBrightness(brightness * 255 / 100);
+    g_Display.setBrightness(brightness * 255 / 100);
     
     // Wake GPS if it was enabled
     if (gpsWasActive) {
@@ -212,7 +214,7 @@ void ChargingMode::update() {
 }
 
 void ChargingMode::handleInput() {
-    bool anyPressed = M5Cardputer.Keyboard.isPressed();
+    bool anyPressed = hal_input_anyHeld();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -223,24 +225,23 @@ void ChargingMode::handleInput() {
     keyWasPressed = true;
     
     // Any key exits
-    if (M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE) ||
-        M5Cardputer.Keyboard.isKeyPressed(KEY_ENTER) ||
-        M5Cardputer.Keyboard.isPressed()) {
+    if (hal_input_wasPressed(KEY_BACKSPACE) ||
+        hal_input_wasPressed(KEY_ENTER) ||
+        hal_input_anyHeld()) {
         exitRequested = true;
     }
 }
 
 void ChargingMode::updateBattery() {
     // Read raw voltage (in mV)
-    float voltage = M5.Power.getBatteryVoltage() / 1000.0f;
-    auto chargeState = M5.Power.isCharging();
-    bool isCharging = (chargeState == m5::Power_Class::is_charging_t::is_charging);
+    float voltage = hal_battery_read_mv() / 1000.0f;
+    bool isCharging = hal_battery_isCharging();
     uint32_t now = millis();
 
     if (isCharging) {
         lastChargingMs = now;
     }
-    int16_t vbusMv = M5.Power.getVBUSVoltage();
+    int16_t vbusMv = 0;  // VBUS voltage not available via HAL, stubbed to 0
     bool vbusSupported = (vbusMv >= 0);
     bool vbusPresent = vbusSupported && (vbusMv >= kVbusPresentMv);
     bool usbConnected = isUsbConnected();
@@ -275,7 +276,7 @@ void ChargingMode::updateBattery() {
                     (lastChargingMs != 0 && (now - lastChargingMs) < kChargeHoldMs) ||
                     usbConnected;
 
-    bool chargeUnknown = (chargeState == m5::Power_Class::is_charging_t::charge_unknown);
+    bool chargeUnknown = false;  // HAL doesn't expose M5's charge_unknown state
     bool useTrendFallback = (!vbusSupported && chargeUnknown && !usbConnected);
     if (useTrendFallback) {
         if (!trendPowerPresent && (avgVoltage - entryVoltage) >= kTrendRiseV) {

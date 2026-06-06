@@ -7,7 +7,9 @@
 #include "../core/config.h"
 #include "../core/network_recon.h"
 #include "../web/fileserver.h"
-#include <M5Cardputer.h>
+#include "../hal/hal_input.h"
+#include "../hal/hal_display.h"
+#include "../hal/hal_battery.h"
 #include <WiFi.h>
 #include <esp_task_wdt.h>
 
@@ -67,7 +69,7 @@ void SdFormatMenu::show() {
     Display::clearBottomOverlay();
     
     // Dim screen to 5% to save power during critical operation
-    M5.Display.setBrightness(SD_FORMAT_BRIGHTNESS);
+    g_Display.setBrightness(SD_FORMAT_BRIGHTNESS);
 }
 
 void SdFormatMenu::hide() {
@@ -140,11 +142,11 @@ void SdFormatMenu::stopEverything() {
 
 void SdFormatMenu::doReboot() {
     // Full-screen reboot message
-    M5.Display.fillScreen(TFT_BLACK);
-    M5.Display.setTextColor(getColorFG());
-    M5.Display.setTextDatum(middle_center);
-    M5.Display.setTextSize(2);
-    M5.Display.drawString("REBOOTING...", M5.Display.width() / 2, M5.Display.height() / 2);
+    g_Display.fillScreen(TFT_BLACK);
+    g_Display.setTextColor(getColorFG());
+    g_Display.setTextDatum(middle_center);
+    g_Display.setTextSize(2);
+    g_Display.drawString("REBOOTING...", g_Display.width() / 2, g_Display.height() / 2);
     
     delay(REBOOT_DELAY_MS);
     ESP.restart();
@@ -191,7 +193,7 @@ void SdFormatMenu::handleInput() {
     if (state == State::CONFIRM) {
         if (M5Cardputer.Keyboard.isKeyPressed('y') || M5Cardputer.Keyboard.isKeyPressed('Y')) {
             // SAFETY: Require external power to prevent data corruption from power loss
-            if (!M5.Power.isCharging()) {
+            if (!hal_battery_isCharging()) {
                 Display::notify(NoticeKind::WARNING, "PLUG IN POWER!", 2000);
                 return;
             }
@@ -225,7 +227,7 @@ void SdFormatMenu::handleInput() {
         // Backspace in SELECT means exit - but we must reboot since system is stopped
         if (back) {
             // Increase brightness briefly for warning visibility
-            M5.Display.setBrightness(128);
+            g_Display.setBrightness(128);
             Display::notify(NoticeKind::WARNING, "REBOOT REQUIRED", 1500);
             delay(1500);
             doReboot();  // Never returns

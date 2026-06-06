@@ -52,3 +52,10 @@ uint8_t hal_battery_read_percent() {
     if (mv <= 3300) return 0;
     return (uint8_t)((mv - 3300) * 100 / (4200 - 3300));
 }
+
+bool hal_battery_isCharging() {
+    // ESP32-S3 Mini doesn't have a dedicated charging-detect pin.
+    // This returns false by default. If VBUS monitoring is added later,
+    // detect VBUS presence via ADC or GPIO to return true when USB is plugged.
+    return false;
+}
