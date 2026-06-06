@@ -1073,17 +1073,12 @@ bool Display::showConfirmBox(const String& title, const String& message) {
     
     uint32_t startTime = millis();
     while ((millis() - startTime) < 30000) {  // 30s timeout, default No
-        M5.update();
-        M5Cardputer.update();
+        hal_input_update();
+
+        if (hal_input_wasPressed(KEY_ENTER)) return true;  // [SEL] == YES
+        if (hal_input_wasPressed(KEY_ESC))    return false; // [ESC] == NO
         
-        if (M5Cardputer.Keyboard.isChange()) {
-            auto keys = M5Cardputer.Keyboard.keysState();
-            for (auto c : keys.word) {
-                if (c == 'y' || c == 'Y') return true;
-                if (c == 'n' || c == 'N') return false;
-            }
-        }
-        delay(20);  // TCA8418 I2C throttle
+        delay(20);
         yield();  // Feed watchdog during blocking wait
     }
     return false;  // Timeout = No
@@ -1193,21 +1188,14 @@ void Display::showChallenges() {
     // Wait for dismiss key
     uint32_t startTime = millis();
     while ((millis() - startTime) < 30000) {  // 30s timeout
-        M5.update();
-        M5Cardputer.update();
+        hal_input_update();
         
-        if (M5Cardputer.Keyboard.isKeyPressed(KEY_BACKSPACE) || 
-            M5Cardputer.Keyboard.isKeyPressed(KEY_ENTER)) {
-            // Wait for key release
-            while (M5Cardputer.Keyboard.isPressed()) {
-                M5.update();
-                M5Cardputer.update();
-                delay(20);
-                yield();  // Feed watchdog
-            }
+        if (hal_input_wasPressed(KEY_BACKSPACE) || 
+            hal_input_wasPressed(KEY_ENTER)) {
+            hal_input_waitRelease();
             break;
         }
-        delay(20);  // TCA8418 I2C throttle
+        delay(20);
         yield();  // Feed watchdog during blocking wait
     }
 }
@@ -1215,8 +1203,7 @@ void Display::showChallenges() {
 static void bootSplashDelay(uint32_t ms) {
     uint32_t start = millis();
     while ((millis() - start) < ms) {
-        M5.update();
-        M5Cardputer.update();
+        hal_input_update();
         SFX::update();
         delay(20);
         yield();
@@ -1392,8 +1379,8 @@ void Display::clearTopBarMessage() {
     topBarMessageDuration = 0;
 }
 
-// M5Cardputer NeoPixel LED on GPIO 21
-#define LED_PIN 21
+// NeoPixel LED on GPIO 33
+#define LED_PIN 33
 #define SIREN_COOLDOWN_MS 2000
 
 void Display::flashSiren(uint8_t cycles) {
@@ -1485,9 +1472,8 @@ void Display::showLevelUp(uint8_t oldLevel, uint8_t newLevel) {
     // Auto-dismiss after 2.5 seconds or on any key press
     uint32_t startTime = millis();
     while ((millis() - startTime) < 2500) {
-        M5.update();
-        M5Cardputer.update();
-        if (M5Cardputer.Keyboard.isChange()) {
+        hal_input_update();
+        if (hal_input_isChange()) {
             break;  // Any key dismisses
         }
         delay(50);
@@ -1546,10 +1532,9 @@ void Display::showClassPromotion(const char* oldClass, const char* newClass) {
     // Auto-dismiss after 2.5 seconds or on any key press
     uint32_t startTime = millis();
     while ((millis() - startTime) < 2500) {
-        M5.update();
-        M5Cardputer.update();
+        hal_input_update();
         SFX::update();  // Tick audio during wait
-        if (M5Cardputer.Keyboard.isChange()) {
+        if (hal_input_isChange()) {
             break;
         }
         delay(50);
