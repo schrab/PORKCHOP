@@ -1,9 +1,12 @@
-// m5porkchop
-// Main entry point
-// by 0ct0
+// Main entry point for ESP32-S3 Mini
+// by 0ct0 | ported to ESP32-S3 Mini
 
-#include <M5Cardputer.h>
-#include <M5Unified.h>
+#include "../hal/hal_input.h"
+#include "../hal/hal_display.h"
+#include "../hal/hal_audio.h"
+#include "../hal/hal_battery.h"
+#include "../hal/hal_neopixel.h"
+#include "../hal/hal_pins.h"
 #include <SD.h>
 #include <WiFi.h>              // <-- PATCH: init WiFi early (before heap fragmentation)
 #include <esp_heap_caps.h>     // For heap conditioning
@@ -89,26 +92,25 @@ static void setupHeapLayout() {
 void setup() {
     Serial.begin(115200);
     delay(100);
-    Serial.println("\n=== PORKCHOP STARTING ===");
+    Serial.println("\n=== PORKCHOP STARTING (ESP32-S3 Mini) ===\n");
 
-    // Deassert CapLoRa SX1262 CS BEFORE SD init. The SX1262 shares
-    // MOSI(G14)/MISO(G39)/SCK(G40) with the SD card. If its CS floats low
-    // the SX1262 responds on the bus and SD.begin() fails with f_mount(3).
-    // MUST happen before M5Cardputer.begin() — GPIO5 is a keyboard matrix
-    // input on v1.1 and begin() needs to reconfigure it as INPUT_PULLUP.
-    pinMode(5, OUTPUT);
-    digitalWrite(5, HIGH);
+    // Init hal_gpio_setup — configure pins (display, input, audio, etc.)
+    hal_gpio_setup();
 
-    // Init M5Cardputer hardware
-    auto cfg = M5.config();
-    M5Cardputer.begin(cfg, true);   // enableKeyboard = true
+    // Init display early for boot messages
+    hal_display_init();
 
-    // Configure G0 button (GPIO0) as input with pullup
-    pinMode(0, INPUT_PULLUP);
+    // Init NeoPixel
+    hal_neopixel_init();
+
+    // Init battery ADC
+    hal_battery_init();
+
+    // Init audio early (piezo on GPIO 7)
+    hal_audio_init();
 
     // Reservation fence: push WiFi driver allocations high in heap, then free
     // the fence to leave large contiguous space at the bottom.
-    // Replaces the old 5-phase boot conditioning with a deterministic layout.
     setupHeapLayout();
 
     // Load configuration from SD
@@ -134,7 +136,7 @@ void setup() {
     Display::showBootSplash();
 
     // Apply saved brightness
-    M5.Display.setBrightness(Config::personality().brightness * 255 / 100);
+    g_Display.setBrightness(Config::personality().brightness * 255 / 100);
 
     // Initialize piglet personality
     Avatar::init();
@@ -142,26 +144,8 @@ void setup() {
 
     // Initialize GPS (if enabled)
     if (Config::gps().enabled) {
-        // Hardware detection: warn if Cap LoRa GPS selected on non-ADV hardware
-        if (Config::gps().source == GPSSource::CAP_LORA) {
-            auto board = M5.getBoard();
-            if (board != m5::board_t::board_M5CardputerADV) {
-                Serial.println("[GPS] WARNING: Cap LoRa868 GPS selected but hardware is not Cardputer ADV!");
-                Serial.println("[GPS] Cap LoRa868 requires Cardputer ADV EXT bus. Check config.");
-            }
-            // Quiesce SX1262 and clear G13 FSPIQ IOMUX before GPS UART init.
-            // CapLoRa shares MOSI/MISO/SCK with SD; G13 is default FSPIQ pin.
-            Config::prepareCapLoraGpio();
-        }
-        GPS::init(Config::gps().rxPin, Config::gps().txPin, Config::gps().baudRate);
-
-        // Re-verify SD after CapLoRa GPS UART init (UART on G13 may disturb FSPI bus)
-        if (Config::gps().source == GPSSource::CAP_LORA) {
-            Serial.println("[GPS] Re-verifying SD card after CapLoRa GPS UART init...");
-            if (!Config::reinitSD()) {
-                Serial.println("[GPS] WARNING: SD card re-init failed after CapLoRa GPS init");
-            }
-        }
+        // Use fixed pins from board configuration (GPIO TX=1, RX=2)
+        GPS::init(PIN_GPS_TX, PIN_GPS_RX, Config::gps().baudRate);
     }
 
     // Initialize modes
@@ -191,7 +175,7 @@ void setup() {
 }
 
 void loop() {
-    M5Cardputer.update();
+    hal_input_update();
     
     // #region agent log
     // [DEBUG] H1/H3: Periodic heap monitoring (every 5 seconds)

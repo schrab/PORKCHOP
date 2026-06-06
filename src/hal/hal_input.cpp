@@ -32,6 +32,23 @@ void hal_input_init() {
     }
 }
 
+void hal_gpio_setup() {
+    // Joystick inputs (with internal pull-ups)
+    hal_input_init();
+    
+    // Piezo buzzer as output
+    pinMode(PIN_PIEZO, OUTPUT);
+    digitalWrite(PIN_PIEZO, LOW);
+    
+    // NeoPixel output — handled by hal_neopixel_init, but ensure pin is set
+    pinMode(PIN_NEOPIXEL, OUTPUT);
+    digitalWrite(PIN_NEOPIXEL, LOW);
+    
+    // Display backlight — handled by hal_display_init
+    pinMode(PIN_DISPLAY_BL, OUTPUT);
+    digitalWrite(PIN_DISPLAY_BL, LOW);
+}
+
 void hal_input_update() {
     uint32_t now = millis();
     stateChanged = false;

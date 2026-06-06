@@ -20,6 +20,9 @@ struct InputEvent {
 // Initialize joystick GPIOs
 void hal_input_init();
 
+// Initialize all board-level GPIO pins (joystick, piezo, etc.)
+void hal_gpio_setup();
+
 // Poll and debounce current state — call once per main loop iteration
 void hal_input_update();
 
