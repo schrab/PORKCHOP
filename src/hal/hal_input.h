@@ -20,8 +20,21 @@ struct InputEvent {
 // Initialize joystick GPIOs
 void hal_input_init();
 
-// Read current state, return event if something changed
-InputEvent hal_input_read();
+// Poll and debounce current state — call once per main loop iteration
+void hal_input_update();
 
-// Debounce helpers
-bool hal_input_wasPressed(uint8_t key);
+// Return the last-read key if it changed state since last update, 0 otherwise
+// After reading, the key change is consumed (won't be returned again)
+uint8_t hal_input_getch();
+
+// Check if a specific key was just pressed (clears the pressed flag)
+bool hal_input_wasPressed(uint8_t keyCode);
+
+// Check if any key is currently held
+bool hal_input_anyHeld();
+
+// Wait until all keys are released (with watchdog yield)
+void hal_input_waitRelease();
+
+// Check if any key state changed since last update
+bool hal_input_isChange();
