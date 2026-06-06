@@ -48,6 +48,18 @@ enum class PorkchopEvent : uint8_t {
     LOW_BATTERY
 };
 
+// Forward declarations for circular-include safety
+class AchievementsMenu;
+class CrashViewer;
+class DiagnosticsMenu;
+class SdFormatMenu;
+class SwineStats;
+class BoarBrosMenu;
+class WigleMenu;
+class BountyStatusMenu;
+class ChargingMode;
+
+
 // Event callback type
 using EventCallback = std::function<void(PorkchopEvent, void*)>;
 
