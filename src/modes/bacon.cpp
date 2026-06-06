@@ -183,40 +183,26 @@ void BaconMode::update() {
 }
 
 void BaconMode::handleInput() {
-    hal_input_update();
-    
-    if (hal_input_isChange() && hal_input_anyHeld()) {
-        // replaced: keysState handled via hal_input_getch/wasPressed
-        
-        for (auto key : state.word) {
-            uint8_t newTier = 0;
-            uint16_t newInterval = 0;
-            
-            switch (key) {
-                case '1':
-                    newTier = 1;
-                    newInterval = BACON_TIER1_MS;
-                    break;
-                case '2':
-                    newTier = 2;
-                    newInterval = BACON_TIER2_MS;
-                    break;
-                case '3':
-                    newTier = 3;
-                    newInterval = BACON_TIER3_MS;
-                    break;
-            }
-            
-            if (newTier > 0 && newTier != currentTier) {
-                currentTier = newTier;
-                beaconInterval = newInterval;
-                
-                char toast[32];
-                snprintf(toast, sizeof(toast), "TX TIER %d: %dms", currentTier, beaconInterval);
-                Display::notify(NoticeKind::STATUS, toast, 0, NoticeChannel::TOP_BAR);
-                
-                SDLog::log("BACON", "Switched to tier %d (%dms)", currentTier, beaconInterval);
-            }
+    InputEvent state = hal_input_keysState();
+    if (state.pressed) {
+        switch (state.key) {
+            case KEY_UP:
+                // Increase tier
+                break;
+            case KEY_DOWN:
+                // Decrease tier
+                break;
+            case KEY_LEFT:
+                // Decrease interval
+                break;
+            case KEY_RIGHT:
+                // Increase interval
+                break;
+            case KEY_ENTER:
+                // Toggle bacon mode
+                if (BaconMode::isRunning()) BaconMode::stop();
+                else BaconMode::start();
+                break;
         }
     }
 }
@@ -498,3 +484,19 @@ void BaconMode::sendBeacon() {
     if (err != ESP_OK) {
         Serial.printf("[BACON] Beacon TX failed: %d\n", err);
     }
+}
+
+// ON AIR badge now drawn in top bar by Display::drawTopBar()
+
+float BaconMode::getBeaconRate() {
+    if (!running) return 0.0f;
+    uint32_t sessionTime = (millis() - sessionStartTime) / 1000;
+    if (sessionTime == 0) return 0.0f;
+    return (float)beaconCount / sessionTime;
+}
+
+void BaconMode::draw(DisplayCanvas& canvas) {
+    // Canvas is already cleared by Display::update()
+    
+    // === STANDARD LAYOUT: Avatar + Mood (XP shows in top bar on gain) ===
+}

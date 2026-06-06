@@ -1,8 +1,8 @@
-# ESP32-S3 Mini partition table (16MB flash)
-# Dual OTA + large spiffs for capture storage
-# Name,     Type, SubType,  Offset,   Size,      Flags
-nvs,        data, nvs,      0x9000,   0x6000,
-otadata,    data, ota,      0xf000,   0x2000,
-app0,       app,  ota_0,    0x11000,  0x300000,
-app1,       app,  ota_1,    0x311000, 0x300000,
-spiffs,     data, spiffs,   0x611000, 0x9E0000,
+# Porkchop partition table
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x5000,
+otadata,    data, ota,      0xe000,   0x2000,
+app0,       app,  ota_0,    0x10000,  0x300000,
+app1,       app,  ota_1,    0x310000, 0x300000,
+spiffs,     data, spiffs,   0x610000, 0x180000,
+coredump,   data, coredump, 0x790000, 0x10000,

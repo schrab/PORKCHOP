@@ -1,7 +1,10 @@
 // Settings menu system
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
+#include "../hal/hal_display.h"
 
 enum class SettingType {
     TOGGLE,     // ON/OFF

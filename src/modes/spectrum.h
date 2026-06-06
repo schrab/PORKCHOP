@@ -1,6 +1,8 @@
 // HOG ON SPECTRUM Mode - WiFi Spectrum Analyzer
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
 #include <vector>
 #include <atomic>

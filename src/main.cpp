@@ -1,12 +1,12 @@
 // Main entry point for ESP32-S3 Mini
 // by 0ct0 | ported to ESP32-S3 Mini
 
-#include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
-#include "../hal/hal_audio.h"
-#include "../hal/hal_battery.h"
-#include "../hal/hal_neopixel.h"
-#include "../hal/hal_pins.h"
+#include "hal/hal_input.h"
+#include "hal/hal_display.h"
+#include "hal/hal_audio.h"
+#include "hal/hal_battery.h"
+#include "hal/hal_neopixel.h"
+#include "hal/hal_pins.h"
 #include <SD.h>
 #include <WiFi.h>              // <-- PATCH: init WiFi early (before heap fragmentation)
 #include <esp_heap_caps.h>     // For heap conditioning
@@ -99,6 +99,9 @@ void setup() {
 
     // Init display early for boot messages
     hal_display_init();
+    ledcAttachPin(PIN_DISPLAY_BL, DISPLAY_BL_LEDC_CHANNEL);
+    ledcSetup(DISPLAY_BL_LEDC_CHANNEL, 5000, 8);
+    ledcWrite(DISPLAY_BL_LEDC_CHANNEL, 200);
 
     // Init NeoPixel
     hal_neopixel_init();
@@ -136,7 +139,7 @@ void setup() {
     Display::showBootSplash();
 
     // Apply saved brightness
-    g_Display.setBrightness(Config::personality().brightness * 255 / 100);
+    hal_display_setBrightness(Config::personality().brightness * 255 / 100);
 
     // Initialize piglet personality
     Avatar::init();

@@ -1,6 +1,8 @@
 // Piglet mood implementation
 
 #include "mood.h"
+#include "../hal/hal_battery.h"
+#include "../hal/hal_rtc.h"
 #include "weather.h"
 #include "../core/config.h"
 #include "../core/xp.h"
@@ -1846,9 +1848,9 @@ void Mood::onLowBattery() {
 
 // Helper: get current hour from RTC or Unix time (same fallback as Avatar::isNightTime)
 static int8_t getCurrentHour() {
-    struct timeval tv; gettimeofday(&tv, NULL); struct tm* dt = localtime(&tv.tv_sec);
-    if ((dt->tm_year + 1900) >= 2024) {
-        return (int8_t)dt->tm_hour;
+    hal_rtc_datetime_t dt; hal_rtc_getDateTime(&dt);
+    if (dt.year >= 2024) {
+        return (int8_t)dt.hour;
     }
     time_t unixNow = time(nullptr);
     if (unixNow >= 1700000000) {
@@ -1911,8 +1913,8 @@ bool Mood::pickTimePhraseIfDue(uint32_t now) {
     // Special times first (exact hour matches)
     if (hour == 13) {
         // Check minute for 1337 (13:37)
-        struct timeval tv; gettimeofday(&tv, NULL); struct tm* dt = localtime(&tv.tv_sec);
-        if ((dt->tm_year + 1900) >= 2024 && dt->tm_min >= 35 && dt->tm_min <= 39) {
+        hal_rtc_datetime_t dt; hal_rtc_getDateTime(&dt);
+        if (dt.year >= 2024 && dt.minute >= 35 && dt.minute <= 39) {
             SET_PHRASE(currentPhrase, PHRASES_TIME_SPECIAL[0]);  // "13:37. pig approves."
             return true;
         }
@@ -2255,7 +2257,7 @@ bool Mood::pickChargingPhraseIfDue(uint32_t now) {
     lastChargeCheckMs = now;
 
     auto chargeState = hal_battery_isCharging();
-    int8_t charging = (chargeState == m5::Power_Class::is_charging_t::is_charging) ? 1 : 0;
+    int8_t charging = chargeState ? 1 : 0;
 
     if (lastChargingState == -1) {
         lastChargingState = charging;

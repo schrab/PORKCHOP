@@ -64,6 +64,147 @@ static const char* modeToString(PorkchopMode mode) {
         case PorkchopMode::PIGSYNC_DEVICE_SELECT: return "PIGSYNC_DEVICE_SELECT";
         case PorkchopMode::BACON_MODE: return "BACON";
         case PorkchopMode::SD_FORMAT: return "SD_FORMAT";
+         return "CHARGING";
+        case PorkchopMode::ABOUT: return "ABOUT";
+        default: return "UNKNOWN";
+    }
+}
+
+// Crash-loop guard: count early reboots using RTC memory (survives soft resets).
+RTC_DATA_ATTR static uint8_t bootGuardStreak = 0;
+static uint32_t bootGuardStartMs = 0;
+static const uint8_t BOOT_GUARD_THRESHOLD = 3;
+static const uint32_t BOOT_GUARD_WINDOW_MS = 60000;
+
+static PorkchopMode bootModeToPorkchop(BootMode mode) {
+    switch (mode) {
+        case BootMode::OINK: return PorkchopMode::OINK_MODE;
+        case BootMode::DNOHAM: return PorkchopMode::DNH_MODE;
+        case BootMode::WARHOG: return PorkchopMode::WARHOG_MODE;
+        case BootMode::IDLE:
+        default:
+            return PorkchopMode::IDLE;
+    }
+}
+
+static const char* bootModeLabel(BootMode mode) {
+    switch (mode) {
+        case BootMode::OINK: return "OINK";
+        case BootMode::DNOHAM: return "DN0HAM";
+        case BootMode::WARHOG: return "WARHOG";
+        case BootMode::IDLE:
+        default:
+            return "IDLE";
+    }
+}
+
+static bool healthBootToastShown = false;
+
+Porkchop::Porkchop() 
+    : currentMode(PorkchopMode::IDLE)
+    , previousMode(PorkchopMode::IDLE)
+    , startTime(0)
+    , handshakeCount(0)
+    , networkCount(0)
+    , deauthCount(0) {
+}
+
+static bool isAutoConditionSafe(PorkchopMode mode) {
+    switch (mode) {
+        case PorkchopMode::IDLE:
+        case PorkchopMode::MENU:
+        case PorkchopMode::SETTINGS:
+        case PorkchopMode::ABOUT:
+        case PorkchopMode::ACHIEVEMENTS:
+        case PorkchopMode::CRASH_VIEWER:
+        case PorkchopMode::DIAGNOSTICS:
+        case PorkchopMode::SWINE_STATS:
+        case PorkchopMode::BOAR_BROS:
+        case PorkchopMode::UNLOCKABLES:
+        case PorkchopMode::BOUNTY_STATUS:
+        case PorkchopMode::SD_FORMAT:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static void maybeAutoConditionHeap(PorkchopMode mode) {
+    if (!isAutoConditionSafe(mode)) {
+        return;
+    }
+    if (FileServer::isRunning() || FileServer::isConnecting()) {
+        return;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        return;
+    }
+    // At Critical pressure (<30KB free), brew needs 35KB transient — would fail anyway
+    if (static_cast<uint8_t>(HeapHealth::getPressureLevel()) > HeapPolicy::kMaxPressureLevelForAutoBrew) {
+        return;
+    }
+    if (!HeapHealth::consumeConditionRequest()) {
+        return;
+    }
+
+    bool wasReconRunning = NetworkRecon::isRunning();
+    if (wasReconRunning) {
+        NetworkRecon::pause();
+    }
+    // Small, low-disruption brew to coalesce heap when health drops.
+    WiFiUtils::brewHeap(HeapPolicy::kBrewAutoDwellMs, false);
+    if (wasReconRunning) {
+        NetworkRecon::resume();
+    }
+}
+
+void Porkchop::init() {
+    startTime = millis();
+    
+    // Initialize background network reconnaissance service
+    NetworkRecon::init();
+    
+    // Initialize XP system
+    XP::init();
+    
+    // Initialize SwineStats (buff/debuff system)
+    SwineStats::init();
+    
+    // Register level up callback to show popup
+    XP::setLevelUpCallback([](uint8_t oldLevel, uint8_t newLevel) {
+        Display::showLevelUp(oldLevel, newLevel);
+        Avatar::cuteJump();  // Celebratory jump on level up!
+        
+        // Check if class tier changed (every 5 levels: 6, 11, 16, 21, 26, 31, 36)
+        PorkClass oldClass = XP::getClassForLevel(oldLevel);
+        PorkClass newClass = XP::getClassForLevel(newLevel);
+        if (newClass != oldClass) {
+            // Small delay between popups
+            delay(500);
+            Display::showClassPromotion(
+                XP::getClassNameFor(oldClass),
+                XP::getClassNameFor(newClass)
+            );
+        }
+    });
+    
+    // Register default event handlers
+    registerCallback(PorkchopEvent::HANDSHAKE_CAPTURED, [this](PorkchopEvent, void*) {
+        handshakeCount++;
+    });
+    
+    registerCallback(PorkchopEvent::NETWORK_FOUND, [this](PorkchopEvent, void*) {
+        networkCount++;
+    });
+    
+    registerCallback(PorkchopEvent::DEAUTH_SENT, [this](PorkchopEvent, void*) {
+        deauthCount++;
+    });
+    
+    // Menu selection handler - items now defined in menu.cpp as static arrays
+    Menu::setCallback([this](uint8_t actionId) {
+        switch (actionId) {
+            case 1: setMode(PorkchopMode::OINK_MODE); break;
             case 2: setMode(PorkchopMode::WARHOG_MODE); break;
             case 3: setMode(PorkchopMode::FILE_TRANSFER); break;
             case 4: setMode(PorkchopMode::CAPTURES); break;
@@ -76,13 +217,133 @@ static const char* modeToString(PorkchopMode mode) {
             case 11: setMode(PorkchopMode::SWINE_STATS); break;
             case 12: setMode(PorkchopMode::BOAR_BROS); break;
             case 13: setMode(PorkchopMode::WIGLE_MENU); break;
-            case 14: setMode(PorkchopMode::DNH_MODE); break;
-            case 15: setMode(PorkchopMode::UNLOCKABLES); break;
-            case 16: setMode(PorkchopMode::PIGSYNC_DEVICE_SELECT); break;
-            case 17: setMode(PorkchopMode::BOUNTY_STATUS); break;
-            case 18: setMode(PorkchopMode::BACON_MODE); break;
-            case 19: setMode(PorkchopMode::DIAGNOSTICS); break;
-            case 20: setMode(PorkchopMode::SD_FORMAT); break;
+        }
+    });
+
+    bootGuardStartMs = millis();
+    if (bootGuardStreak < 255) {
+        bootGuardStreak++;
+    }
+    bool bootGuardActive = bootGuardStreak >= BOOT_GUARD_THRESHOLD;
+
+    BootMode bootMode = Config::personality().bootMode;
+    bootModeTarget = bootModeToPorkchop(bootMode);
+    if (bootModeTarget != PorkchopMode::IDLE && !bootGuardActive) {
+        bootModePending = true;
+        bootModeStartMs = millis();
+        char buf[32];
+        snprintf(buf, sizeof(buf), "BOOT -> %s IN 5S", bootModeLabel(bootMode));
+        Display::showToast(buf, 5000);
+    } else if (bootModeTarget != PorkchopMode::IDLE && bootGuardActive) {
+        Display::showToast("BOOT GUARD - IDLE", 4000);
+    }
+    
+    Avatar::setState(AvatarState::HAPPY);
+    
+    // Initialize non-blocking audio system
+    SFX::init();
+
+    if (!healthBootToastShown) {
+        healthBootToastShown = true;
+        Display::showToast(
+            "HEALTH BAR IS HEAP HEALTH.\n"
+            "LARGEST CONTIG DRIVES TLS.\n"
+            "FRAGMENTATION YOINKS IT.\n"
+            "BREW FIXES. JAH BLESS DI RF.",
+            5000
+        );
+    }
+    
+    Serial.println("[PORKCHOP] Initialized");
+    SDLog::log("PORK", "Initialized - LV%d %s", XP::getLevel(), XP::getTitle());
+}
+
+void Porkchop::update() {
+    // Update background network reconnaissance (channel hopping, cleanup)
+    NetworkRecon::update();
+    
+    processEvents();
+    yield(); // Allow other tasks to run between operations
+    handleInput();
+    yield(); // Allow other tasks to run between operations
+    
+    if (bootGuardStreak > 0 && (millis() - bootGuardStartMs >= BOOT_GUARD_WINDOW_MS)) {
+        bootGuardStreak = 0;
+    }
+    if (bootModePending) {
+        if (currentMode != PorkchopMode::IDLE) {
+            bootModePending = false;
+        } else if (millis() - bootModeStartMs >= 5000) {
+            bootModePending = false;
+            setMode(bootModeTarget);
+        }
+    }
+    updateMode();
+
+    maybeAutoConditionHeap(currentMode);
+    
+    // Tick non-blocking audio engine
+    SFX::update();
+    yield(); // Allow other tasks to run between operations
+    
+    // Process one queued achievement celebration (debounced)
+    XP::processAchievementQueue();
+    yield(); // Allow other tasks to run between operations
+    
+    // Stress test injection (if active)
+    StressTest::update();
+    yield(); // Allow other tasks to run between operations
+    
+    // Check for session time XP bonuses
+    XP::updateSessionTime();
+    yield(); // Allow other tasks to run between operations
+}
+
+void Porkchop::setMode(PorkchopMode mode) {
+    if (mode == currentMode) return;
+    
+    // Store the mode we're leaving for cleanup
+    PorkchopMode oldMode = currentMode;
+
+    Serial.printf("[MODE] EXIT %s free=%u largest=%u\n",
+        modeToString(oldMode),
+        (unsigned)esp_get_free_heap_size(),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    
+    // Save "real" modes as previous (not modal menus)
+    // Exception: CAPTURES and WIGLE_MENU ARE saved as previousMode so OINK recovery returns to them
+    if (currentMode != PorkchopMode::SETTINGS &&
+        currentMode != PorkchopMode::ABOUT &&
+        currentMode != PorkchopMode::ACHIEVEMENTS &&
+        currentMode != PorkchopMode::MENU &&
+        currentMode != PorkchopMode::FILE_TRANSFER &&
+        currentMode != PorkchopMode::CRASH_VIEWER &&
+        currentMode != PorkchopMode::DIAGNOSTICS &&
+        currentMode != PorkchopMode::SWINE_STATS &&
+        currentMode != PorkchopMode::BOAR_BROS &&
+        currentMode != PorkchopMode::BOUNTY_STATUS &&
+        currentMode != PorkchopMode::PIGSYNC_DEVICE_SELECT &&
+        currentMode != PorkchopMode::UNLOCKABLES &&
+        currentMode != PorkchopMode::SD_FORMAT) {
+        previousMode = currentMode;
+    }
+    // ALSO save CAPTURES and WIGLE_MENU as return points from OINK recovery
+    if (currentMode == PorkchopMode::CAPTURES ||
+        currentMode == PorkchopMode::WIGLE_MENU) {
+        previousMode = currentMode;
+    }
+    currentMode = mode;
+
+    Serial.printf("[MODE] ENTER %s free=%u largest=%u\n",
+        modeToString(currentMode),
+        (unsigned)esp_get_free_heap_size(),
+        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    
+    // Cleanup the mode we're actually leaving (oldMode), not previousMode
+    switch (oldMode) {
+        case PorkchopMode::OINK_MODE:
+            OinkMode::stop();
+            break;
         case PorkchopMode::DNH_MODE:
             DoNoHamMode::stop();
             break;
@@ -138,7 +399,6 @@ static const char* modeToString(PorkchopMode mode) {
             break;
         case PorkchopMode::PIGSYNC_DEVICE_SELECT:
             PigSyncMode::stopDiscovery();
-            PigSyncMode::stop();
             break;
         case PorkchopMode::BACON_MODE:
             BaconMode::stop();
@@ -252,6 +512,8 @@ static const char* modeToString(PorkchopMode mode) {
         case PorkchopMode::ABOUT:
             Display::resetAboutState();
             break;
+        
+            
         default:
             break;
     }
@@ -263,7 +525,7 @@ void Porkchop::postEvent(PorkchopEvent event, void* data) {
     // Prevent event queue overflow that could cause heap fragmentation
     if (eventQueue.size() >= MAX_EVENT_QUEUE_SIZE) {
         // Drop oldest event to maintain queue size
-        eventQueue.erase(eventQueue.begin());
+        eventQueue.clear();
     }
     eventQueue.push_back({event, data});
 }
@@ -281,7 +543,7 @@ void Porkchop::registerCallback(PorkchopEvent event, EventCallback callback) {
     // Add bounds checking to prevent unlimited growth
     if (callbacks.size() >= MAX_EVENT_QUEUE_SIZE) {
         // Remove the oldest callback if we're at capacity
-        callbacks.erase(callbacks.begin());
+        callbacks.erase(callbacks.begin(), callbacks.end());
     }
     callbacks.push_back({event, callback});
 }
@@ -362,9 +624,9 @@ void Porkchop::handleInput() {
     // Any keyboard input resets the screen dim timer
     Display::resetDimTimer();
     
-    //auto keys = M5Cardputer.Keyboard.keysState();
+    InputEvent keys = hal_input_keysState();
     // ESC maps to the key above Tab (shares ` / ~)
-    bool escPressed = hal_input_wasPressed(KEY_ESC);
+    bool escPressed = hal_input_isKeyPressed('`');
 
     // ESC to return to IDLE from any active mode
     if (escPressed && currentMode != PorkchopMode::IDLE) {
@@ -399,19 +661,19 @@ void Porkchop::handleInput() {
 
         // Handle device navigation (up/down) - only if devices exist
         if (deviceCount > 0) {
-            if (hal_input_wasPressed(KEY_UP)) {
+            if (hal_input_isKeyPressed(';')) {
                 // Up arrow - select previous device
                 PigSyncMode::selectDevice(PigSyncMode::getSelectedIndex() > 0 ?
                     PigSyncMode::getSelectedIndex() - 1 : deviceCount - 1);
             }
-            if (hal_input_wasPressed(KEY_DOWN)) {
+            if (hal_input_isKeyPressed('.')) {
                 // Down arrow - select next device
                 PigSyncMode::selectDevice((PigSyncMode::getSelectedIndex() + 1) % deviceCount);
             }
         }
 
         // Enter to connect to selected device
-        if (hal_input_wasPressed(KEY_ENTER) && PigSyncMode::getDeviceCount() > 0) {
+        if (hal_input_isKeyPressed(KEY_ENTER) && PigSyncMode::getDeviceCount() > 0) {
             uint8_t selectedIdx = PigSyncMode::getSelectedIndex();
             if (selectedIdx < PigSyncMode::getDeviceCount()) {
                 PigSyncMode::connectTo(selectedIdx);
@@ -419,19 +681,19 @@ void Porkchop::handleInput() {
         }
 
         // A to abort sync (when connected)
-        if (PigSyncMode::isConnected() && hal_input_wasPressed('a')) {
+        if (PigSyncMode::isConnected() && hal_input_isKeyPressed('a')) {
             if (PigSyncMode::isSyncing()) {
                 PigSyncMode::abortSync();
             }
         }
 
         // D to disconnect (when connected)
-        if (PigSyncMode::isConnected() && hal_input_wasPressed('d')) {
+        if (PigSyncMode::isConnected() && hal_input_isKeyPressed('d')) {
             PigSyncMode::disconnect();
         }
 
         // R to rescan (when not connected)
-        if (!PigSyncMode::isConnected() && hal_input_wasPressed('r')) {
+        if (!PigSyncMode::isConnected() && hal_input_isKeyPressed('r')) {
             PigSyncMode::startScan();
         }
 
@@ -440,13 +702,13 @@ void Porkchop::handleInput() {
     
     // Backtick opens menu from IDLE (kept out of back/exit flow)
     if (currentMode == PorkchopMode::IDLE &&
-        hal_input_wasPressed(KEY_ESC)) {
+        hal_input_isKeyPressed('`')) {
         setMode(PorkchopMode::MENU);
         return;
     }
     
     // Screenshot with P key (global, works in any mode)
-    if (hal_input_wasPressed('p') || hal_input_wasPressed('P')) {
+    if (hal_input_isKeyPressed('p') || hal_input_isKeyPressed('P')) {
         if (!Display::isSnapping()) {
             Display::takeScreenshot();
         }
@@ -456,7 +718,7 @@ void Porkchop::handleInput() {
     // T key stress test cycle disabled
     
     // Enter key in About mode - easter egg
-    if (hal_input_wasPressed(KEY_ENTER)) {
+    if (hal_input_isKeyPressed(KEY_ENTER)) {
         if (currentMode == PorkchopMode::ABOUT) {
             Display::onAboutEnterPressed();
             return;
@@ -465,7 +727,7 @@ void Porkchop::handleInput() {
     
     // Mode shortcuts when in IDLE
     if (currentMode == PorkchopMode::IDLE) {
-        for (auto c : keys.word) {
+        uint8_t c = keys.key; {
             switch (c) {
                 case 'o': // Oink mode
                 case 'O':
@@ -507,6 +769,8 @@ void Porkchop::handleInput() {
                     break;
                 case 'c': // Charging mode
                 case 'C':
+                    setMode(PorkchopMode::IDLE);
+                    break;
             }
         }
         yield(); // Allow other tasks to run after processing all keys
@@ -516,7 +780,7 @@ void Porkchop::handleInput() {
     if (currentMode == PorkchopMode::OINK_MODE) {
         // B key - add selected network to BOAR BROS exclusion list
         static bool bWasPressed = false;
-        bool bPressed = hal_input_wasPressed('b') || hal_input_wasPressed('B');
+        bool bPressed = hal_input_isKeyPressed('b') || hal_input_isKeyPressed('B');
         if (bPressed && !bWasPressed) {
             int idx = OinkMode::getSelectionIndex();
             if (OinkMode::excludeNetwork(idx)) {
@@ -532,7 +796,7 @@ void Porkchop::handleInput() {
         
         // D key - switch to DO NO HAM mode (seamless mode switch)
         static bool dWasPressed_oink = false;
-        bool dPressed = hal_input_wasPressed('d') || hal_input_wasPressed('D');
+        bool dPressed = hal_input_isKeyPressed('d') || hal_input_isKeyPressed('D');
         if (dPressed && !dWasPressed_oink) {
             // Track passive time for achievements
             SessionStats& sess = const_cast<SessionStats&>(XP::getSession());
@@ -553,7 +817,7 @@ void Porkchop::handleInput() {
     if (currentMode == PorkchopMode::DNH_MODE) {
         // O key - switch back to OINK mode (seamless mode switch)
         static bool oWasPressed_dnh = false;
-        bool oPressed = hal_input_wasPressed('o') || hal_input_wasPressed('O');
+        bool oPressed = hal_input_isKeyPressed('o') || hal_input_isKeyPressed('O');
         if (oPressed && !oWasPressed_dnh) {
             // Clear passive time tracking
             SessionStats& sess = const_cast<SessionStats&>(XP::getSession());
@@ -689,6 +953,12 @@ void Porkchop::updateMode() {
             if (!PigSyncMode::isRunning()) {
                 // User exited, go back to menu
                 setMode(PorkchopMode::MENU);
+            }
+            break;
+        
+            hal_input_update();
+            if (hal_input_shouldExit()) {
+                setMode(PorkchopMode::IDLE);
             }
             break;
         default:

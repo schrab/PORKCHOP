@@ -1,7 +1,10 @@
 // WiGLE Menu - View wardriving files with sync support
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
+#include "../hal/hal_display.h"
 #include <vector>
 #include <FS.h>
 #include <SD.h>

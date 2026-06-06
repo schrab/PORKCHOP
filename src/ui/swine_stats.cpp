@@ -129,7 +129,7 @@ void SwineStats::update() {
 }
 
 void SwineStats::handleInput() {
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -140,7 +140,7 @@ void SwineStats::handleInput() {
     keyWasPressed = true;
     
     // Tab cycling: ',' cycles left, '/' cycles right
-    if (hal_input_wasPressed(KEY_LEFT)) {
+    if (hal_input_wasPressed(',')) {
         // Cycle left: STATS -> WIGLE -> BOOSTS -> STATS
         switch (currentTab) {
             case StatsTab::STATS:
@@ -155,7 +155,7 @@ void SwineStats::handleInput() {
         }
         return;
     }
-    if (hal_input_wasPressed(KEY_RIGHT)) {
+    if (hal_input_wasPressed('/')) {
         // Cycle right: STATS -> BOOSTS -> WIGLE -> STATS
         switch (currentTab) {
             case StatsTab::STATS:

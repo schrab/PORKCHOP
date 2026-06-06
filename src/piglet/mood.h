@@ -1,6 +1,9 @@
 // Piglet mood and phrases
 #pragma once
 
+class DisplayCanvas;
+
+#include "../hal/hal_display.h"
 #include "avatar.h"
 
 class Mood {

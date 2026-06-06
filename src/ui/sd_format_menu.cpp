@@ -4,12 +4,11 @@
 
 #include "sd_format_menu.h"
 #include "display.h"
+#include "../hal/hal_battery.h"
 #include "../core/config.h"
 #include "../core/network_recon.h"
 #include "../web/fileserver.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
-#include "../hal/hal_battery.h"
 #include <WiFi.h>
 #include <esp_task_wdt.h>
 
@@ -69,7 +68,7 @@ void SdFormatMenu::show() {
     Display::clearBottomOverlay();
     
     // Dim screen to 5% to save power during critical operation
-    g_Display.setBrightness(SD_FORMAT_BRIGHTNESS);
+    hal_display_setBrightness(SD_FORMAT_BRIGHTNESS);
 }
 
 void SdFormatMenu::hide() {
@@ -158,7 +157,7 @@ void SdFormatMenu::doReboot() {
 // ============================================================================
 
 void SdFormatMenu::handleInput() {
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
     if (!anyPressed) {
         keyWasPressed = false;
         return;
@@ -166,8 +165,8 @@ void SdFormatMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
 
-    bool up = hal_input_wasPressed(KEY_UP);
-    bool down = hal_input_wasPressed(KEY_DOWN);
+    bool up = hal_input_wasPressed(';');
+    bool down = hal_input_wasPressed('.');
     bool back = hal_input_wasPressed(KEY_BACKSPACE);
 
     // ---- CONFIRM_ENTRY STATE ----
@@ -227,7 +226,7 @@ void SdFormatMenu::handleInput() {
         // Backspace in SELECT means exit - but we must reboot since system is stopped
         if (back) {
             // Increase brightness briefly for warning visibility
-            g_Display.setBrightness(128);
+            hal_display_setBrightness(128);
             Display::notify(NoticeKind::WARNING, "REBOOT REQUIRED", 1500);
             delay(1500);
             doReboot();  // Never returns
@@ -475,7 +474,7 @@ void SdFormatMenu::drawConfirm(DisplayCanvas& canvas) {
 
     // Background with border (inverted colors like menu modal)
     canvas.fillRoundRect(boxX, boxY, DIALOG_W, DIALOG_H, radius, fg);
-    canvas.drawRoundRect(boxX, boxY, DIALOG_W, DIALOG_H, radius, bg);
+    canvas.fillRoundRect(boxX, boxY, DIALOG_W, DIALOG_H, radius, bg);
 
     canvas.setTextColor(bg);
     canvas.setTextDatum(top_center);

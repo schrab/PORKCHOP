@@ -1,8 +1,11 @@
 // Crash Viewer Menu
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
 #include <vector>
+#include "../hal/hal_display.h"
 
 class CrashViewer {
 public:

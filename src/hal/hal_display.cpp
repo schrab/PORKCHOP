@@ -98,7 +98,7 @@ void DisplayCanvas::setTextDatum(uint8_t datum) {
 }
 
 void DisplayCanvas::setFont(const void* font) {
-    if (m_sprite) m_sprite->setFont((const GFXfont*)font);
+    if (m_sprite) m_sprite->setFreeFont((const GFXfont*)font);
 }
 
 void DisplayCanvas::setCursor(int32_t x, int32_t y) {
@@ -118,11 +118,11 @@ void DisplayCanvas::drawRightString(const char* str, int32_t x, int32_t y) {
 }
 
 uint16_t DisplayCanvas::color565(uint8_t r, uint8_t g, uint8_t b) {
-    return TFT_eSPI::color565(r, g, b);
+    return m_display->color565(r, g, b);
 }
 
 uint16_t DisplayCanvas::color24to16(uint32_t c) {
-    return TFT_eSPI::color24to16(c);
+    return m_display->color24to16(c);
 }
 
 // ============================================================
@@ -136,4 +136,47 @@ void hal_display_init() {
     // Backlight on
     pinMode(PIN_DISPLAY_BL, OUTPUT);
     digitalWrite(PIN_DISPLAY_BL, HIGH);
+}
+
+// Additional methods for M5Canvas compatibility
+void DisplayCanvas::setTextColor(uint16_t fg) {
+    if (m_sprite) m_sprite->setTextColor(fg);
+}
+
+void DisplayCanvas::print(const char* str) {
+    if (m_sprite && str) m_sprite->print(str);
+}
+
+void DisplayCanvas::print(int val) {
+    if (m_sprite) m_sprite->print(val);
+}
+
+void DisplayCanvas::print(float val) {
+    if (m_sprite) m_sprite->print(val);
+}
+
+void DisplayCanvas::drawChar(char c, int32_t x, int32_t y) {
+    if (m_sprite) {
+        m_sprite->setCursor(x, y);
+        m_sprite->print(c);
+    }
+}
+
+int16_t DisplayCanvas::width() const {
+    return m_sprite ? m_sprite->width() : 0;
+}
+
+int16_t DisplayCanvas::height() const {
+    return m_sprite ? m_sprite->height() : 0;
+}
+
+int16_t DisplayCanvas::textWidth(const char* str) const {
+    if (!m_sprite || !str) return 0;
+    return m_sprite->textWidth(str);
+}
+
+// Set display brightness (0-255)
+void hal_display_setBrightness(uint8_t brightness) {
+    ledcAttachPin(PIN_DISPLAY_BL, DISPLAY_BL_LEDC_CHANNEL);
+    ledcWrite(DISPLAY_BL_LEDC_CHANNEL, brightness);
 }

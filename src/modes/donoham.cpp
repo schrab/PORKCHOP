@@ -3,7 +3,7 @@
 // Passive WiFi reconnaissance - no attacks, just listening
 
 #include "donoham.h"
-// No M5Unified needed
+#include "../hal/hal_display.h"
 #include <WiFi.h>
 #include <NimBLEDevice.h>  // For BLE coexistence check
 #include "../core/config.h"

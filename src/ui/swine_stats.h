@@ -1,6 +1,9 @@
 // SWINE STATS - Lifetime statistics and active buff/debuff overlay
 #pragma once
 
+class DisplayCanvas;
+
+#include "../hal/hal_display.h"
 
 // Buff/Debuff flags (can have multiple active)
 enum class PorkBuff : uint8_t {

@@ -1,6 +1,8 @@
 // Porkchop RPG XP and Leveling System
 #pragma once
 
+class DisplayCanvas;
+
 #include <Preferences.h>
 
 // Class tiers (every 5 levels)

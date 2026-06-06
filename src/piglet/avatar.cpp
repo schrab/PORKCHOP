@@ -2,6 +2,7 @@
 
 #include "avatar.h"
 #include "weather.h"
+#include "../hal/hal_rtc.h"
 #include "../ui/display.h"
 #include <time.h>
 
@@ -749,9 +750,9 @@ bool Avatar::isNightTime() {
     }
     lastNightCheck = now;
 
-    struct timeval tv; gettimeofday(&tv, NULL); struct tm* dt = localtime(&tv.tv_sec);
-    if ((dt->tm_year + 1900) >= 2024) {
-        uint8_t hour = dt->tm_hour;
+    hal_rtc_datetime_t dt; hal_rtc_getDateTime(&dt);
+    if (dt.year >= 2024) {
+        uint8_t hour = dt.hour;
         cachedNightMode = (hour >= 20 || hour < 6);
         return cachedNightMode;
     }

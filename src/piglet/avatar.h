@@ -1,6 +1,8 @@
 // Piglet ASCII avatar
 #pragma once
 
+class DisplayCanvas;
+
 
 enum class AvatarState {
     NEUTRAL,

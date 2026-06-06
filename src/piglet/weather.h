@@ -2,6 +2,9 @@
 // Mood-tied weather system
 #pragma once
 
+class DisplayCanvas;
+
+#include "../hal/hal_display.h"
 
 namespace Weather {
 

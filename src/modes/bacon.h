@@ -2,8 +2,11 @@
 // Broadcasts WiFi beacons on CH:6 with AP fingerprint (Vendor IE)
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
 #include <esp_wifi.h>
+#include "../hal/hal_display.h"
 
 // Constants
 #define BACON_CHANNEL 6

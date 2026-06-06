@@ -1,8 +1,10 @@
 // Unlockables Menu - Secret challenges for the worthy
 #pragma once
-#include <cstdint>
 
-class DisplayCanvas; // Forward declaration
+class DisplayCanvas;
+
+#include "../hal/hal_display.h"
+#include <cstdint>
 
 // Unlockable item definition
 struct UnlockableItem {

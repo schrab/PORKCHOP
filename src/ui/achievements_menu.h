@@ -1,7 +1,10 @@
 // Achievements Menu - View unlocked achievements
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
+#include "../hal/hal_display.h"
 
 class AchievementsMenu {
 public:

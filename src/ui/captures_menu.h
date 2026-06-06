@@ -1,7 +1,10 @@
 // Captures Menu - View saved handshake captures
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
+#include "../hal/hal_display.h"
 #include <vector>
 #include <FS.h>
 #include <SD.h>

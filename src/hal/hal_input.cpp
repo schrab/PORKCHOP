@@ -113,3 +113,29 @@ void hal_input_waitRelease() {
 bool hal_input_isChange() {
     return stateChanged;
 }
+
+InputEvent hal_input_keysState() {
+    InputEvent ev = {false, 0};
+    if (!digitalRead(JOYSTICK_UP_PIN)) { ev.pressed = true; ev.key = KEY_UP; return ev; }
+    if (!digitalRead(JOYSTICK_DOWN_PIN)) { ev.pressed = true; ev.key = KEY_DOWN; return ev; }
+    if (!digitalRead(JOYSTICK_LEFT_PIN)) { ev.pressed = true; ev.key = KEY_LEFT; return ev; }
+    if (!digitalRead(JOYSTICK_RIGHT_PIN)) { ev.pressed = true; ev.key = KEY_RIGHT; return ev; }
+    if (!digitalRead(JOYSTICK_CENTER_PIN)) { ev.pressed = true; ev.key = KEY_ENTER; return ev; }
+    return ev;
+}
+bool hal_input_isKeyPressed(char key) {
+    switch (key) {
+        case KEY_UP: return !digitalRead(JOYSTICK_UP_PIN);
+        case KEY_DOWN: return !digitalRead(JOYSTICK_DOWN_PIN);
+        case KEY_LEFT: return !digitalRead(JOYSTICK_LEFT_PIN);
+        case KEY_RIGHT: return !digitalRead(JOYSTICK_RIGHT_PIN);
+        case KEY_ENTER: return !digitalRead(JOYSTICK_CENTER_PIN);
+        default: return false;
+    }
+}
+bool hal_input_shouldExit() {
+    return hal_input_wasPressed(KEY_ESC) || hal_input_wasPressed(KEY_BACKSPACE);
+}
+bool hal_input_isPressed() {
+    return hal_input_anyHeld();
+}

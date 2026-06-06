@@ -2,11 +2,11 @@
 
 #include "diagnostics_menu.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
 #include <SD.h>
 #include <time.h>
 #include <string.h>
 #include "display.h"
+#include "../hal/hal_battery.h"
 #include "../core/config.h"
 #include "../web/wpasec.h"
 #include "../web/wigle.h"
@@ -44,7 +44,7 @@ void DiagnosticsMenu::hide() {
 void DiagnosticsMenu::update() {
     if (!active) return;
 
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
 
     if (!anyPressed) {
         keyWasPressed = false;
@@ -54,7 +54,7 @@ void DiagnosticsMenu::update() {
     if (keyWasPressed) return;
     keyWasPressed = true;
 
-    auto keys = /* keysState replaced */;
+    auto keys = hal_input_keysState();
 
     // Enter/S - save snapshot
     if (hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed('s') || hal_input_wasPressed('S')) {

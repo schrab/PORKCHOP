@@ -3,6 +3,7 @@
 #include "spectrum.h"
 #include "oink.h"
 #include "../core/config.h"
+#include "../hal/hal_imu.h"
 #include "../audio/sfx.h"
 #include "../core/network_recon.h"
 #include "../core/oui.h"
@@ -14,7 +15,6 @@
 #include "../core/xp.h"
 #include "../ui/display.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <esp_heap_caps.h>  // For heap_caps_get_largest_free_block
@@ -689,13 +689,13 @@ void SpectrumMode::handleInput() {
     
     Display::resetDimTimer();
     
-    //auto keys = M5Cardputer.Keyboard.keysState();
+    auto keys = hal_input_keysState();
     
     // Pan spectrum with , (left) and / (right)
     if (hal_input_wasPressed(KEY_LEFT)) {
         viewCenterMHz = fmax(MIN_CENTER_MHZ, viewCenterMHz - PAN_STEP_MHZ);
     }
-    if (hal_input_wasPressed(KEY_RIGHT)) {
+    if (hal_input_wasPressed('/')) {
         viewCenterMHz = fmin(MAX_CENTER_MHZ, viewCenterMHz + PAN_STEP_MHZ);
     }
     
@@ -718,7 +718,7 @@ void SpectrumMode::handleInput() {
     }
     
     // Cycle through matching networks with ; and .
-    if (hal_input_wasPressed(KEY_UP) && !networks.empty()) {
+    if (hal_input_wasPressed(';') && !networks.empty()) {
         int startIdx = selectedIndex;
         int count = 0;
         do {
@@ -732,7 +732,7 @@ void SpectrumMode::handleInput() {
             viewCenterMHz = channelToFreq(networks[selectedIndex].channel);
         }
     }
-    if (hal_input_wasPressed(KEY_DOWN) && !networks.empty()) {
+    if (hal_input_wasPressed('.') && !networks.empty()) {
         int startIdx = selectedIndex;
         int count = 0;
         do {
@@ -822,7 +822,7 @@ void SpectrumMode::handleClientMonitorInput() {
     
     // Navigation only if clients exist [P14]
     if (clientCount > 0) {
-        if (hal_input_wasPressed(KEY_UP)) {
+        if (hal_input_wasPressed(';')) {
             selectedClientIndex = max(0, selectedClientIndex - 1);
             // Adjust scroll if needed
             if (selectedClientIndex < clientScrollOffset) {
@@ -830,7 +830,7 @@ void SpectrumMode::handleClientMonitorInput() {
             }
         }
         
-        if (hal_input_wasPressed(KEY_DOWN)) {
+        if (hal_input_wasPressed('.')) {
             selectedClientIndex = min(clientCount - 1, selectedClientIndex + 1);
             // Adjust scroll if needed
             if (selectedClientIndex >= clientScrollOffset + VISIBLE_CLIENTS) {
@@ -1649,8 +1649,8 @@ float SpectrumMode::channelToFreq(uint8_t channel) {
 // ============================================================
 
 void SpectrumMode::updateDialChannel() {
-    // Skip tilt-to-tune on non-Cardputer hardware (no accelerometer)
-    //if (M5.getBoard() != m5::board_t::board_M5CardputerADV) return;
+    // Skip if not Cardputer ADV (no accelerometer on regular Cardputer)
+    if (false) return;
     
     // Skip if tilt-to-tune is disabled
     if (!Config::wifi().spectrumTiltEnabled) {
@@ -1672,9 +1672,9 @@ void SpectrumMode::updateDialChannel() {
     if (staleMs < 1000) staleMs = 1000;
     if (staleMs > 60000) staleMs = 60000;
     
-    // ==[ READ IMU ]== accelerometer (stubbed - no IMU on target board)
+    // ==[ READ IMU ]== accelerometer
     float ax, ay, az;
-    ax = ay = az = 0;
+    hal_imu_getAccel(&ax, &ay, &az);
     
     // ==[ AUTO FLT/UPS MODE SWITCH WITH HYSTERESIS ]==
     // FLT (flat): normal spectrum mode, auto-hopping

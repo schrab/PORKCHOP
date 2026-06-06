@@ -498,3 +498,1761 @@ static uint8_t pendingTimeSyncValid = 0;
 static uint32_t pendingTimeSyncUnix = 0;
 static uint32_t pendingTimeSyncRtt = 0;  // Round-trip time in ms
 
+// Session timeout - detect if Sirloin stops responding
+static const uint32_t SESSION_TIMEOUT = 60000;  // 60 seconds (increased from 10 seconds)
+static volatile uint32_t lastPacketTime = 0;
+static volatile bool pendingDisconnectReceived = false;  // RSP_DISCONNECT from Sirloin
+
+// Control response duplicate tracking
+static uint8_t lastControlRspSeq = 0;
+static uint8_t lastControlRspType = 0;
+static uint16_t lastControlRspSession = 0;
+static bool lastControlRspValid = false;
+
+// ==[ ESP-NOW CALLBACKS ]==
+
+// ESP32-S3 uses older ESP-NOW callback signature (no esp_now_recv_info_t)
+void pigSyncOnRecv(const uint8_t* mac, const uint8_t* data, int len) {
+    PIGSYNC_LOGF("[PIGSYNC-CLI-RX] len=%d from %02X:%02X:%02X:%02X:%02X:%02X\n", 
+                  len, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    
+    // ==[ PHASE 3: BEACON_GRUNT - Layer 0 connectionless beacon ]==
+    // Check for grunt first (different format, no PigSyncHeader)
+    if (len >= (int)sizeof(BeaconGrunt) && data[0] == PIGSYNC_MAGIC && data[2] == BEACON_GRUNT) {
+        const BeaconGrunt* grunt = (const BeaconGrunt*)data;
+        
+        taskENTER_CRITICAL(&pendingMux);
+        memcpy(pendingGruntMac, grunt->sirloinMac, 6);
+        pendingGruntFlags = grunt->flags;
+        pendingGruntCaptureCount = grunt->captureCount;
+        pendingGruntBattery = grunt->batteryPercent;
+        pendingGruntStorage = grunt->storagePercent;
+        pendingGruntUnixTime = grunt->unixTime;
+        pendingGruntUptime = grunt->uptimeMin;
+        memcpy(pendingGruntName, grunt->name, 4);
+        pendingGruntReceived = true;
+        taskEXIT_CRITICAL(&pendingMux);
+        PIGSYNC_LOGF("[PIGSYNC-CLI-RX] BEACON_GRUNT from %s batt=%d%% captures=%d\n", 
+                      grunt->name, grunt->batteryPercent, grunt->captureCount);
+        return;
+    }
+    
+    if (len < (int)sizeof(PigSyncHeader)) return;
+    if (!isValidPacket(data, len)) return;
+    
+    const PigSyncHeader* hdr = (const PigSyncHeader*)data;
+    PIGSYNC_LOGF("[PIGSYNC-CLI-RX] type=0x%02X\n", hdr->type);
+
+    if (isSessionBoundResponse(hdr->type)) {
+        uint16_t expectedSession = PigSyncMode::getSessionId();
+        if (expectedSession == 0) {
+            taskENTER_CRITICAL(&pendingMux);
+            expectedSession = pendingSessionId;
+            taskEXIT_CRITICAL(&pendingMux);
+        }
+        if (expectedSession == 0 || hdr->sessionId != expectedSession) {
+            PIGSYNC_LOGF("[PIGSYNC-CLI-RX] Ignoring session mismatch type=0x%02X session=0x%04X expected=0x%04X\n",
+                          hdr->type, hdr->sessionId, expectedSession);
+            return;
+        }
+    }
+
+    if (hdr->sessionId != 0) {
+        if (hdr->seq == reliability.lastRxSeq || isSeqNewer(hdr->seq, reliability.lastRxSeq)) {
+            reliability.lastRxSeq = hdr->seq;
+        }
+    }
+
+    if (isControlResponse(hdr->type)) {
+        if (controlTx.waiting && hdr->ack == controlTx.seq) {
+            taskENTER_CRITICAL(&pendingMux);
+            pendingControlAck = true;
+            pendingControlAckSeq = hdr->ack;
+            taskEXIT_CRITICAL(&pendingMux);
+        }
+        if (lastControlRspValid &&
+            hdr->seq == lastControlRspSeq &&
+            hdr->type == lastControlRspType &&
+            hdr->sessionId == lastControlRspSession) {
+            // Duplicate control response, ignore processing
+            goto update_last_packet_time;
+        }
+        lastControlRspSeq = hdr->seq;
+        lastControlRspType = hdr->type;
+        lastControlRspSession = hdr->sessionId;
+        lastControlRspValid = true;
+    }
+    
+    switch (hdr->type) {
+        case RSP_BEACON: {
+            PIGSYNC_LOGLN("[PIGSYNC-CLI-RX] RSP_BEACON");
+            PIGSYNC_LOGF("[PIGSYNC-CLI-RX] sizeof(RspBeacon)=%d len=%d\n", (int)sizeof(RspBeacon), len);
+            if (len < (int)sizeof(RspBeacon)) {
+                PIGSYNC_LOGLN("[PIGSYNC-CLI-ERR] RSP_BEACON too short");
+                break;
+            }
+            const RspBeacon* rsp = (const RspBeacon*)data;
+            
+            // Store in pending buffer - will be processed in update()
+            // NOTE: Use callback MAC, not rsp->son_mac! WiFi.macAddress() differs from ESP-NOW sender MAC
+            taskENTER_CRITICAL(&pendingMux);
+            memcpy(pendingBeaconMac, mac, 6);  // Use actual ESP-NOW sender MAC
+            pendingBeaconRSSI = rsp->rssi;
+            pendingBeaconPending = rsp->pending;
+            pendingBeaconFlags = rsp->flags;
+            pendingBeaconReceived = true;
+            taskEXIT_CRITICAL(&pendingMux);
+            PIGSYNC_LOGLN("[PIGSYNC-CLI-RX] pendingBeaconReceived=true");
+            break;
+        }
+        
+        case RSP_HELLO: {
+            if (len < (int)sizeof(RspHello)) break;
+            const RspHello* rsp = (const RspHello*)data;
+
+            if (controlTx.waiting && controlTx.type == CMD_HELLO) {
+                taskENTER_CRITICAL(&pendingMux);
+                pendingHelloClearControl = true;
+                taskEXIT_CRITICAL(&pendingMux);
+            }
+            
+            taskENTER_CRITICAL(&pendingMux);
+            pendingPMKIDCount = rsp->pmkid_count;
+            pendingHSCount = rsp->hs_count;
+            pendingDialogueId = rsp->dialogue_id % DIALOGUE_TRACK_COUNT;
+            pendingMood = rsp->mood;
+            pendingSessionId = rsp->hdr.sessionId;  // Session in header now
+            pendingDataChannel = rsp->data_channel; // Channel for data transfer
+            pendingHelloReceived = true;
+            taskEXIT_CRITICAL(&pendingMux);
+            PIGSYNC_LOGF("[PIGSYNC-CLI-RX] RSP_HELLO sessionId=0x%04X dataChannel=%d\n", rsp->hdr.sessionId, rsp->data_channel);
+            break;
+        }
+
+        case RSP_RING: {
+            if (controlTx.waiting && controlTx.type == CMD_HELLO) {
+                taskENTER_CRITICAL(&pendingMux);
+                pendingHelloClearControl = true;
+                taskEXIT_CRITICAL(&pendingMux);
+            }
+            taskENTER_CRITICAL(&pendingMux);
+            pendingRingReceived = true;
+            pendingRingAt = millis();
+            taskEXIT_CRITICAL(&pendingMux);
+            PIGSYNC_LOGLN("[PIGSYNC-CLI-RX] RSP_RING");
+            break;
+        }
+        
+        case RSP_READY: {
+            if (len < (int)sizeof(RspReady)) break;
+            const RspReady* rsp = (const RspReady*)data;
+
+            if (controlTx.waiting && controlTx.type == CMD_READY) {
+                taskENTER_CRITICAL(&pendingMux);
+                pendingReadyClearControl = true;
+                taskEXIT_CRITICAL(&pendingMux);
+            }
+            
+            taskENTER_CRITICAL(&pendingMux);
+            pendingPMKIDCount = rsp->pmkid_count;
+            pendingHSCount = rsp->hs_count;
+            pendingReadyReceived = true;
+            taskEXIT_CRITICAL(&pendingMux);
+            PIGSYNC_LOGF("[PIGSYNC-CLI-RX] RSP_READY sessionId=0x%04X\n", rsp->hdr.sessionId);
+            break;
+        }
+        
+        case RSP_CHUNK: {
+            if (len < (int)sizeof(RspChunk)) break;
+            const RspChunk* rsp = (const RspChunk*)data;
+            
+            uint16_t dataLen = len - sizeof(RspChunk);
+            if (dataLen > 256) dataLen = 256;
+
+            taskENTER_CRITICAL(&pendingMux);
+            int slot = -1;
+            for (uint8_t i = 0; i < PENDING_CHUNK_QUEUE_SIZE; i++) {
+                if (pendingChunkQueue[i].used && pendingChunkQueue[i].seq == rsp->chunk_seq) {
+                    slot = i;
+                    break;
+                }
+            }
+            if (slot < 0) {
+                for (uint8_t i = 0; i < PENDING_CHUNK_QUEUE_SIZE; i++) {
+                    if (!pendingChunkQueue[i].used) {
+                        slot = i;
+                        break;
+                    }
+                }
+            }
+            if (slot >= 0) {
+                PendingChunkSlot& entry = pendingChunkQueue[slot];
+                if (!entry.used) {
+                    pendingChunkCount++;
+                }
+                entry.used = true;
+                entry.seq = rsp->chunk_seq;
+                entry.total = rsp->chunk_total;
+                entry.len = dataLen;
+                memcpy(entry.data, data + sizeof(RspChunk), dataLen);
+                pendingChunkReceived = true;
+            }
+            taskEXIT_CRITICAL(&pendingMux);
+            break;
+        }
+        
+        case RSP_COMPLETE: {
+            if (len < (int)sizeof(RspComplete)) break;
+            const RspComplete* rsp = (const RspComplete*)data;
+            
+            taskENTER_CRITICAL(&pendingMux);
+            pendingTotalBytes = rsp->total_bytes;
+            pendingCRC = rsp->crc32;
+            pendingCompleteReceived = true;
+            taskEXIT_CRITICAL(&pendingMux);
+            break;
+        }
+        
+        case RSP_PURGED: {
+            if (len < (int)sizeof(RspPurged)) break;
+            const RspPurged* rsp = (const RspPurged*)data;
+            
+            taskENTER_CRITICAL(&pendingMux);
+            pendingPurgedCount = rsp->purged_count;
+            pendingBountyMatches = rsp->bounty_matches;
+            pendingPurgedReceived = true;
+            taskEXIT_CRITICAL(&pendingMux);
+            break;
+        }
+        
+        case RSP_ERROR: {
+            if (len < (int)sizeof(RspError)) break;
+            const RspError* rsp = (const RspError*)data;
+            
+            taskENTER_CRITICAL(&pendingMux);
+            pendingErrorCode = rsp->error_code;
+            pendingErrorReceived = true;
+            taskEXIT_CRITICAL(&pendingMux);
+            break;
+        }
+        
+        case RSP_TIME_SYNC: {
+            // Phase 3: Sirloin sends us its RTC time
+            if (len < (int)sizeof(RspTimeSync)) break;
+            const RspTimeSync* rsp = (const RspTimeSync*)data;
+            
+            taskENTER_CRITICAL(&pendingMux);
+            pendingTimeSyncReceived = true;
+            pendingTimeSyncValid = rsp->rtcValid;
+            pendingTimeSyncUnix = rsp->sirloinUnixTime;
+            pendingTimeSyncRtt = millis() - rsp->echoedMillis;  // RTT in ms
+            taskEXIT_CRITICAL(&pendingMux);
+            PIGSYNC_LOGF("[PIGSYNC-CLI-RX] RSP_TIME_SYNC rtcValid=%d unix=%lu rtt=%lums\n", 
+                          rsp->rtcValid, rsp->sirloinUnixTime, pendingTimeSyncRtt);
+            break;
+        }
+        
+        case RSP_DISCONNECT: {
+            // Sirloin is ending the call
+            taskENTER_CRITICAL(&pendingMux);
+            pendingDisconnectReceived = true;
+            taskEXIT_CRITICAL(&pendingMux);
+            PIGSYNC_LOGLN("[PIGSYNC-CLI-RX] RSP_DISCONNECT - Sirloin ended call");
+            break;
+        }
+        
+        case RSP_OK:
+        case RSP_BOUNTIES_ACK:
+            // Acknowledged
+            break;
+    }
+    
+    // Update last packet time for session timeout (any valid packet resets)
+update_last_packet_time:
+    taskENTER_CRITICAL(&pendingMux);
+    lastPacketTime = millis();
+    taskEXIT_CRITICAL(&pendingMux);
+}
+
+void pigSyncOnSent(const uint8_t* mac, esp_now_send_status_t status) {
+    if (status != ESP_NOW_SEND_SUCCESS) {
+        PIGSYNC_LOGF("[PIGSYNC-CLI-ERR] Send failed (mac=%02X:%02X:%02X:%02X:%02X:%02X)\n",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+}
+
+// ==[ LIFECYCLE ]==
+
+void PigSyncMode::init() {
+    if (initialized) return;
+
+    // WiFi must be in STA mode for ESP-NOW
+    WiFi.mode(WIFI_STA);
+    WiFi.disconnect();
+
+    // Set discovery channel (channel 1)
+    esp_wifi_set_channel(PIGSYNC_DISCOVERY_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    dataChannel = PIGSYNC_DISCOVERY_CHANNEL;
+
+    // Initialize ESP-NOW
+    if (esp_now_init() != ESP_OK) {
+        PIGSYNC_LOGLN("[PIGSYNC-CLI-ERR] ESP-NOW init failed");
+        return;
+    }
+
+    // Set PMK for encrypted communications
+    if (esp_now_set_pmk(PIGSYNC_PMK) != ESP_OK) {
+        PIGSYNC_LOGLN("[PIGSYNC-CLI-ERR] Failed to set PMK");
+    }
+
+    // Register callbacks
+    esp_now_register_recv_cb(pigSyncOnRecv);
+    esp_now_register_send_cb(pigSyncOnSent);
+
+    initialized = true;
+    PIGSYNC_LOGLN("[PIGSYNC-CLI-STATE] INIT");
+}
+
+// Handle keyboard input for device selection and interaction
+void PigSyncMode::handleKeyboardInput() {
+    hal_input_update();
+
+    if (hal_input_isChange() && hal_input_isPressed()) {
+        // Keyboard_Class::KeysState state - replaced with hal_input
+
+        // Handle quit/back key
+        if (hal_input_wasPressed(KEY_ESC)) { // ` or ESC
+            PIGSYNC_LOGLN("[PIGSYNC-CLI] User quit to menu");
+            stop();
+            return;
+        }
+
+        // Handle device selection and connection
+        if (PigSyncMode::state == PigSyncMode::State::IDLE) {
+            if (!devices.empty()) {
+                // Navigation keys
+                if (hal_input_wasPressed(KEY_UP)) { // Previous/Up
+                    if (selectedIndex > 0) {
+                        selectedIndex--;
+                        PIGSYNC_LOGF("[PIGSYNC-CLI] Selected device %d\n", selectedIndex);
+                    }
+                } else if (hal_input_wasPressed(KEY_DOWN)) { // Next/Down
+                    if (selectedIndex < devices.size() - 1) {
+                        selectedIndex++;
+                        PIGSYNC_LOGF("[PIGSYNC-CLI] Selected device %d\n", selectedIndex);
+                    }
+                } else if (hal_input_wasPressed(KEY_ENTER)) { // Enter
+                    // Connect to selected device
+                    PIGSYNC_LOGF("[PIGSYNC-CLI] Connecting to device %d\n", selectedIndex);
+                    connectTo(selectedIndex);
+                }
+            } else if (!PigSyncMode::isScanning()) {
+                // No devices and not scanning - Enter starts scanning
+                if (hal_input_wasPressed(KEY_ENTER)) {
+                    PIGSYNC_LOGLN("[PIGSYNC-CLI] Starting device scan");
+                    startDiscovery();
+                }
+            }
+        }
+    }
+}
+
+// Ensure ESP-NOW is ready (other modes may have deinitialized it)
+bool PigSyncMode::ensureEspNowReady() {
+    if (!initialized) {
+        PIGSYNC_LOGLN("[PIGSYNC-CLI] ESP-NOW not initialized, reinitializing...");
+        init();
+        return initialized;
+    }
+
+    // Check if ESP-NOW is still working by trying a simple operation
+    // If WiFi mode changed, ESP-NOW might be deinitialized
+    wifi_mode_t currentMode;
+    esp_wifi_get_mode(&currentMode);
+    if (currentMode != WIFI_MODE_STA) {
+        PIGSYNC_LOGLN("[PIGSYNC-CLI] WiFi mode changed, reinitializing ESP-NOW...");
+
+        // Clean up and reinitialize
+        esp_now_deinit();
+        initialized = false;
+        init();
+        return initialized;
+    }
+
+    return true;
+}
+
+void PigSyncMode::start() {
+    if (running) return;
+    
+    // Pause NetworkRecon - promiscuous mode conflicts with ESP-NOW
+    NetworkRecon::pause();
+    
+    // Soft WiFi reset — keep driver alive to avoid RX buffer realloc failures
+    WiFi.disconnect(false, true);
+    WiFi.mode(WIFI_STA);
+    delay(100);
+    
+    init();
+    
+    // Clear state
+    devices.clear();
+    devices.reserve(10);
+    state = State::IDLE;
+    connected = false;
+    memset(connectedMac, 0, 6);
+    remotePMKIDCount = 0;
+    remoteHSCount = 0;
+    totalSynced = 0;
+    syncedPMKIDs = 0;
+    syncedHandshakes = 0;
+    rxBufferLen = 0;
+    lastError[0] = 0;
+    lastHelloTime = 0;
+    helloRetryCount = 0;
+    dialoguePhase = 0;
+    callStartTime = 0;
+    phraseStartTime = 0;
+    syncCompleteTime = 0;
+    papaGoodbyeSelected[0] = 0;
+    controlTx = {};
+    resetControlQueue();
+    pendingStartSync = false;
+    pendingNextCapture = false;
+    lastControlRspValid = false;
+    
+    // Clear pending flags
+    pendingRingReceived = false;
+    pendingHelloReceived = false;
+    clearPendingChunkQueue();
+    pendingCompleteReceived = false;
+    pendingPurgedReceived = false;
+    
+    running = true;
+    startDiscovery();
+    
+    PIGSYNC_LOGLN("[PIGSYNC-CLI-STATE] START");
+}
+
+void PigSyncMode::stop() {
+    if (!running) return;
+    
+    running = false;
+    
+    disconnect();
+    stopDiscovery();
+    
+    // Deinit ESP-NOW to free resources
+    if (initialized) {
+        esp_now_deinit();
+        initialized = false;
+        PIGSYNC_LOGLN("[PIGSYNC-CLI-STATE] DEINIT");
+    }
+
+    // Resume NetworkRecon (restores promiscuous mode)
+    NetworkRecon::resume();
+    
+    PIGSYNC_LOGLN("[PIGSYNC-CLI-STATE] STOP");
+}
+
+void PigSyncMode::update() {
+    static uint32_t lastDebugUpdate = 0;
+    if (millis() - lastDebugUpdate > 1000) {
+        lastDebugUpdate = millis();
+        PIGSYNC_LOGF("[PIGSYNC-CLI-STATE] update running=%d state=%d scanning=%d pendingBeacon=%d\n",
+                      running, (int)state, scanning, pendingBeaconReceived);
+    }
+
+    if (!running) return;
+
+    // Handle keyboard input for device selection and interaction
+    handleKeyboardInput();
+
+    // Ensure ESP-NOW is still ready (other modes may interfere)
+    if (!ensureEspNowReady()) {
+        PIGSYNC_LOGLN("[PIGSYNC-CLI-ERR] ESP-NOW not ready, skipping update");
+        return;
+    }
+    
+    uint32_t now = millis();
+    
+    // ==[ CONNECTION TIMEOUT ]==
+    if ((state == State::CONNECTING || state == State::RINGING) && connectStartTime > 0) {
+        if (now - connectStartTime > PIGSYNC_HELLO_TIMEOUT) {
+            snprintf(lastError, sizeof(lastError), "Connection timeout");
+            disconnect();
+            state = State::ERROR;
+            return;  // Stop processing after error
+        }
+    }
+
+    // ==[ CONTROL RETRY ]==
+    if (controlTx.waiting && controlTx.lastSend > 0) {
+        if (now - controlTx.lastSend > PIGSYNC_ACK_TIMEOUT) {
+            controlTx.retries++;
+            uint8_t maxRetries = getControlMaxRetries(controlTx.type);
+            if (controlTx.retries >= maxRetries) {
+                PIGSYNC_LOGF("[PIGSYNC-CLI-ERR] Control timeout type=0x%02X\n", controlTx.type);
+                if (controlTx.type == CMD_HELLO || controlTx.type == CMD_READY) {
+                    snprintf(lastError, sizeof(lastError), "Handshake timeout");
+                    disconnect();
+                    state = State::ERROR;
+                    return;
+                }
+                clearControlTx();
+            } else {
+                PIGSYNC_LOGF("[PIGSYNC-CLI] Control retry type=0x%02X (%d/%d)\n",
+                    controlTx.type, controlTx.retries, maxRetries);
+                controlTx.lastSend = now;
+                esp_now_send(controlTx.mac, controlTx.buf, controlTx.len);
+            }
+        }
+    }
+
+    // ==[ PROCESS PENDING CONTROL ACK ]==
+    if (pendingControlAck) {
+        taskENTER_CRITICAL(&pendingMux);
+        uint8_t ackSeq = pendingControlAckSeq;
+        pendingControlAck = false;
+        taskEXIT_CRITICAL(&pendingMux);
+        if (controlTx.waiting) {
+            PigSyncHeader hdr = {};
+            hdr.ack = ackSeq;
+            handleControlAck(&hdr);
+        }
+    }
+    
+    // ==[ CHANNEL SWITCH TIMEOUT ]==
+    // Per spec: 500ms timeout, fallback to channel 1, max 3 retries
+    if (state == State::CONNECTED_WAITING_READY && readyStartTime > 0) {
+        if (now - readyStartTime > PIGSYNC_READY_TIMEOUT) {
+            channelRetryCount++;
+            PIGSYNC_LOGF("[PIGSYNC-CLI-ERR] RSP_READY timeout (retry %d/3)\n", channelRetryCount);
+            
+            if (channelRetryCount >= 3) {
+                // Max retries reached - abort
+                snprintf(lastError, sizeof(lastError), "Channel switch failed");
+                disconnect();
+                state = State::ERROR;
+                return;  // Don't continue processing after error
+            } else {
+                // Fallback to discovery channel and retry CMD_HELLO
+                PIGSYNC_LOGF("[PIGSYNC-CLI] Channel switch timeout, falling back to discovery channel (retry %d/3)\n", channelRetryCount);
+
+                // Disconnect cleanly first
+                if (connected) {
+                    sendCommand(CMD_DISCONNECT);
+                    delay(10);
+                    esp_now_del_peer(connectedMac);
+                    connected = false;
+                }
+
+                // Switch back to discovery channel
+                esp_wifi_set_channel(PIGSYNC_DISCOVERY_CHANNEL, WIFI_SECOND_CHAN_NONE);
+                delay(PIGSYNC_CHANNEL_SWITCH_MS);
+                dataChannel = PIGSYNC_DISCOVERY_CHANNEL;
+
+                // Re-add peer on discovery channel (unencrypted for new handshake)
+                esp_now_peer_info_t peerInfo = {};
+                memcpy(peerInfo.peer_addr, connectedMac, 6);
+                peerInfo.channel = PIGSYNC_DISCOVERY_CHANNEL;
+                peerInfo.encrypt = false;
+                esp_err_t addResult = esp_now_add_peer(&peerInfo);
+                PIGSYNC_LOGF("[PIGSYNC-CLI] Peer re-added on discovery channel, result=%d\n", addResult);
+
+                // Reset state for retry
+                connected = true;
+                state = State::CONNECTING;
+                connectStartTime = now;  // Reset connection timeout for retry
+                lastHelloTime = 0;
+                helloRetryCount = 0;
+                PIGSYNC_LOGF("[PIGSYNC-CLI] Retrying CMD_HELLO to %02X:%02X:%02X:%02X:%02X:%02X\n",
+                    connectedMac[0], connectedMac[1], connectedMac[2],
+                    connectedMac[3], connectedMac[4], connectedMac[5]);
+                sendHello();
+            }
+        }
+    }
+    
+    // ==[ CHUNK/TRANSFER TIMEOUT ]==
+    if ((state == State::WAITING_CHUNKS || state == State::SYNCING) && progress.inProgress) {
+        if (now - progress.startTime > PIGSYNC_TRANSFER_TIMEOUT) {
+            PIGSYNC_LOGLN("[PIGSYNC-CLI-ERR] Transfer timeout");
+            snprintf(lastError, sizeof(lastError), "Transfer timeout");
+            progress.inProgress = false;
+            // Stay connected, allow retry
+            state = State::CONNECTED;
+        }
+    }
+    
+    // ==[ PROCESS PENDING ERROR ]==
+    if (pendingErrorReceived) {
+        taskENTER_CRITICAL(&pendingMux);
+        uint8_t errCode = pendingErrorCode;
+        pendingErrorReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+        
+        const char* errMsg = "Unknown error";
+        switch (errCode) {
+            case PIGSYNC_ERR_INVALID_CMD: errMsg = "Invalid command"; break;
+            case PIGSYNC_ERR_INVALID_INDEX: errMsg = "Invalid index"; break;
+            case PIGSYNC_ERR_BUSY: errMsg = "Son is busy"; break;
+            case PIGSYNC_ERR_NO_CAPTURES: errMsg = "No captures"; break;
+            case PIGSYNC_ERR_TIMEOUT: errMsg = "Son timeout"; break;
+            case PIGSYNC_ERR_CRC_FAIL: errMsg = "CRC failed"; break;
+            case PIGSYNC_ERR_NOT_READY: errMsg = "Son not ready"; break;
+            case PIGSYNC_ERR_SERIALIZE_FAIL: errMsg = "Serialize failed"; break;
+            case PIGSYNC_ERR_BUFFER_OVERFLOW: errMsg = "Buffer overflow"; break;
+        }
+        snprintf(lastError, sizeof(lastError), "%s", errMsg);
+        PIGSYNC_LOGF("[PIGSYNC-CLI-ERR] From SON: %s\n", errMsg);
+        
+        // If we were syncing, abort current transfer
+        if (state == State::WAITING_CHUNKS || state == State::SYNCING) {
+            progress.inProgress = false;
+            state = State::CONNECTED;
+        }
+    }
+    
+    // ==[ PROCESS PENDING DISCONNECT FROM SIRLOIN ]==
+    if (pendingDisconnectReceived) {
+        taskENTER_CRITICAL(&pendingMux);
+        pendingDisconnectReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+        
+        PIGSYNC_LOGLN("[PIGSYNC-CLI] Sirloin ended call gracefully");
+        // Don't send CMD_DISCONNECT back - just clean up locally
+        if (connected) {
+            esp_now_del_peer(connectedMac);
+            connected = false;
+        }
+        memset(connectedMac, 0, 6);
+
+        // Fallback to discovery channel
+        if (dataChannel != PIGSYNC_DISCOVERY_CHANNEL) {
+            esp_wifi_set_channel(PIGSYNC_DISCOVERY_CHANNEL, WIFI_SECOND_CHAN_NONE);
+            dataChannel = PIGSYNC_DISCOVERY_CHANNEL;
+            PIGSYNC_LOGLN("[PIGSYNC-CLI] Fell back to discovery channel after RSP_DISCONNECT");
+        }
+
+        controlTx = {};
+        resetControlQueue();
+        pendingStartSync = false;
+        pendingNextCapture = false;
+        lastControlRspValid = false;
+        state = State::IDLE;
+    }
+    
+    // ==[ SESSION TIMEOUT - Sirloin stopped responding ]==
+    if (connected && lastPacketTime > 0) {
+        if (now - lastPacketTime > SESSION_TIMEOUT) {
+            PIGSYNC_LOGLN("[PIGSYNC-CLI-ERR] Session timeout - Sirloin unresponsive");
+            snprintf(lastError, sizeof(lastError), "Connection lost");
+            // Clean disconnect without notifying (Sirloin already gone)
+            esp_now_del_peer(connectedMac);
+            connected = false;
+            memset(connectedMac, 0, 6);
+
+            // Fallback to discovery channel
+            if (dataChannel != PIGSYNC_DISCOVERY_CHANNEL) {
+                esp_wifi_set_channel(PIGSYNC_DISCOVERY_CHANNEL, WIFI_SECOND_CHAN_NONE);
+                dataChannel = PIGSYNC_DISCOVERY_CHANNEL;
+                PIGSYNC_LOGLN("[PIGSYNC-CLI] Fell back to discovery channel after session timeout");
+            }
+
+            state = State::IDLE;
+            lastPacketTime = 0;
+        }
+    }
+    
+    // ==[ DISCOVERY ]==
+    if (scanning && state == State::SCANNING) {
+        if (now - lastDiscoveryTime >= PIGSYNC_DISCOVERY_INTERVAL) {
+            lastDiscoveryTime = now;
+            sendDiscover();
+        }
+    }
+
+    // Prune stale devices even when not scanning (handles MAC changes after mode switch)
+    if (!devices.empty()) {
+        devices.erase(
+            std::remove_if(devices.begin(), devices.end(),
+                [now](const SirloinDevice& d) { return now - d.lastSeen > 5000; }),
+            devices.end()
+        );
+        if (selectedIndex >= devices.size() && !devices.empty()) {
+            selectedIndex = devices.size() - 1;
+        }
+    }
+    
+    // ==[ PROCESS PENDING BEACON ]==
+    if (pendingBeaconReceived) {
+        taskENTER_CRITICAL(&pendingMux);
+        uint8_t beaconMac[6];
+        memcpy(beaconMac, pendingBeaconMac, 6);
+        int8_t beaconRSSI = pendingBeaconRSSI;
+        uint16_t beaconPending = pendingBeaconPending;
+        uint8_t beaconFlags = pendingBeaconFlags;
+        pendingBeaconReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+        
+        PIGSYNC_LOGF("[PIGSYNC-CLI-RX] Beacon MAC=%02X:%02X:%02X:%02X:%02X:%02X pending=%d\n",
+                      beaconMac[0], beaconMac[1], beaconMac[2], beaconMac[3], beaconMac[4], beaconMac[5], beaconPending);
+        
+        // Check if already in device list
+        bool found = false;
+        for (auto& dev : devices) {
+            if (memcmp(dev.mac, beaconMac, 6) == 0) {
+                dev.rssi = beaconRSSI;
+                dev.pendingCaptures = beaconPending;
+                dev.flags = beaconFlags;
+                dev.lastSeen = now;
+                found = true;
+                PIGSYNC_LOGLN("[PIGSYNC-CLI-STATE] Updated device");
+                break;
+            }
+        }
+        
+        if (!found && devices.size() < 10) {
+            SirloinDevice dev;
+            memcpy(dev.mac, beaconMac, 6);
+            dev.rssi = beaconRSSI;
+            dev.pendingCaptures = beaconPending;
+            dev.flags = beaconFlags;
+            dev.lastSeen = now;
+            dev.syncing = false;
+            dev.hasGruntInfo = false;
+            snprintf(dev.name, sizeof(dev.name), "SIRLOIN");
+            devices.push_back(dev);
+            PIGSYNC_LOGF("[PIGSYNC-CLI-STATE] Added device total=%d\n", devices.size());
+        }
+    }
+    
+    // ==[ PROCESS PENDING GRUNT (Phase 3) ]==
+    if (pendingGruntReceived) {
+        taskENTER_CRITICAL(&pendingMux);
+        uint8_t gruntMac[6];
+        memcpy(gruntMac, pendingGruntMac, 6);
+        uint8_t gruntFlags = pendingGruntFlags;
+        uint8_t gruntCaptures = pendingGruntCaptureCount;
+        uint8_t gruntBattery = pendingGruntBattery;
+        uint8_t gruntStorage = pendingGruntStorage;
+        uint32_t gruntTime = pendingGruntUnixTime;
+        uint16_t gruntUptime = pendingGruntUptime;
+        char gruntName[5];
+        memcpy(gruntName, pendingGruntName, 4);
+        gruntName[4] = '\0';
+        pendingGruntReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+        
+        PIGSYNC_LOGF("[PIGSYNC-CLI] Grunt from %s batt=%d%% caps=%d\n", gruntName, gruntBattery, gruntCaptures);
+        
+        // Update or add device - try MAC first, then name fallback for MAC randomization
+        bool found = false;
+        for (auto& dev : devices) {
+            char priorName[16];
+            strncpy(priorName, dev.name, sizeof(priorName) - 1);
+            priorName[sizeof(priorName) - 1] = '\0';
+            // Primary: MAC address match
+            if (memcmp(dev.mac, gruntMac, 6) == 0) {
+                dev.pendingCaptures = gruntCaptures;
+                dev.flags = gruntFlags & BEACON_FLAG_ALERT_MASK;
+                dev.lastSeen = now;
+                dev.batteryPercent = gruntBattery;
+                dev.storagePercent = gruntStorage;
+                dev.moodTier = (gruntFlags >> BEACON_FLAG_MOOD_SHIFT) & 0x07;
+                dev.rtcTime = gruntTime;
+                dev.uptimeMin = gruntUptime;
+                dev.hasGruntInfo = true;
+                if (gruntName[0]) {
+                    snprintf(dev.name, sizeof(dev.name), "%s", gruntName);
+                    if (strncmp(priorName, dev.name, sizeof(dev.name)) != 0 &&
+                        strncmp(dev.name, "SIRLOIN", sizeof(dev.name)) != 0) {
+                        taskENTER_CRITICAL(&pendingMux);
+                        pendingNameReveal = true;
+                        strncpy(pendingNameRevealName, dev.name, sizeof(pendingNameRevealName) - 1);
+                        pendingNameRevealName[sizeof(pendingNameRevealName) - 1] = '\0';
+                        taskEXIT_CRITICAL(&pendingMux);
+                    }
+                }
+                found = true;
+                PIGSYNC_LOGF("[PIGSYNC-CLI-STATE] Updated device %s by MAC\n", gruntName);
+                break;
+            }
+            // Fallback: Name match (handles MAC randomization during mode changes)
+            else if (dev.hasGruntInfo && gruntName[0] &&
+                     strncmp(dev.name, gruntName, 4) == 0) {
+                // Update MAC address (device randomized it) and all other info
+                memcpy(dev.mac, gruntMac, 6);
+                dev.pendingCaptures = gruntCaptures;
+                dev.flags = gruntFlags & BEACON_FLAG_ALERT_MASK;
+                dev.lastSeen = now;
+                dev.batteryPercent = gruntBattery;
+                dev.storagePercent = gruntStorage;
+                dev.moodTier = (gruntFlags >> BEACON_FLAG_MOOD_SHIFT) & 0x07;
+                dev.rtcTime = gruntTime;
+                dev.uptimeMin = gruntUptime;
+                dev.hasGruntInfo = true;
+                if (gruntName[0] &&
+                    strncmp(priorName, dev.name, sizeof(dev.name)) != 0 &&
+                    strncmp(dev.name, "SIRLOIN", sizeof(dev.name)) != 0) {
+                    taskENTER_CRITICAL(&pendingMux);
+                    pendingNameReveal = true;
+                    strncpy(pendingNameRevealName, dev.name, sizeof(pendingNameRevealName) - 1);
+                    pendingNameRevealName[sizeof(pendingNameRevealName) - 1] = '\0';
+                    taskEXIT_CRITICAL(&pendingMux);
+                }
+                found = true;
+                PIGSYNC_LOGF("[PIGSYNC-CLI-STATE] Updated device %s by name (MAC changed)\n", gruntName);
+                break;
+            }
+        }
+        
+        if (!found && devices.size() < 10) {
+            SirloinDevice dev = {};
+            memcpy(dev.mac, gruntMac, 6);
+            dev.pendingCaptures = gruntCaptures;
+            dev.flags = gruntFlags & BEACON_FLAG_ALERT_MASK;
+            dev.lastSeen = now;
+            dev.syncing = false;
+            dev.batteryPercent = gruntBattery;
+            dev.storagePercent = gruntStorage;
+            dev.moodTier = (gruntFlags >> BEACON_FLAG_MOOD_SHIFT) & 0x07;
+            dev.rtcTime = gruntTime;
+            dev.uptimeMin = gruntUptime;
+            dev.hasGruntInfo = true;
+            if (gruntName[0]) {
+                snprintf(dev.name, sizeof(dev.name), "%s", gruntName);
+                if (strncmp(dev.name, "SIRLOIN", sizeof(dev.name)) != 0) {
+                    taskENTER_CRITICAL(&pendingMux);
+                    pendingNameReveal = true;
+                    strncpy(pendingNameRevealName, dev.name, sizeof(pendingNameRevealName) - 1);
+                    pendingNameRevealName[sizeof(pendingNameRevealName) - 1] = '\0';
+                    taskEXIT_CRITICAL(&pendingMux);
+                }
+            } else {
+                snprintf(dev.name, sizeof(dev.name), "SIRLOIN");
+            }
+            devices.push_back(dev);
+            PIGSYNC_LOGF("[PIGSYNC-CLI-STATE] Added device from grunt total=%d\n", devices.size());
+        }
+    }
+    
+    // ==[ PROCESS PENDING TIME SYNC (Phase 3) ]==
+    if (pendingTimeSyncReceived) {
+        taskENTER_CRITICAL(&pendingMux);
+        uint8_t rtcValid = pendingTimeSyncValid;
+        uint32_t unixTime = pendingTimeSyncUnix;
+        uint32_t rtt = pendingTimeSyncRtt;
+        pendingTimeSyncReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+        
+        if (rtcValid && unixTime > 0) {
+            // Adjust for half of RTT (one-way latency)
+            uint32_t adjustedTime = unixTime + (rtt / 2000);  // RTT in ms -> sec/2
+            
+            // Set Porkchop's system time from Sirloin's RTC
+            struct timeval tv;
+            tv.tv_sec = adjustedTime;
+            tv.tv_usec = 0;
+            settimeofday(&tv, nullptr);
+            
+            PIGSYNC_LOGF("[PIGSYNC-CLI] Time synced from Sirloin: %lu (RTT=%lums)\n", adjustedTime, rtt);
+        } else {
+            PIGSYNC_LOGLN("[PIGSYNC-CLI] Sirloin RTC not valid, skipping time sync");
+        }
+    }
+
+    // ==[ PROCESS PENDING RING ]==
+    if (pendingRingReceived) {
+        uint32_t ringAt = 0;
+        taskENTER_CRITICAL(&pendingMux);
+        pendingRingReceived = false;
+        ringAt = pendingRingAt;
+        pendingRingAt = 0;
+        taskEXIT_CRITICAL(&pendingMux);
+
+        if (state == State::CONNECTING || state == State::RINGING) {
+            state = State::RINGING;
+            PIGSYNC_LOGLN("[PIGSYNC-CLI-STATE] RINGING (awaiting accept)");
+            connectStartTime = ringAt ? ringAt : now;  // Extend HELLO timeout while rings continue
+        }
+    }
+    
+    // ==[ PROCESS PENDING HELLO ]==
+    if (pendingHelloReceived) {
+        taskENTER_CRITICAL(&pendingMux);
+        remotePMKIDCount = pendingPMKIDCount;
+        remoteHSCount = pendingHSCount;
+        dialogueId = pendingDialogueId;
+        remoteMood = pendingMood;
+        sessionId = pendingSessionId;
+        dataChannel = pendingDataChannel;
+        bool clearControl = pendingHelloClearControl;
+        pendingHelloClearControl = false;
+        pendingHelloReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+
+        if (clearControl) {
+            clearControlTx();
+        }
+
+        PIGSYNC_LOGF("[PIGSYNC-CLI] Processing RSP_HELLO: PMKIDs=%d HS=%d mood=%d sessionId=0x%04X dataChannel=%d\n",
+            remotePMKIDCount, remoteHSCount, remoteMood, sessionId, dataChannel);
+        
+        PIGSYNC_LOGF("[PIGSYNC-CLI] RSP_HELLO received, sessionId=0x%04X, switching to data channel %d\n", sessionId, dataChannel);
+
+        // Brief delay to allow server to switch channels first
+        delay(50);
+
+        // Remove peer from current channel before switching
+        esp_now_del_peer(connectedMac);
+        PIGSYNC_LOGF("[PIGSYNC-CLI] Removed peer from discovery channel\n");
+
+        // Switch to data channel
+        esp_wifi_set_channel(dataChannel, WIFI_SECOND_CHAN_NONE);
+        delay(PIGSYNC_CHANNEL_SWITCH_MS);
+        PIGSYNC_LOGF("[PIGSYNC-CLI] Switched to data channel %d\n", dataChannel);
+        
+        // Re-add peer on new channel WITH ENCRYPTION (Sirloin expects encrypted CMD_READY)
+        esp_now_peer_info_t peerInfo = {};
+        memcpy(peerInfo.peer_addr, connectedMac, 6);
+        peerInfo.channel = dataChannel;
+        peerInfo.encrypt = true;
+        memcpy(peerInfo.lmk, PIGSYNC_LMK, 16);
+        if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+            PIGSYNC_LOGLN("[PIGSYNC-CLI] Failed to add peer on data channel");
+            // Fallback to discovery channel on peer add failure
+            if (dataChannel != PIGSYNC_DISCOVERY_CHANNEL) {
+                esp_wifi_set_channel(PIGSYNC_DISCOVERY_CHANNEL, WIFI_SECOND_CHAN_NONE);
+                dataChannel = PIGSYNC_DISCOVERY_CHANNEL;
+                PIGSYNC_LOGLN("[PIGSYNC-CLI] Fell back to discovery channel after peer add failure");
+            }
+            state = State::ERROR;
+            return;
+        }
+        
+        // Transition to waiting for RSP_READY
+        state = State::CONNECTED_WAITING_READY;
+        readyStartTime = now;  // Track timeout for RSP_READY
+        
+        // Send CMD_READY to confirm we switched
+        sendReady();
+    }
+    
+    // ==[ PROCESS PENDING READY ]==
+    if (pendingReadyReceived && state == State::CONNECTED_WAITING_READY) {
+        taskENTER_CRITICAL(&pendingMux);
+        bool clearControl = pendingReadyClearControl;
+        pendingReadyClearControl = false;
+        pendingReadyReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+
+        if (clearControl) {
+            clearControlTx();
+        }
+        
+        uint32_t handshakeTime = now - readyStartTime;
+        PIGSYNC_LOGF("[PIGSYNC-CLI] RSP_READY received, channel handshake complete (%lums)\n", handshakeTime);
+        
+        // NOTE: Peer already encrypted from channel switch (no need for upgradePeerEncryption here)
+        
+        state = State::CONNECTED;
+        dialoguePhase = 0;
+        phraseStartTime = now;
+        callStartTime = now;
+
+        // Dialogue now handled by terminal system
+        
+        PIGSYNC_LOGF("[PIGSYNC-CLI-STATE] CONNECTED PMKIDs=%d HS=%d\n", remotePMKIDCount, remoteHSCount);
+        
+        // Send bounties if we have any
+        sendBounties();
+        
+        // Phase 3: Request time sync from Sirloin (it has persistent RTC)
+        sendTimeSync();
+        
+        // Start sync if there's data
+        if (remotePMKIDCount > 0 || remoteHSCount > 0) {
+            pendingStartSync = true;
+        } else {
+            // No data - go to goodbye
+            dialoguePhase = 2;
+            phraseStartTime = now;
+            
+            // Select Papa's goodbye (0 captures = tier 0)
+            strncpy(papaGoodbyeSelected, selectPapaGoodbye(0), sizeof(papaGoodbyeSelected) - 1);
+            sendPurge();
+        }
+    }
+    
+    // ==[ PROCESS PENDING CHUNK ]==
+    if (pendingChunkReceived) {
+        PendingChunkSlot localQueue[PENDING_CHUNK_QUEUE_SIZE];
+        uint8_t localCount = 0;
+
+        taskENTER_CRITICAL(&pendingMux);
+        for (uint8_t i = 0; i < PENDING_CHUNK_QUEUE_SIZE; i++) {
+            if (pendingChunkQueue[i].used) {
+                localQueue[localCount++] = pendingChunkQueue[i];
+                pendingChunkQueue[i].used = false;
+            }
+        }
+        pendingChunkCount = 0;
+        pendingChunkReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+
+        for (uint8_t i = 0; i < localCount; i++) {
+            uint16_t seq = localQueue[i].seq;
+            uint16_t total = localQueue[i].total;
+            uint16_t chunkLen = localQueue[i].len;
+
+            totalChunks = total;
+            
+            // Validate sequence - only accept expected seq or retransmissions
+            // Expected: receivedChunks (next chunk) or receivedChunks-1 (retransmit of last)
+            bool validSeq = (seq == receivedChunks) || 
+                            (receivedChunks > 0 && seq == receivedChunks - 1);
+            
+            if (validSeq) {
+                // Calculate offset
+                uint16_t offset = seq * PIGSYNC_MAX_PAYLOAD;
+                if (offset + chunkLen <= RX_BUFFER_SIZE) {
+                    memcpy(rxBuffer + offset, localQueue[i].data, chunkLen);
+                    
+                    // Only advance if this is new data (not a retransmit)
+                    if (seq == receivedChunks) {
+                        if (offset + chunkLen > rxBufferLen) {
+                            rxBufferLen = offset + chunkLen;
+                        }
+                        receivedChunks++;
+                    }
+                    
+                    progress.currentChunk = receivedChunks;
+                    progress.totalChunks = totalChunks;
+                    progress.bytesReceived = rxBufferLen;
+                    
+                    // Send ACK (always ACK to stop retransmits)
+                    sendAckChunk(seq);
+                }
+            } else {
+                PIGSYNC_LOGF("[PIGSYNC-CLI-ERR] Out-of-order chunk got=%d expected=%d\n", seq, receivedChunks);
+                // Don't ACK - sender will retry correct sequence
+            }
+        }
+    }
+    
+    // ==[ PROCESS PENDING COMPLETE ]==
+    if (pendingCompleteReceived) {
+        taskENTER_CRITICAL(&pendingMux);
+        uint16_t totalBytes = pendingTotalBytes;
+        uint32_t crc = pendingCRC;
+        pendingCompleteReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+
+        if (totalBytes > RX_BUFFER_SIZE) {
+            snprintf(lastError, sizeof(lastError), "Buffer overflow");
+            progress.inProgress = false;
+            rxBufferLen = 0;
+            receivedChunks = 0;
+            disconnect();
+            state = State::ERROR;
+            return;
+        }
+        
+        // Verify CRC
+        uint32_t calcCRC = calculateCRC32(rxBuffer, rxBufferLen);
+        
+        if (calcCRC == crc) {
+            // Save capture
+            bool success = false;
+            if (currentType == CAPTURE_TYPE_PMKID) {
+                success = savePMKID(rxBuffer, rxBufferLen);
+                if (success) syncedPMKIDs++;
+            } else {
+                success = saveHandshake(rxBuffer, rxBufferLen);
+                if (success) syncedHandshakes++;
+            }
+            
+            if (success) {
+                totalSynced++;
+                sendMarkSynced(currentType, currentIndex);
+                
+                // Invoke capture callback
+                if (onCaptureCb) {
+                    onCaptureCb(currentType, rxBuffer, rxBufferLen);
+                }
+            }
+            
+            // Request next
+            currentIndex++;
+            rxBufferLen = 0;
+            receivedChunks = 0;
+            progress.inProgress = false;
+            pendingNextCapture = true;
+        } else {
+            snprintf(lastError, sizeof(lastError), "CRC mismatch");
+            // Retry same capture
+            rxBufferLen = 0;
+            receivedChunks = 0;
+            sendStartSync(currentType, currentIndex);
+        }
+    }
+    
+    // ==[ PROCESS PENDING PURGED ]==
+    if (pendingPurgedReceived) {
+        taskENTER_CRITICAL(&pendingMux);
+        uint16_t purged = pendingPurgedCount;
+        uint8_t bountyMatches = pendingBountyMatches;
+        pendingPurgedReceived = false;
+        taskEXIT_CRITICAL(&pendingMux);
+        
+        lastBountyMatches = bountyMatches;
+
+        // Dialogue now handled by terminal system
+        
+        dialoguePhase = 2;  // Goodbye phase
+        phraseStartTime = now;
+        state = State::SYNC_COMPLETE;
+        syncCompleteTime = now;  // Track when sync completed
+        
+        if (onSyncCompleteCb) {
+            onSyncCompleteCb(syncedPMKIDs, syncedHandshakes);
+        }
+        
+        // Log sync completion
+        SDLog::log("SON-OF-PIG", "Sync complete: %d PMKIDs, %d HS, %d bounties",
+                   syncedPMKIDs, syncedHandshakes, bountyMatches);
+    }
+
+    // ==[ GOODBYE PHASE COMPLETE ]==
+    // Let terminal timing control dialogue flow - phases advance naturally
+    
+    // ==[ CLEANUP AFTER SYNC COMPLETE ]==
+    // Wait for goodbye toast to expire, then disconnect and free resources
+    if (state == State::SYNC_COMPLETE && syncCompleteTime > 0) {
+        if (now - syncCompleteTime > PIGSYNC_TOAST_DURATION + 500) {  // +500ms grace period
+            PIGSYNC_LOGLN("[PIGSYNC-CLI-STATE] SYNC_COMPLETE disconnecting");
+            disconnect();
+            syncCompleteTime = 0;  // Prevent repeated disconnect
+        }
+    }
+    
+    // Toast system removed - dialogue now in terminal
+
+    // ==[ DEFERRED CONTROL ACTIONS ]==
+    if (pendingNextCapture && !controlTx.waiting && controlQueueCount == 0) {
+        pendingNextCapture = false;
+        requestNextCapture();
+    }
+    if (pendingStartSync && state == State::CONNECTED && !controlTx.waiting && controlQueueCount == 0) {
+        pendingStartSync = false;
+        startSync();
+    }
+}
+
+bool PigSyncMode::consumeNameReveal(char* buffer, size_t bufferSize) {
+    if (!buffer || bufferSize == 0) {
+        return false;
+    }
+    bool hasName = false;
+    taskENTER_CRITICAL(&pendingMux);
+    if (pendingNameReveal) {
+        pendingNameReveal = false;
+        strncpy(buffer, pendingNameRevealName, bufferSize - 1);
+        buffer[bufferSize - 1] = '\0';
+        hasName = true;
+    }
+    taskEXIT_CRITICAL(&pendingMux);
+    return hasName;
+}
+
+// ==[ DISCOVERY ]==
+
+void PigSyncMode::startDiscovery() {
+    devices.clear();
+    scanning = true;
+    state = State::SCANNING;
+    lastDiscoveryTime = 0;
+    discoveryStartTime = millis();
+    
+    // Send first discovery immediately
+    sendDiscover();
+}
+
+void PigSyncMode::stopDiscovery() {
+    scanning = false;
+    if (state == State::SCANNING) {
+        state = State::IDLE;
+    }
+}
+
+bool PigSyncMode::isScanning() {
+    return scanning;
+}
+
+bool PigSyncMode::hasValidDevices() {
+    // Remove stale devices
+    uint32_t now = millis();
+    devices.erase(
+        std::remove_if(devices.begin(), devices.end(),
+            [now](const SirloinDevice& d) { return now - d.lastSeen > 5000; }),
+        devices.end()
+    );
+    return !devices.empty();
+}
+
+// ==[ CONNECTION ]==
+
+bool PigSyncMode::connectTo(uint8_t deviceIndex) {
+    if (deviceIndex >= devices.size()) return false;
+    
+    // Guard against duplicate connect calls - set state atomically
+    if (state == State::CONNECTING || state == State::RINGING || isConnected()) {
+        PIGSYNC_LOGLN("[PIGSYNC-CLI-STATE] connectTo ignored - already connecting/connected");
+        return false;
+    }
+    
+    // Set state IMMEDIATELY to prevent race conditions
+    state = State::CONNECTING;
+    pendingRingReceived = false;
+    
+    stopDiscovery();
+
+    SirloinDevice& dev = devices[deviceIndex];
+    memcpy(connectedMac, dev.mac, 6);
+
+    // Ensure we're on discovery channel before HELLO
+    esp_wifi_set_channel(PIGSYNC_DISCOVERY_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    dataChannel = PIGSYNC_DISCOVERY_CHANNEL;
+    
+    // Add as peer (unencrypted for initial handshake on discovery channel)
+    memset(&sirloinPeer, 0, sizeof(sirloinPeer));
+    memcpy(sirloinPeer.peer_addr, dev.mac, 6);
+    sirloinPeer.channel = PIGSYNC_DISCOVERY_CHANNEL;
+    sirloinPeer.encrypt = false;  // No encryption for CMD_HELLO - Sirloin doesn't have our LMK yet
+    
+    esp_now_del_peer(dev.mac);  // Remove if exists
+    esp_err_t addErr = esp_now_add_peer(&sirloinPeer);
+    if (addErr != ESP_OK) {
+        PIGSYNC_LOGF("[PIGSYNC-CLI-ERR] Failed to add peer err=%d\n", addErr);
+        snprintf(lastError, sizeof(lastError), "Failed to add peer");
+        return false;
+    }
+    
+    connected = true;
+    lastPacketTime = millis();  // Initialize session timeout
+    // state already set to CONNECTING at top of function
+    connectStartTime = millis();  // Start connection timeout
+    lastHelloTime = 0;
+    helloRetryCount = 0;
+    syncCompleteTime = 0;  // Reset sync complete tracking
+    channelRetryCount = 0;  // Reset channel switch retry counter
+    dev.syncing = true;
+    selectedIndex = deviceIndex;
+    
+    // Small delay to let peer setup stabilize
+    delay(10);
+
+    // Send HELLO
+    sendHello();
+    
+    return true;
+}
+
+void PigSyncMode::disconnect() {
+    if (connected) {
+        // Notify Sirloin before disconnecting
+        sendCommand(CMD_DISCONNECT);
+        delay(10);  // Brief delay to let packet send
+        esp_now_del_peer(connectedMac);
+        connected = false;
+    }
+    memset(connectedMac, 0, 6);
+
+    // Always fallback to discovery channel after disconnection
+    if (dataChannel != PIGSYNC_DISCOVERY_CHANNEL) {
+        esp_wifi_set_channel(PIGSYNC_DISCOVERY_CHANNEL, WIFI_SECOND_CHAN_NONE);
+        dataChannel = PIGSYNC_DISCOVERY_CHANNEL;
+        PIGSYNC_LOGLN("[PIGSYNC-CLI] Fell back to discovery channel after disconnect");
+    }
+
+    callStartTime = 0;
+    connectStartTime = 0;
+    phraseStartTime = 0;
+    dialoguePhase = 0;
+    syncCompleteTime = 0;
+    controlTx = {};
+    resetControlQueue();
+    clearPendingChunkQueue();
+    pendingRingReceived = false;
+    pendingStartSync = false;
+    pendingNextCapture = false;
+    lastControlRspValid = false;
+    state = State::IDLE;
+    lastHelloTime = 0;
+    helloRetryCount = 0;
+}
+
+bool PigSyncMode::isConnected() {
+    return connected && (state == State::CONNECTED || state == State::SYNCING || 
+                         state == State::WAITING_CHUNKS || state == State::SYNC_COMPLETE);
+}
+
+bool PigSyncMode::isConnecting() {
+    return state == State::CONNECTING || state == State::RINGING;
+}
+
+const SirloinDevice* PigSyncMode::getConnectedDevice() {
+    if (!connected || selectedIndex >= devices.size()) return nullptr;
+    return &devices[selectedIndex];
+}
+
+// ==[ UI HELPERS ]==
+
+void PigSyncMode::getDeviceDisplayName(uint8_t index, char* buffer, size_t bufferSize) {
+    if (!buffer || bufferSize == 0) return;
+
+    const SirloinDevice* device = getDevice(index);
+    if (!device) {
+        snprintf(buffer, bufferSize, "No device");
+        return;
+    }
+
+    // Format: "SIRLOIN [Name] RSSI: -XXdBm Caps: XXX"
+    char name[16];
+    if (device->hasGruntInfo && device->name[0]) {
+        snprintf(name, sizeof(name), "%s", device->name);
+    } else {
+        snprintf(name, sizeof(name), "SIRLOIN");
+    }
+
+    char flags[32] = "";
+    if (device->flags & FLAG_HUNTING) strcat(flags, "HUNT ");
+    if (device->flags & FLAG_BUFFER_FULL) strcat(flags, "FULL ");
+    if (device->flags & FLAG_CALL_ACTIVE) strcat(flags, "BUSY ");
+
+    if (flags[0]) {
+        // Remove trailing space
+        flags[strlen(flags)-1] = '\0';
+        snprintf(buffer, bufferSize, "%s RSSI:%ddBm Caps:%d [%s]",
+                name, device->rssi, device->pendingCaptures, flags);
+    } else {
+        snprintf(buffer, bufferSize, "%s RSSI:%ddBm Caps:%d",
+                name, device->rssi, device->pendingCaptures);
+    }
+}
+
+void PigSyncMode::getStatusMessage(char* buffer, size_t bufferSize) {
+    if (!buffer || bufferSize == 0) return;
+
+    if (!running) {
+        snprintf(buffer, bufferSize, "PIGSYNC OFFLINE");
+        return;
+    }
+
+    switch (state) {
+        case State::IDLE:
+            if (isScanning()) {
+                if (devices.empty()) {
+                    snprintf(buffer, bufferSize, "SCANNING... No Sirloin found");
+                } else {
+                    snprintf(buffer, bufferSize, "SCANNING... %d device(s) found", devices.size());
+                }
+            } else {
+                snprintf(buffer, bufferSize, "READY - Press C to connect");
+            }
+            break;
+
+        case State::CONNECTING:
+            snprintf(buffer, bufferSize, "CONNECTING...");
+            break;
+
+        case State::RINGING:
+            snprintf(buffer, bufferSize, "RINGING... Waiting for Sirloin");
+            break;
+
+        case State::CONNECTED_WAITING_READY:
+            snprintf(buffer, bufferSize, "HANDSHAKE...");
+            break;
+
+        case State::CONNECTED:
+            if (remotePMKIDCount > 0 || remoteHSCount > 0) {
+                snprintf(buffer, bufferSize, "CONNECTED - Auto-sync starting...");
+            } else {
+                snprintf(buffer, bufferSize, "CONNECTED - No data to sync");
+            }
+            break;
+
+        case State::SYNCING:
+        case State::WAITING_CHUNKS:
+            if (progress.inProgress) {
+                uint8_t percent = PigSyncMode::getSyncProgress();
+                snprintf(buffer, bufferSize, "SYNCING... %d%%", percent);
+            } else {
+                snprintf(buffer, bufferSize, "SYNCING...");
+            }
+            break;
+
+        case State::SYNC_COMPLETE:
+            snprintf(buffer, bufferSize, "SYNC COMPLETE!");
+            break;
+
+        case State::ERROR:
+            if (lastError[0]) {
+                snprintf(buffer, bufferSize, "ERROR: %s", lastError);
+            } else {
+                snprintf(buffer, bufferSize, "CONNECTION ERROR");
+            }
+            break;
+    }
+}
+
+// ==[ SYNC OPERATIONS ]==
+
+bool PigSyncMode::startSync() {
+    if (!connected) return false;
+    if (remotePMKIDCount == 0 && remoteHSCount == 0) return false;
+    
+    // Free caches and suspend sprites for maximum heap before data transfer
+    WPASec::freeCacheMemory();
+    WiGLE::freeUploadedListMemory();
+    delay(200);
+    yield();
+    
+    // Guard: ensure enough contiguous heap for reliable transfer
+    HeapGates::GateStatus gate = HeapGates::checkGate(0, HeapPolicy::kPigSyncMinContig);
+    if (!HeapGates::canMeet(gate, lastError, sizeof(lastError))) {
+        return false;
+    }
+    
+    state = State::SYNCING;
+    dialoguePhase = 1;  // Syncing phase
+    currentIndex = 0;
+    totalSynced = 0;
+    syncedPMKIDs = 0;
+    syncedHandshakes = 0;
+    rxBufferLen = 0;
+    receivedChunks = 0;  // Reset chunk counter
+    totalChunks = 0;
+    
+    progress.inProgress = true;
+    progress.startTime = millis();
+    progress.bytesReceived = 0;
+    progress.currentChunk = 0;
+    progress.totalChunks = 0;
+    
+    // Start with PMKIDs first
+    if (remotePMKIDCount > 0) {
+        currentType = CAPTURE_TYPE_PMKID;
+        sendStartSync(CAPTURE_TYPE_PMKID, 0);
+    } else {
+        currentType = CAPTURE_TYPE_HANDSHAKE;
+        sendStartSync(CAPTURE_TYPE_HANDSHAKE, 0);
+    }
+    
+    return true;
+}
+
+void PigSyncMode::abortSync() {
+    if (!connected) return;
+    
+    PigSyncHeader pkt;
+    pkt.magic = PIGSYNC_MAGIC;
+    pkt.version = PIGSYNC_VERSION;
+    pkt.type = CMD_ABORT;
+    pkt.flags = 0;
+    
+    esp_now_send(connectedMac, (uint8_t*)&pkt, sizeof(pkt));
+    
+    state = State::CONNECTED;
+    progress.inProgress = false;
+}
+
+bool PigSyncMode::isSyncing() {
+    return state == State::SYNCING || state == State::WAITING_CHUNKS;
+}
+
+bool PigSyncMode::isSyncComplete() {
+    return state == State::SYNC_COMPLETE;
+}
+
+uint8_t PigSyncMode::getSyncProgress() {
+    if (progress.totalChunks == 0) return 0;
+    return (progress.currentChunk * 100) / progress.totalChunks;
+}
+
+// ==[ DIALOGUE ]==
+
+uint32_t PigSyncMode::getCallDuration() {
+    if (callStartTime == 0) return 0;
+    return millis() - callStartTime;
+}
+
+uint8_t PigSyncMode::getDialoguePhase() {
+    return dialoguePhase;
+}
+
+const char* PigSyncMode::getPapaHelloPhrase() {
+    return PAPA_HELLO[dialogueId % DIALOGUE_TRACK_COUNT];
+}
+
+const char* PigSyncMode::getPapaGoodbyePhrase() {
+    if (papaGoodbyeSelected[0]) return papaGoodbyeSelected;
+    return selectPapaGoodbye(totalSynced);
+}
+
+const char* PigSyncMode::getSonHelloPhrase() {
+    return SON_HELLO[dialogueId % DIALOGUE_TRACK_COUNT];
+}
+
+const char* PigSyncMode::getSonGoodbyePhrase() {
+    return SON_GOODBYE[dialogueId % DIALOGUE_TRACK_COUNT];
+}
+
+// ==[ PROTOCOL HELPERS ]==
+
+void PigSyncMode::sendCommand(uint8_t type) {
+    // Generic command sender for simple commands (header only)
+    PigSyncHeader pkt;
+    initHeader(&pkt, type, reliability.nextSeq(), reliability.lastRxSeq, sessionId);
+    esp_now_send(connectedMac, (uint8_t*)&pkt, sizeof(pkt));
+}
+
+void PigSyncMode::sendDiscover() {
+    // Broadcast discovery - need to add broadcast peer temporarily
+    uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    
+    esp_now_peer_info_t broadcastPeer;
+    memset(&broadcastPeer, 0, sizeof(broadcastPeer));
+    memcpy(broadcastPeer.peer_addr, broadcast, 6);
+    broadcastPeer.channel = PIGSYNC_DISCOVERY_CHANNEL;
+    broadcastPeer.encrypt = false;  // Discovery is unencrypted
+    
+    esp_now_del_peer(broadcast);
+    esp_err_t addErr = esp_now_add_peer(&broadcastPeer);
+
+    CmdDiscover pkt;
+    initHeader(&pkt.hdr, CMD_DISCOVER, 0, 0, 0);  // sessionId=0 for discovery
+    WiFi.macAddress(pkt.pops_mac);
+
+    esp_err_t sendErr = esp_now_send(broadcast, (uint8_t*)&pkt, sizeof(pkt));
+    PIGSYNC_LOGF("[PIGSYNC-CLI-TX] CMD_DISCOVER add=%d send=%d\n", addErr, sendErr);
+
+    // Small delay before removing peer
+    delay(5);
+    esp_now_del_peer(broadcast);
+}
+
+void PigSyncMode::sendHello() {
+    PIGSYNC_LOGF("[PIGSYNC-CLI-TX] CMD_HELLO to %02X:%02X:%02X:%02X:%02X:%02X\n",
+        connectedMac[0], connectedMac[1], connectedMac[2],
+        connectedMac[3], connectedMac[4], connectedMac[5]);
+    
+    // Reset reliability for new session
+    reliability.reset();
+    lastHelloTime = millis();
+    
+    CmdHello pkt;
+    uint8_t seq = reliability.nextSeq();
+    initHeader(&pkt.hdr, CMD_HELLO, seq, 0, 0);  // sessionId=0, Sirloin assigns
+    
+    sendControlPacket(connectedMac, (uint8_t*)&pkt, sizeof(pkt), CMD_HELLO, seq);
+    esp_err_t addCheck = esp_now_is_peer_exist(connectedMac) ? ESP_OK : ESP_FAIL;
+    PIGSYNC_LOGF("[PIGSYNC-CLI-TX] CMD_HELLO peer=%d\n", addCheck);
+}
+
+void PigSyncMode::sendReady() {
+    PIGSYNC_LOGF("[PIGSYNC-CLI-TX] CMD_READY sessionId=%04X channel=%d\n", sessionId, dataChannel);
+    
+    CmdReady pkt;
+    uint8_t seq = reliability.nextSeq();
+    initHeader(&pkt.hdr, CMD_READY, seq, reliability.lastRxSeq, sessionId);
+    
+    sendControlPacket(connectedMac, (uint8_t*)&pkt, sizeof(pkt), CMD_READY, seq);
+}
+
+void PigSyncMode::sendStartSync(uint8_t captureType, uint16_t index) {
+    CmdStartSync pkt;
+    uint8_t seq = reliability.nextSeq();
+    initHeader(&pkt.hdr, CMD_START_SYNC, seq, reliability.lastRxSeq, sessionId);
+    pkt.capture_type = captureType;
+    pkt.reserved = 0;
+    pkt.index = index;
+
+    state = State::WAITING_CHUNKS;
+    progress.captureType = captureType;
+    progress.captureIndex = index;
+    progress.currentChunk = 0;
+    progress.inProgress = true;
+
+    sendControlPacket(connectedMac, (uint8_t*)&pkt, sizeof(pkt), CMD_START_SYNC, seq);
+}
+
+void PigSyncMode::sendAckChunk(uint16_t seq) {
+    CmdAckChunk pkt;
+    initHeader(&pkt.hdr, CMD_ACK_CHUNK, reliability.nextSeq(), reliability.lastRxSeq, sessionId);
+    pkt.chunk_seq = seq;   // Renamed field
+    pkt.reserved = 0;
+    
+    esp_now_send(connectedMac, (uint8_t*)&pkt, sizeof(pkt));
+}
+
+void PigSyncMode::sendMarkSynced(uint8_t captureType, uint16_t index) {
+    CmdMarkSynced pkt;
+    uint8_t seq = reliability.nextSeq();
+    initHeader(&pkt.hdr, CMD_MARK_SYNCED, seq, reliability.lastRxSeq, sessionId);
+    pkt.capture_type = captureType;
+    pkt.reserved = 0;
+    pkt.index = index;
+    
+    sendControlPacket(connectedMac, (uint8_t*)&pkt, sizeof(pkt), CMD_MARK_SYNCED, seq);
+}
+
+void PigSyncMode::sendTimeSync() {
+    // Phase 3: Request RTC time from Sirloin
+    CmdTimeSync pkt;
+    uint8_t seq = reliability.nextSeq();
+    initHeader(&pkt.hdr, CMD_TIME_SYNC, seq, reliability.lastRxSeq, sessionId);
+    pkt.porkchopMillis = millis();  // For RTT calculation
+    
+    sendControlPacket(connectedMac, (uint8_t*)&pkt, sizeof(pkt), CMD_TIME_SYNC, seq);
+    PIGSYNC_LOGF("[PIGSYNC-CLI-TX] CMD_TIME_SYNC millis=%lu\n", pkt.porkchopMillis);
+}
+
+void PigSyncMode::sendPurge() {
+    uint8_t buf[128];
+    CmdPurge* pkt = (CmdPurge*)buf;
+    
+    uint8_t seq = reliability.nextSeq();
+    initHeader(&pkt->hdr, CMD_PURGE, seq, reliability.lastRxSeq, sessionId);
+    
+    // Include Papa's goodbye message
+    const char* goodbye = papaGoodbyeSelected[0] ? papaGoodbyeSelected : selectPapaGoodbye(totalSynced);
+    size_t goodbyeLen = strlen(goodbye);
+    if (goodbyeLen > 60) goodbyeLen = 60;
+    
+    pkt->papa_goodbye_len = goodbyeLen;
+    memcpy(buf + sizeof(CmdPurge), goodbye, goodbyeLen);
+    
+    sendControlPacket(connectedMac, buf, sizeof(CmdPurge) + goodbyeLen, CMD_PURGE, seq);
+}
+
+void PigSyncMode::sendBounties() {
+    uint8_t bountyBuf[PIGSYNC_MAX_BOUNTIES * 6] = {0};
+    uint8_t bountyCount = 0;
+    WarhogMode::buildBountyList(bountyBuf, &bountyCount);
+
+    uint8_t buf[sizeof(CmdBounties) + PIGSYNC_MAX_BOUNTIES * 6] = {0};
+    CmdBounties* pkt = (CmdBounties*)buf;
+    uint8_t seq = reliability.nextSeq();
+    initHeader(&pkt->hdr, CMD_BOUNTIES, seq, reliability.lastRxSeq, sessionId);
+    pkt->count = bountyCount;
+    pkt->reserved = 0;
+
+    size_t payloadLen = sizeof(CmdBounties);
+    if (bountyCount > 0) {
+        size_t bountyLen = (size_t)bountyCount * 6;
+        memcpy(buf + sizeof(CmdBounties), bountyBuf, bountyLen);
+        payloadLen += bountyLen;
+    }
+
+    sendControlPacket(connectedMac, buf, payloadLen, CMD_BOUNTIES, seq);
+}
+
+void PigSyncMode::requestNextCapture() {
+    if (controlTx.waiting || controlQueueCount > 0) {
+        pendingNextCapture = true;
+        return;
+    }
+    // Check if we need to move to handshakes
+    if (currentType == CAPTURE_TYPE_PMKID) {
+        if (currentIndex >= remotePMKIDCount) {
+            // Done with PMKIDs, move to handshakes
+            currentType = CAPTURE_TYPE_HANDSHAKE;
+            currentIndex = 0;
+        }
+    }
+    
+    // Check if we need to move to handshakes or are done
+    if (currentType == CAPTURE_TYPE_HANDSHAKE) {
+        if (currentIndex >= remoteHSCount) {
+            // All done!
+            dialoguePhase = 2;  // Goodbye phase
+            phraseStartTime = millis();
+            
+            // Select Papa's goodbye based on total synced
+            strncpy(papaGoodbyeSelected, selectPapaGoodbye(totalSynced), sizeof(papaGoodbyeSelected) - 1);
+            
+            sendPurge();
+            return;
+        }
+    }
+    
+    // Request next
+    sendStartSync(currentType, currentIndex);
+}
+
+// ==[ SAVING ]==
+
+bool PigSyncMode::savePMKID(const uint8_t* data, uint16_t len) {
+    if (!Config::isSDAvailable()) return false;
+
+    CapturedPMKID pmkid = {};
+    if (!parseSirloinPMKID(data, len, pmkid)) {
+        return false;
+    }
+
+    const char* handshakesDir = SDLayout::handshakesDir();
+    if (!SD.exists(handshakesDir)) {
+        SD.mkdir(handshakesDir);
+    }
+
+    char filename[64];
+    SDLayout::buildCaptureFilename(filename, sizeof(filename),
+                                   handshakesDir, pmkid.ssid, pmkid.bssid, ".22000");
+    removeIfExists(filename);
+
+    bool ok = OinkMode::savePMKID22000(pmkid, filename);
+    return ok;
+}
+
+bool PigSyncMode::saveHandshake(const uint8_t* data, uint16_t len) {
+    if (!Config::isSDAvailable()) return false;
+
+    static CapturedHandshake hs;
+    if (hs.beaconData) {
+        free(hs.beaconData);
+        hs.beaconData = nullptr;
+    }
+    memset(&hs, 0, sizeof(hs));
+
+    if (!parseSirloinHandshake(data, len, hs)) {
+        return false;
+    }
+
+    const char* handshakesDir = SDLayout::handshakesDir();
+    if (!SD.exists(handshakesDir)) {
+        SD.mkdir(handshakesDir);
+    }
+
+    char filenamePcap[64];
+    SDLayout::buildCaptureFilename(filenamePcap, sizeof(filenamePcap),
+                                   handshakesDir, hs.ssid, hs.bssid, ".pcap");
+    removeIfExists(filenamePcap);
+
+    char filename22000[64];
+    SDLayout::buildCaptureFilename(filename22000, sizeof(filename22000),
+                                   handshakesDir, hs.ssid, hs.bssid, "_hs.22000");
+    removeIfExists(filename22000);
+
+    bool pcapOk = OinkMode::saveHandshakePCAP(hs, filenamePcap);
+    bool hs22kOk = OinkMode::saveHandshake22000(hs, filename22000);
+
+    if (hs.beaconData) {
+        free(hs.beaconData);
+        hs.beaconData = nullptr;
+    }
+
+    return (pcapOk || hs22kOk);
+}

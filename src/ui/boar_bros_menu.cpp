@@ -2,7 +2,6 @@
 
 #include "boar_bros_menu.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
 #include <SD.h>
 #include <ctype.h>
 #include <string.h>
@@ -149,7 +148,7 @@ void BoarBrosMenu::update() {
 }
 
 void BoarBrosMenu::handleInput() {
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -159,7 +158,7 @@ void BoarBrosMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = /* keysState replaced */;
+    auto keys = hal_input_keysState();
     
     // Handle delete confirmation modal
     if (deleteConfirmActive) {
@@ -174,7 +173,7 @@ void BoarBrosMenu::handleInput() {
     }
     
     // Navigation with ; (prev/up) and . (next/down)
-    if (hal_input_wasPressed(KEY_UP)) {
+    if (hal_input_wasPressed(';')) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -183,7 +182,7 @@ void BoarBrosMenu::handleInput() {
         }
     }
     
-    if (hal_input_wasPressed(KEY_DOWN)) {
+    if (hal_input_wasPressed('.')) {
         if (!bros.empty() && selectedIndex < bros.size() - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {

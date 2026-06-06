@@ -2,7 +2,6 @@
 
 #include "captures_menu.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
 #include <SD.h>
 #include <WiFi.h>
 #include <time.h>
@@ -432,7 +431,7 @@ void CapturesMenu::update() {
 }
 
 void CapturesMenu::handleInput() {
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -442,7 +441,7 @@ void CapturesMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = /* keysState replaced */;
+    auto keys = hal_input_keysState();
 
     // Handle sync modal
     if (syncModalActive) {
@@ -487,7 +486,7 @@ void CapturesMenu::handleInput() {
     }
     
     // Navigation with ; (up) and . (down) — also rotates hints
-    if (hal_input_wasPressed(KEY_UP)) {
+    if (hal_input_wasPressed(';')) {
         hintIndex = (hintIndex + 1) % HINT_COUNT;
         if (selectedIndex > 0) {
             selectedIndex--;
@@ -497,5 +496,724 @@ void CapturesMenu::handleInput() {
         }
     }
 
-    if (hal_input_wasPressed(KEY_DOWN)) {
+    if (hal_input_wasPressed('.')) {
         hintIndex = (hintIndex + 1) % HINT_COUNT;
+        if (!captures.empty() && selectedIndex < captures.size() - 1) {
+            selectedIndex++;
+            if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {
+                scrollOffset = selectedIndex - VISIBLE_ITEMS + 1;
+            }
+        }
+    }
+    
+    // Enter shows detail view (password if cracked)
+    if (hal_input_wasPressed(KEY_ENTER)) {
+        if (!captures.empty() && selectedIndex < captures.size()) {
+            detailViewActive = true;
+        }
+    }
+    
+    // S key triggers WPA-SEC sync
+    if (hal_input_wasPressed('s') || hal_input_wasPressed('S')) {
+        startSync();
+    }
+    
+    // Nuke all loot with D key
+    if (hal_input_wasPressed('d') || hal_input_wasPressed('D')) {
+        if (!captures.empty()) {
+            nukeConfirmActive = true;
+            Display::setBottomOverlay("PERMANENT | NO UNDO");
+        }
+    }
+    
+    // Backspace - go back
+    if (hal_input_wasPressed(KEY_BACKSPACE)) {
+        hide();
+    }
+}
+
+void CapturesMenu::formatTime(char* out, size_t len, time_t t) {
+    if (!out || len == 0) return;
+    if (t == 0) {
+        strncpy(out, "UNKNOWN", len - 1);
+        out[len - 1] = '\0';
+        return;
+    }
+    
+    struct tm* timeinfo = localtime(&t);
+    if (!timeinfo) {
+        strncpy(out, "UNKNOWN", len - 1);
+        out[len - 1] = '\0';
+        return;
+    }
+    
+    // Format: "Dec 06 14:32"
+    strftime(out, len, "%b %d %H:%M", timeinfo);
+}
+
+static void formatSize(char* out, size_t len, uint32_t bytes) {
+    if (!out || len == 0) return;
+    if (bytes < 1024) {
+        snprintf(out, len, "%uB", (unsigned)bytes);
+    } else if (bytes < 1024 * 1024) {
+        snprintf(out, len, "%uKB", (unsigned)(bytes / 1024));
+    } else {
+        snprintf(out, len, "%uMB", (unsigned)(bytes / (1024 * 1024)));
+    }
+}
+
+void CapturesMenu::draw(DisplayCanvas& canvas) {
+    if (!active) return;
+
+    canvas.fillSprite(COLOR_BG);
+    canvas.setTextColor(COLOR_FG);
+    canvas.setTextSize(1);
+
+    // Check if SD card is not available
+    if (!Config::isSDAvailable()) {
+        canvas.setCursor(4, 40);
+        canvas.print("NO SD CARD");
+        canvas.setCursor(4, 55);
+        canvas.print("INSERT AND RESTART");
+        return;
+    }
+
+    // Draw sync modal FIRST - takes precedence over empty captures message
+    if (syncModalActive) {
+        drawSyncModal(canvas);
+        return;
+    }
+
+    if (captures.empty()) {
+        canvas.setCursor(4, 36);
+        canvas.print("NO CAPTURES FOUND");
+        canvas.setCursor(4, 52);
+        canvas.print("PRESS [O] FOR OINK");
+        canvas.setCursor(4, 68);
+        canvas.print("SYNC VIA COMMANDER");
+        return;
+    }
+
+    // Summary stats line
+    uint16_t total = captures.size();
+    uint16_t cracked = 0, uploaded = 0, local = 0;
+    for (const auto& cap : captures) {
+        if (cap.status == CaptureStatus::CRACKED) cracked++;
+        else if (cap.status == CaptureStatus::UPLOADED) uploaded++;
+        else local++;
+    }
+    char summary[64];
+    snprintf(summary, sizeof(summary), "LOOT %u OK %u UP %u LOC %u",
+             (unsigned)total, (unsigned)cracked, (unsigned)uploaded, (unsigned)local);
+    canvas.setCursor(4, 2);
+    canvas.print(summary);
+
+    // Column headers
+    canvas.setCursor(4, 12);
+    canvas.print("SSID");
+    canvas.setCursor(120, 12);
+    canvas.print("ST");
+    canvas.setCursor(150, 12);
+    canvas.print("TYPE");
+    canvas.setCursor(190, 12);
+    canvas.print("SIZE");
+
+    // Capture list
+    int y = 22;
+    int lineHeight = 16;
+
+    for (uint8_t i = scrollOffset; i < captures.size() && i < scrollOffset + VISIBLE_ITEMS; i++) {
+        const CaptureInfo& cap = captures[i];
+
+        // Inverted selection bar
+        if (i == selectedIndex) {
+            canvas.fillRect(0, y - 1, canvas.width(), lineHeight, COLOR_FG);
+            canvas.setTextColor(COLOR_BG);
+        } else {
+            canvas.setTextColor(COLOR_FG);
+        }
+
+        // SSID column — uppercase, max 17 chars, truncate with ..
+        canvas.setCursor(4, y);
+        char ssidBuf[20];
+        size_t pos = 0;
+        const char* ssidSrc = cap.ssid;
+        while (*ssidSrc && pos < 17) {
+            ssidBuf[pos++] = (char)toupper((unsigned char)*ssidSrc++);
+        }
+        ssidBuf[pos] = '\0';
+        if (*ssidSrc) {
+            // Truncated — add ..
+            if (pos >= 2) {
+                ssidBuf[pos - 2] = '.';
+                ssidBuf[pos - 1] = '.';
+            }
+        }
+        canvas.print(ssidBuf);
+
+        // Status column
+        canvas.setCursor(120, y);
+        if (cap.status == CaptureStatus::CRACKED) {
+            canvas.print("[OK]");
+        } else if (cap.status == CaptureStatus::UPLOADED) {
+            canvas.print("[..]");
+        } else {
+            canvas.print("[--]");
+        }
+
+        // Type column
+        canvas.setCursor(150, y);
+        canvas.print(cap.isPMKID ? "PM" : "HS");
+
+        // Size column
+        canvas.setCursor(190, y);
+        char sizeBuf[12];
+        formatSize(sizeBuf, sizeof(sizeBuf), cap.fileSize);
+        canvas.print(sizeBuf);
+
+        y += lineHeight;
+    }
+
+    // Scroll indicators
+    canvas.setTextColor(COLOR_FG);
+    if (scrollOffset > 0) {
+        canvas.setCursor(canvas.width() - 10, 22);
+        canvas.print("^");
+    }
+    if (scrollOffset + VISIBLE_ITEMS < captures.size()) {
+        canvas.setCursor(canvas.width() - 10, 22 + (VISIBLE_ITEMS - 1) * lineHeight);
+        canvas.print("v");
+    }
+
+    // Draw nuke confirmation modal if active
+    if (nukeConfirmActive) {
+        drawNukeConfirm(canvas);
+    }
+
+    // Draw detail view modal if active
+    if (detailViewActive) {
+        drawDetailView(canvas);
+    }
+
+    // Draw sync modal if active
+    if (syncModalActive) {
+        drawSyncModal(canvas);
+    }
+}
+
+void CapturesMenu::drawNukeConfirm(DisplayCanvas& canvas) {
+    // Modal box dimensions - matches PIGGYBLUES warning style
+    const int boxW = 200;
+    const int boxH = 70;
+    const int boxX = (canvas.width() - boxW) / 2;
+    const int boxY = (canvas.height() - boxH) / 2 - 5;
+    
+    // Black border then pink fill
+    canvas.fillRoundRect(boxX - 2, boxY - 2, boxW + 4, boxH + 4, 8, COLOR_BG);
+    canvas.fillRoundRect(boxX, boxY, boxW, boxH, 8, COLOR_FG);
+    
+    // Black text on pink background
+    canvas.setTextColor(COLOR_BG, COLOR_FG);
+    canvas.setTextDatum(top_center);
+    canvas.setTextSize(1);
+    
+    int centerX = canvas.width() / 2;
+    
+    // Hacker edgy message
+    canvas.drawString("!! SCORCHED EARTH !!", centerX, boxY + 8);
+    char cmd[56];
+    snprintf(cmd, sizeof(cmd), "rm -rf %s/*", SDLayout::handshakesDir());
+    canvas.drawString(cmd, centerX, boxY + 22);
+    canvas.drawString("THIS KILLS THE LOOT.", centerX, boxY + 36);
+    canvas.drawString("[Y] DO IT  [N] ABORT", centerX, boxY + 54);
+}
+
+void CapturesMenu::nukeLoot() {
+    Serial.println("[CAPTURES] Nuking all loot...");
+    
+    const char* handshakesDir = SDLayout::handshakesDir();
+    if (!SD.exists(handshakesDir)) {
+        return;
+    }
+
+    File dir = SD.open(handshakesDir);
+    if (!dir || !dir.isDirectory()) {
+        return;
+    }
+    
+    // Batch collect + delete to avoid vector<String> fragmentation
+    // Can't delete while iterating SD, so collect batches of 20
+    int deleted = 0;
+    bool moreFiles = true;
+    while (moreFiles) {
+        char paths[20][80];
+        uint8_t batchCount = 0;
+
+        dir = SD.open(handshakesDir);
+        if (!dir) break;
+
+        File file = dir.openNextFile();
+        while (file && batchCount < 20) {
+            const char* base = file.name();
+            const char* slash = strrchr(base, '/');
+            const char* name = slash ? slash + 1 : base;
+            snprintf(paths[batchCount], sizeof(paths[0]), "%s/%s", handshakesDir, name);
+            batchCount++;
+            file.close();
+            file = dir.openNextFile();
+        }
+        if (file) file.close();
+        dir.close();
+
+        if (batchCount == 0) break;
+        moreFiles = (batchCount == 20);  // Might have more
+
+        for (uint8_t i = 0; i < batchCount; i++) {
+            if (SD.remove(paths[i])) deleted++;
+        }
+        yield();
+    }
+    
+    Serial.printf("[CAPTURES] Nuked %d files\n", deleted);
+    
+    // Reset selection
+    selectedIndex = 0;
+    scrollOffset = 0;
+    captures.clear();
+}
+
+const char* CapturesMenu::getSelectedBSSID() {
+    return HINTS[hintIndex];
+}
+// HS detail parsing for .22000 files
+struct HSDetail {
+    uint8_t type;       // 1=PMKID, 2=4-way
+    uint8_t msgPair;
+    char anonce[17];    // first 16 hex of ANonce + null
+    char clientMac[18]; // AA:BB:CC:DD:EE:FF + null
+    char apMac[18];
+    bool valid;
+};
+
+static bool parseHS22000Line(const char* line, HSDetail* out) {
+    if (!line || !out) return false;
+    memset(out, 0, sizeof(HSDetail));
+
+    // WPA*TYPE*field2*MAC_AP*MAC_CLIENT*ESSID*ANONCE*...
+    if (strncmp(line, "WPA*", 4) != 0) return false;
+
+    // Tokenize on '*' using a stack copy
+    char buf[512];
+    strncpy(buf, line, sizeof(buf) - 1);
+    buf[sizeof(buf) - 1] = '\0';
+
+    char* fields[10] = {};
+    int fieldCount = 0;
+    char* p = buf;
+    fields[fieldCount++] = p;
+    while (*p && fieldCount < 10) {
+        if (*p == '*') {
+            *p = '\0';
+            fields[fieldCount++] = p + 1;
+        }
+        p++;
+    }
+
+    if (fieldCount < 5) return false;
+
+    // fields[0]="WPA", fields[1]=type, fields[2]=MIC/PMKID, fields[3]=MAC_AP,
+    // fields[4]=MAC_CLIENT, fields[5]=ESSID, fields[6]=ANONCE, ...
+    out->type = (uint8_t)atoi(fields[1]);
+
+    // MAC_AP -> formatted
+    const char* ap = fields[3];
+    if (strlen(ap) >= 12) {
+        snprintf(out->apMac, sizeof(out->apMac), "%.2s:%.2s:%.2s:%.2s:%.2s:%.2s",
+                 ap, ap+2, ap+4, ap+6, ap+8, ap+10);
+    }
+
+    // MAC_CLIENT -> formatted
+    const char* cl = fields[4];
+    if (strlen(cl) >= 12) {
+        snprintf(out->clientMac, sizeof(out->clientMac), "%.2s:%.2s:%.2s:%.2s:%.2s:%.2s",
+                 cl, cl+2, cl+4, cl+6, cl+8, cl+10);
+    }
+
+    // ANonce (field 6 for type 02)
+    if (out->type == 2 && fieldCount > 6 && strlen(fields[6]) >= 16) {
+        memcpy(out->anonce, fields[6], 16);
+        out->anonce[16] = '\0';
+    }
+
+    // Message pair is field index 8 (9th field) for type 02
+    // Format: WPA*02*MIC*MAC_AP*MAC_CLIENT*ESSID*ANONCE*EAPOL*MESSAGEPAIR
+    if (out->type == 2 && fieldCount >= 9 && fields[8][0] != '\0') {
+        out->msgPair = (uint8_t)strtol(fields[8], nullptr, 16);
+    }
+
+    out->valid = true;
+    return true;
+}
+
+void CapturesMenu::drawDetailView(DisplayCanvas& canvas) {
+    if (selectedIndex >= captures.size()) return;
+
+    const CaptureInfo& cap = captures[selectedIndex];
+
+    // Modal box dimensions (shrunk from 85 to 72)
+    const int boxW = 220;
+    const int boxH = 72;
+    const int boxX = (canvas.width() - boxW) / 2;
+    const int boxY = (canvas.height() - boxH) / 2 - 5;
+
+    // Black border then pink fill
+    canvas.fillRoundRect(boxX - 2, boxY - 2, boxW + 4, boxH + 4, 8, COLOR_BG);
+    canvas.fillRoundRect(boxX, boxY, boxW, boxH, 8, COLOR_FG);
+
+    // Black text on pink background
+    canvas.setTextColor(COLOR_BG, COLOR_FG);
+    canvas.setTextDatum(top_center);
+    canvas.setTextSize(1);
+
+    int centerX = canvas.width() / 2;
+
+    // SSID
+    char ssidLine[24];
+    size_t ssidPos = 0;
+    const char* ssidSrc = cap.ssid;
+    while (*ssidSrc && ssidPos + 1 < sizeof(ssidLine)) {
+        ssidLine[ssidPos++] = (char)toupper((unsigned char)*ssidSrc++);
+    }
+    ssidLine[ssidPos] = '\0';
+    if (ssidPos > 20) {
+        ssidLine[18] = '.';
+        ssidLine[19] = '.';
+        ssidLine[20] = '\0';
+    }
+    canvas.drawString(ssidLine, centerX, boxY + 4);
+
+    // BSSID
+    canvas.drawString(cap.bssid, centerX, boxY + 16);
+
+    // Cracked captures: show password (more useful than HS details)
+    if (cap.status == CaptureStatus::CRACKED) {
+        canvas.drawString("** CR4CK3D **", centerX, boxY + 32);
+        char pwLine[24];
+        size_t pwLen = strlen(cap.password);
+        if (pwLen > 20) {
+            memcpy(pwLine, cap.password, 18);
+            pwLine[18] = '.';
+            pwLine[19] = '.';
+            pwLine[20] = '\0';
+        } else {
+            strncpy(pwLine, cap.password, sizeof(pwLine) - 1);
+            pwLine[sizeof(pwLine) - 1] = '\0';
+        }
+        canvas.drawString(pwLine, centerX, boxY + 48);
+        return;
+    }
+
+    // Try to parse .22000 file for HS details
+    // Build path to the .22000 file
+    char hsPath[80];
+    // Get base from filename
+    const char* dot = strrchr(cap.filename, '.');
+    size_t baseLen = dot ? (size_t)(dot - cap.filename) : strlen(cap.filename);
+    // Strip _hs if present
+    bool hasHsSuffix = (baseLen > 3 && strncmp(cap.filename + baseLen - 3, "_hs", 3) == 0);
+
+    if (cap.isPMKID) {
+        // PMKID: filename is already .22000
+        snprintf(hsPath, sizeof(hsPath), "%s/%s", SDLayout::handshakesDir(), cap.filename);
+    } else if (hasHsSuffix) {
+        // _hs.22000 file
+        snprintf(hsPath, sizeof(hsPath), "%s/%s", SDLayout::handshakesDir(), cap.filename);
+    } else {
+        // .pcap — try corresponding _hs.22000
+        snprintf(hsPath, sizeof(hsPath), "%s/%.*s_hs.22000",
+                 SDLayout::handshakesDir(), (int)baseLen, cap.filename);
+    }
+
+    // Cache: only parse once per detail view open
+    static HSDetail cachedDetail;
+    static char cachedFilename[48] = "";
+    if (strcmp(cachedFilename, cap.filename) != 0) {
+        memset(&cachedDetail, 0, sizeof(cachedDetail));
+        strncpy(cachedFilename, cap.filename, sizeof(cachedFilename) - 1);
+
+        if (SD.exists(hsPath)) {
+            File f = SD.open(hsPath, FILE_READ);
+            if (f) {
+                char lineBuf[512];
+                int n = f.readBytesUntil('\n', lineBuf, sizeof(lineBuf) - 1);
+                lineBuf[n] = '\0';
+                f.close();
+                parseHS22000Line(lineBuf, &cachedDetail);
+            }
+        }
+    }
+
+    if (cachedDetail.valid) {
+        if (cachedDetail.type == 2) {
+            // 4-way handshake — msgPair 0x00=M1+M2, 0x02=M2+M3
+            char typeLine[24];
+            snprintf(typeLine, sizeof(typeLine), "4-WAY HS (%s)",
+                     cachedDetail.msgPair == 0x02 ? "M2+M3" : "M1+M2");
+            canvas.drawString(typeLine, centerX, boxY + 30);
+            char anLine[24];
+            snprintf(anLine, sizeof(anLine), "AN: %s", cachedDetail.anonce);
+            canvas.drawString(anLine, centerX, boxY + 42);
+            char clLine[24];
+            snprintf(clLine, sizeof(clLine), "CL: %s", cachedDetail.clientMac);
+            canvas.drawString(clLine, centerX, boxY + 54);
+        } else if (cachedDetail.type == 1) {
+            // PMKID
+            canvas.drawString("PMKID CAPTURE", centerX, boxY + 30);
+            char clLine[24];
+            snprintf(clLine, sizeof(clLine), "CL: %s", cachedDetail.clientMac);
+            canvas.drawString(clLine, centerX, boxY + 42);
+            canvas.drawString("hashcat -m 22000", centerX, boxY + 54);
+        }
+    } else {
+        // Fallback if no .22000 parseable
+        if (cap.status == CaptureStatus::UPLOADED) {
+            canvas.drawString("UPLOADED - PENDING CRACK", centerX, boxY + 34);
+            canvas.drawString("PRESS [S] TO CHECK", centerX, boxY + 50);
+        } else if (cap.isPMKID) {
+            canvas.drawString("PMKID - LOCAL CRACK ONLY", centerX, boxY + 34);
+            canvas.drawString("hashcat -m 22000", centerX, boxY + 50);
+        } else {
+            canvas.drawString("NOT UPLOADED YET", centerX, boxY + 34);
+            canvas.drawString("PRESS [S] TO SYNC", centerX, boxY + 50);
+        }
+    }
+}
+
+// ============================================================================
+// WPA-SEC Sync Operations
+// ============================================================================
+
+void CapturesMenu::onSyncProgress(const char* status, uint8_t progress, uint8_t total) {
+    // Update sync state for UI
+    strncpy(syncStatusText, status, sizeof(syncStatusText) - 1);
+    syncStatusText[sizeof(syncStatusText) - 1] = '\0';
+    syncProgress = progress;
+    syncTotal = total;
+}
+
+bool CapturesMenu::connectToWiFi() {
+    const char* ssid = Config::wifi().otaSSID;
+    const char* password = Config::wifi().otaPassword;
+    
+    if (!ssid || ssid[0] == '\0') {
+        strncpy(syncError, "NO WIFI SSID CONFIG", sizeof(syncError) - 1);
+        return false;
+    }
+    
+    Serial.printf("[CAPTURES] Connecting to WiFi: %s\n", ssid);
+    strncpy(syncStatusText, "CONNECTING WIFI...", sizeof(syncStatusText) - 1);
+    
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
+    
+    unsigned long startTime = millis();
+    const unsigned long timeout = 15000;  // 15 second timeout
+    
+    while (WiFi.status() != WL_CONNECTED && (millis() - startTime) < timeout) {
+        delay(100);
+        yield();
+    }
+    
+    if (WiFi.status() != WL_CONNECTED) {
+        strncpy(syncError, "WIFI CONNECT FAILED", sizeof(syncError) - 1);
+        // Keep driver alive to avoid esp_wifi_init 257 on fragmented heap.
+        WiFiUtils::shutdown();
+        return false;
+    }
+    
+    Serial.printf("[CAPTURES] WiFi connected, IP: %s\n", WiFi.localIP().toString().c_str());
+    return true;
+}
+
+void CapturesMenu::disconnectWiFi() {
+    // Keep driver alive to avoid esp_wifi_init 257 on fragmented heap.
+    WiFiUtils::shutdown();
+    Serial.println("[CAPTURES] WiFi disconnected");
+}
+
+void CapturesMenu::startSync() {
+    Serial.println("[CAPTURES] Starting WPA-SEC sync...");
+    
+    // Reset sync state
+    syncModalActive = true;
+    syncState = SyncState::CONNECTING_WIFI;
+    syncStatusText[0] = '\0';
+    syncError[0] = '\0';
+    syncProgress = 0;
+    syncTotal = 0;
+    syncUploaded = 0;
+    syncFailed = 0;
+    syncCracked = 0;
+    syncStartTime = millis();
+    
+    // Pre-flight checks
+    if (!WPASec::hasApiKey()) {
+        strncpy(syncError, "NO WPA-SEC KEY", sizeof(syncError) - 1);
+        syncState = SyncState::ERROR;
+        return;
+    }
+    
+    // Free memory before heavy operations
+    captures.clear();
+    captures.shrink_to_fit();
+    WPASec::freeCacheMemory();
+    
+    Serial.printf("[CAPTURES] Heap after freeing: %u\n", (unsigned int)ESP.getFreeHeap());
+}
+
+void CapturesMenu::cancelSync() {
+    Serial.println("[CAPTURES] Sync cancelled");
+    
+    // Clean up
+    disconnectWiFi();
+    syncModalActive = false;
+    syncState = SyncState::IDLE;
+    
+    // Rescan captures
+    scanCaptures();
+}
+
+void CapturesMenu::processSyncState() {
+    if (!syncModalActive || syncState == SyncState::IDLE) {
+        return;
+    }
+    
+    switch (syncState) {
+        case SyncState::CONNECTING_WIFI:
+            strncpy(syncStatusText, "CONNECTING WIFI...", sizeof(syncStatusText) - 1);
+            if (connectToWiFi()) {
+                syncState = SyncState::FREEING_MEMORY;
+            } else {
+                syncState = SyncState::ERROR;
+            }
+            break;
+            
+        case SyncState::FREEING_MEMORY:
+            strncpy(syncStatusText, "PREPARING...", sizeof(syncStatusText) - 1);
+            // Defer heap gating to WPASec::syncCaptures() so conditioning can run.
+            syncState = SyncState::UPLOADING;
+            break;
+            
+        case SyncState::UPLOADING:
+            {
+                // Run sync (blocking but with progress callback)
+                strncpy(syncStatusText, "SYNCING...", sizeof(syncStatusText) - 1);
+                
+                WPASecSyncResult result = WPASec::syncCaptures(onSyncProgress);
+                
+                syncUploaded = result.uploaded;
+                syncFailed = result.failed;
+                syncCracked = result.cracked;
+                
+                if (result.error[0] != '\0') {
+                    strncpy(syncError, result.error, sizeof(syncError) - 1);
+                }
+                
+                syncState = SyncState::COMPLETE;
+            }
+            break;
+            
+        case SyncState::DOWNLOADING_POTFILE:
+            // Handled within UPLOADING state via syncCaptures
+            break;
+            
+        case SyncState::COMPLETE:
+            // Stay in complete state until user dismisses
+            disconnectWiFi();
+            break;
+            
+        case SyncState::ERROR:
+            // Stay in error state until user dismisses
+            disconnectWiFi();
+            break;
+            
+        default:
+            break;
+    }
+}
+
+void CapturesMenu::drawSyncModal(DisplayCanvas& canvas) {
+    // Modal box dimensions
+    const int boxW = 200;
+    const int boxH = 85;
+    const int boxX = (canvas.width() - boxW) / 2;
+    const int boxY = (canvas.height() - boxH) / 2 - 5;
+    
+    // Black border then pink fill
+    canvas.fillRoundRect(boxX - 2, boxY - 2, boxW + 4, boxH + 4, 8, COLOR_BG);
+    canvas.fillRoundRect(boxX, boxY, boxW, boxH, 8, COLOR_FG);
+    
+    // Black text on pink background
+    canvas.setTextColor(COLOR_BG, COLOR_FG);
+    canvas.setTextDatum(top_center);
+    canvas.setTextSize(1);
+    
+    int centerX = canvas.width() / 2;
+    
+    // Title
+    canvas.drawString("WPA-SEC SYNC", centerX, boxY + 6);
+    
+    if (syncState == SyncState::ERROR) {
+        // Error state
+        canvas.drawString("!! ERROR !!", centerX, boxY + 24);
+        canvas.drawString(syncError, centerX, boxY + 42);
+        canvas.drawString("[ENTER] CLOSE", centerX, boxY + 68);
+    } else if (syncState == SyncState::COMPLETE) {
+        // Complete state
+        canvas.drawString("SYNC COMPLETE", centerX, boxY + 24);
+        
+        char stats[48];
+        snprintf(stats, sizeof(stats), "UP:%u FAIL:%u CRACK:%u", 
+                 (unsigned)syncUploaded, (unsigned)syncFailed, (unsigned)syncCracked);
+        canvas.drawString(stats, centerX, boxY + 42);
+        
+        if (syncError[0] != '\0') {
+            canvas.drawString(syncError, centerX, boxY + 54);
+        }
+        
+        canvas.drawString("[ENTER] CLOSE", centerX, boxY + 68);
+    } else {
+        // In progress
+        canvas.drawString(syncStatusText, centerX, boxY + 24);
+        
+        // Progress bar
+        if (syncTotal > 0) {
+            const int barW = 160;
+            const int barH = 10;
+            const int barX = boxX + (boxW - barW) / 2;
+            const int barY = boxY + 42;
+            
+            // Background
+            canvas.fillRect(barX, barY, barW, barH, COLOR_BG);
+            
+            // Fill
+            int fillW = (barW * syncProgress) / syncTotal;
+            if (fillW > 0) {
+                canvas.fillRect(barX, barY, fillW, barH, COLOR_FG);
+            }
+            
+            // Progress text
+            char progText[16];
+            snprintf(progText, sizeof(progText), "%u/%u", (unsigned)syncProgress, (unsigned)syncTotal);
+            canvas.drawString(progText, centerX, barY + barH + 4);
+        } else {
+            // Heap display
+            char heapText[32];
+            snprintf(heapText, sizeof(heapText), "HEAP: %uKB",
+                     (unsigned)(heap_caps_get_largest_free_block(MALLOC_CAP_8BIT) / 1024));
+            canvas.drawString(heapText, centerX, boxY + 42);
+        }
+        
+        canvas.drawString("[ESC] CANCEL", centerX, boxY + 68);
+    }
+}

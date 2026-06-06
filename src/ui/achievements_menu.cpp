@@ -2,7 +2,6 @@
 
 #include "achievements_menu.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
 #include "display.h"
 #include "../core/xp.h"
 #include <ctype.h>
@@ -122,7 +121,7 @@ void AchievementsMenu::update() {
 }
 
 void AchievementsMenu::handleInput() {
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -132,7 +131,7 @@ void AchievementsMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = /* keysState replaced */;
+    auto keys = hal_input_keysState();
     
     // If showing detail, any key closes it
     if (showingDetail) {
@@ -141,7 +140,7 @@ void AchievementsMenu::handleInput() {
     }
     
     // Navigation with ; (up) and . (down)
-    if (hal_input_wasPressed(KEY_UP)) {
+    if (hal_input_wasPressed(';')) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -151,7 +150,7 @@ void AchievementsMenu::handleInput() {
         }
     }
     
-    if (hal_input_wasPressed(KEY_DOWN)) {
+    if (hal_input_wasPressed('.')) {
         if (selectedIndex < TOTAL_ACHIEVEMENTS - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {

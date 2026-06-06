@@ -2,7 +2,10 @@
 // Porkchop sends wardriven networks to Sirloin for hunting
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
+#include "../hal/hal_display.h"
 
 class BountyStatusMenu {
 public:

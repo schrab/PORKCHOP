@@ -1,4 +1,6 @@
-﻿1|#pragma once
+#pragma once
+
+class DisplayCanvas;
 
 #include <Arduino.h>
 #include "../core/sd_format.h"

@@ -1,7 +1,10 @@
 // Menu system - Sirloin-style grouped modal
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
+#include "../hal/hal_display.h"
 #include <functional>
 
 // Menu item for both root and group items

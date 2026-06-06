@@ -5,7 +5,6 @@
 #include "../core/config.h"
 #include "../core/sd_layout.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
 #include <SD.h>
 #include <algorithm>
 #include <time.h>
@@ -236,7 +235,7 @@ void CrashViewer::drawList(DisplayCanvas& canvas) {
     canvas.fillSprite(COLOR_BG);
     canvas.setTextColor(COLOR_FG, COLOR_BG);
     canvas.setTextSize(1);
-    canvas.setFont(&fonts::Font0);
+    canvas.setFont(NULL);
     canvas.setTextDatum(TL_DATUM);
 
     if (crashFiles.empty()) {
@@ -289,7 +288,7 @@ void CrashViewer::drawFile(DisplayCanvas& canvas) {
     canvas.fillSprite(COLOR_BG);
     canvas.setTextColor(COLOR_FG, COLOR_BG);
     canvas.setTextSize(1);
-    canvas.setFont(&fonts::Font0);
+    canvas.setFont(NULL);
     canvas.setTextDatum(TL_DATUM);
 
     uint8_t y = 2;
@@ -346,7 +345,7 @@ void CrashViewer::drawNukeConfirm(DisplayCanvas& canvas) {
 void CrashViewer::update() {
     if (!active) return;
 
-    if (!hal_input_anyHeld()) {
+    if (!hal_input_isPressed()) {
         keyWasPressed = false;
         return;
     }
@@ -354,7 +353,7 @@ void CrashViewer::update() {
     if (keyWasPressed) return;
     keyWasPressed = true;
 
-    Keyboard_Class::KeysState keys = /* keysState replaced */;
+    // Keyboard_Class::KeysState replaced
 
     if (nukeConfirmActive) {
         if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
@@ -373,11 +372,11 @@ void CrashViewer::update() {
     }
 
     if (fileViewActive) {
-        if (hal_input_wasPressed(KEY_UP)) {
+        if (hal_input_wasPressed(';')) {
             if (fileScroll > 0) {
                 fileScroll--;
             }
-        } else if (hal_input_wasPressed(KEY_DOWN)) {
+        } else if (hal_input_wasPressed('.')) {
             if (totalLines > VISIBLE_LINES && fileScroll < totalLines - VISIBLE_LINES) {
                 fileScroll++;
             }
@@ -390,14 +389,14 @@ void CrashViewer::update() {
         return;
     }
 
-    if (hal_input_wasPressed(KEY_UP)) {
+    if (hal_input_wasPressed(';')) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < listScroll) {
                 listScroll = selectedIndex;
             }
         }
-    } else if (hal_input_wasPressed(KEY_DOWN)) {
+    } else if (hal_input_wasPressed('.')) {
         if (selectedIndex + 1 < crashFiles.size()) {
             selectedIndex++;
             if (selectedIndex >= listScroll + VISIBLE_LINES) {
@@ -499,3 +498,11 @@ void CrashViewer::getStatusLine(char* out, size_t len) {
         return;
     } else if (selectedIndex < crashFiles.size()) {
         path = crashFiles[selectedIndex].path;
+    } else {
+        snprintf(out, len, "CRASH FILES");
+        return;
+    }
+
+    formatDisplayName(path, out, len);
+    truncateWithEllipsis(out, (len - 1 < 24) ? (len - 1) : 24);
+}

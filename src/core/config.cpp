@@ -4,7 +4,7 @@
 #include "config.h"
 #include "sdlog.h"
 #include "sd_layout.h"
-// No M5Cardputer on ESP32-S3 Mini
+#include "../hal/hal_input.h"
 #include <SD.h>
 #include <SPIFFS.h>
 #include <SPI.h>
@@ -284,7 +284,7 @@ bool Config::init() {
         }
     }
 
-    // Allow buses to stabilize after HAL init
+    // Allow buses to stabilize after M5.begin()
     delay(50);
 
     // Ensure SD has a proper SPI bus configured
@@ -498,3 +498,526 @@ bool Config::loadFrom(fs::FS& fs, const char* path) {
 }
 
 bool Config::applyJson(const JsonDocument& doc) {
+    // GPS config
+    if (doc["gps"].is<JsonObject>()) {
+        gpsConfig.enabled = doc["gps"]["enabled"] | true;
+        gpsConfig.source = static_cast<GPSSource>(doc["gps"]["gpsSource"] | 0);
+
+        // Auto-set pins based on source, or load custom pins
+        if (gpsConfig.source == GPSSource::CAP_LORA) {
+            gpsConfig.rxPin = 15;  // Cap LoRa868 GPS RX
+            gpsConfig.txPin = 13;  // Cap LoRa868 GPS TX
+        } else if (gpsConfig.source == GPSSource::GROVE) {
+            gpsConfig.rxPin = 1;   // Grove GPS RX
+            gpsConfig.txPin = 2;   // Grove GPS TX
+        } else {
+            // CUSTOM: load pins from config
+            gpsConfig.rxPin = doc["gps"]["rxPin"] | 1;
+            gpsConfig.txPin = doc["gps"]["txPin"] | 2;
+        }
+
+        gpsConfig.baudRate = doc["gps"]["baudRate"] | 115200;
+        gpsConfig.updateInterval = doc["gps"]["updateInterval"] | 5;
+        gpsConfig.sleepTimeMs = doc["gps"]["sleepTimeMs"] | 5000;
+        gpsConfig.powerSave = doc["gps"]["powerSave"] | true;
+        gpsConfig.timezoneOffset = doc["gps"]["timezoneOffset"] | 0;
+    }
+
+    // ML config
+    if (doc["ml"].is<JsonObject>()) {
+        mlConfig.enabled = doc["ml"]["enabled"] | true;
+        mlConfig.collectionMode = static_cast<MLCollectionMode>(doc["ml"]["collectionMode"] | 0);
+        const char* mp = doc["ml"]["modelPath"] | "/m5porkchop/models/porkchop_model.bin";
+        strncpy(mlConfig.modelPath, mp, sizeof(mlConfig.modelPath) - 1);
+        mlConfig.modelPath[sizeof(mlConfig.modelPath) - 1] = '\0';
+        if (sdAvailable && SDLayout::usingNewLayout()) {
+            if (strncmp(mlConfig.modelPath, "/models/", 8) == 0) {
+                char tmp[64];
+                snprintf(tmp, sizeof(tmp), "%s%s", SDLayout::modelsDir(), mlConfig.modelPath + 7);
+                strncpy(mlConfig.modelPath, tmp, sizeof(mlConfig.modelPath) - 1);
+                mlConfig.modelPath[sizeof(mlConfig.modelPath) - 1] = '\0';
+            }
+        }
+        mlConfig.confidenceThreshold = doc["ml"]["confidenceThreshold"] | 0.7f;
+        mlConfig.rogueApThreshold = doc["ml"]["rogueApThreshold"] | 0.8f;
+        mlConfig.vulnScorerThreshold = doc["ml"]["vulnScorerThreshold"] | 0.6f;
+        mlConfig.autoUpdate = doc["ml"]["autoUpdate"] | false;
+        const char* uu = doc["ml"]["updateUrl"] | "";
+        strncpy(mlConfig.updateUrl, uu, sizeof(mlConfig.updateUrl) - 1);
+        mlConfig.updateUrl[sizeof(mlConfig.updateUrl) - 1] = '\0';
+    }
+
+    // WiFi config
+    if (doc["wifi"].is<JsonObject>()) {
+        int hopInterval = doc["wifi"]["channelHopInterval"] | 150;
+        wifiConfig.channelHopInterval = clampU16(hopInterval, 50, 2000);
+        int spectrumHop = doc["wifi"]["spectrumHopInterval"] | 150;
+        wifiConfig.spectrumHopInterval = clampU16(spectrumHop, 50, 2000);
+        wifiConfig.lockTime = doc["wifi"]["lockTime"] | 12000;
+        wifiConfig.enableDeauth = doc["wifi"]["enableDeauth"] | true;
+        wifiConfig.randomizeMAC = doc["wifi"]["randomizeMAC"] | true;
+        int attackRssi = doc["wifi"]["attackMinRssi"] | -70;
+        wifiConfig.attackMinRssi = clampI8(attackRssi, -90, -50);
+        int minRssi = doc["wifi"]["spectrumMinRssi"] | -95;
+        wifiConfig.spectrumMinRssi = clampI8(minRssi, -95, -30);
+        int topN = doc["wifi"]["spectrumTopN"] | 0;
+        if (topN < 0) topN = 0;
+        if (topN > 100) topN = 100;
+        wifiConfig.spectrumTopN = static_cast<uint8_t>(topN);
+        int staleMs = doc["wifi"]["spectrumStaleMs"] | 5000;
+        wifiConfig.spectrumStaleMs = clampU16(staleMs, 1000, 20000);
+        wifiConfig.spectrumCollapseSsid = doc["wifi"]["spectrumCollapseSsid"] | false;
+        wifiConfig.spectrumTiltEnabled = doc["wifi"]["spectrumTiltEnabled"] | true;
+        const char* ssid = doc["wifi"]["otaSSID"] | "";
+        strncpy(wifiConfig.otaSSID, ssid, sizeof(wifiConfig.otaSSID) - 1);
+        wifiConfig.otaSSID[sizeof(wifiConfig.otaSSID) - 1] = '\0';
+        const char* password = doc["wifi"]["otaPassword"] | "";
+        strncpy(wifiConfig.otaPassword, password, sizeof(wifiConfig.otaPassword) - 1);
+        wifiConfig.otaPassword[sizeof(wifiConfig.otaPassword) - 1] = '\0';
+        wifiConfig.autoConnect = doc["wifi"]["autoConnect"] | false;
+        const char* key = doc["wifi"]["wpaSecKey"] | "";
+        strncpy(wifiConfig.wpaSecKey, key, sizeof(wifiConfig.wpaSecKey) - 1);
+        wifiConfig.wpaSecKey[sizeof(wifiConfig.wpaSecKey) - 1] = '\0';
+        const char* apiName = doc["wifi"]["wigleApiName"] | "";
+        strncpy(wifiConfig.wigleApiName, apiName, sizeof(wifiConfig.wigleApiName) - 1);
+        wifiConfig.wigleApiName[sizeof(wifiConfig.wigleApiName) - 1] = '\0';
+        const char* apiToken = doc["wifi"]["wigleApiToken"] | "";
+        strncpy(wifiConfig.wigleApiToken, apiToken, sizeof(wifiConfig.wigleApiToken) - 1);
+        wifiConfig.wigleApiToken[sizeof(wifiConfig.wigleApiToken) - 1] = '\0';
+    }
+    sanitizeWiFiConfig(wifiConfig);
+
+    // BLE config (PIGGY BLUES)
+    if (doc["ble"].is<JsonObject>()) {
+        bleConfig.burstInterval = doc["ble"]["burstInterval"] | 200;
+        bleConfig.advDuration = doc["ble"]["advDuration"] | 100;
+    }
+
+    Serial.printf("[CONFIG] Loaded OK: wpaKey=%s, wigleName=%s, wigleToken=%s, otaSSID=%s, deauth=%d, gps=%d\n",
+                  strlen(wifiConfig.wpaSecKey) > 0 ? "(SET)" : "(EMPTY)",
+                  strlen(wifiConfig.wigleApiName) > 0 ? "(SET)" : "(EMPTY)",
+                  strlen(wifiConfig.wigleApiToken) > 0 ? "(SET)" : "(EMPTY)",
+                  strlen(wifiConfig.otaSSID) > 0 ? wifiConfig.otaSSID : "(EMPTY)",
+                  wifiConfig.enableDeauth,
+                  static_cast<int>(gpsConfig.source));
+    return true;
+}
+
+bool Config::load() {
+    Serial.printf("[CONFIG] load(): sdAvail=%d, newLayout=%d\n",
+                  sdAvailable, SDLayout::usingNewLayout());
+
+    ConfigBlob blob;
+
+    // 1. Try binary from SD (current layout path)
+    if (sdAvailable && readBlobFrom((fs::FS&)SD, configBinPathSD(), blob)) {
+        extractBlob(blob, gpsConfig, wifiConfig, bleConfig, mlConfig);
+        sanitizeWiFiConfig(wifiConfig);
+        Serial.println("[CONFIG] Loaded binary from SD");
+        // Mirror to SPIFFS
+        writeBlobTo((fs::FS&)SPIFFS, CONFIG_BIN_FILE, blob);
+        return true;
+    }
+
+    // 1b. Try legacy binary path on SD (migration may not have moved porkchop.dat)
+    if (sdAvailable && SDLayout::usingNewLayout()) {
+        if (readBlobFrom((fs::FS&)SD, "/porkchop.dat", blob)) {
+            extractBlob(blob, gpsConfig, wifiConfig, bleConfig, mlConfig);
+            sanitizeWiFiConfig(wifiConfig);
+            Serial.println("[CONFIG] Loaded binary from legacy SD path, migrating...");
+            // Move to new location and mirror to SPIFFS
+            writeBlobTo((fs::FS&)SD, configBinPathSD(), blob);
+            writeBlobTo((fs::FS&)SPIFFS, CONFIG_BIN_FILE, blob);
+            SD.remove("/porkchop.dat");
+            Serial.println("[CONFIG] Migrated porkchop.dat to new layout path");
+            return true;
+        }
+    }
+
+    // 2. Try binary from SPIFFS
+    if (readBlobFrom((fs::FS&)SPIFFS, CONFIG_BIN_FILE, blob)) {
+        extractBlob(blob, gpsConfig, wifiConfig, bleConfig, mlConfig);
+        sanitizeWiFiConfig(wifiConfig);
+        Serial.println("[CONFIG] Loaded binary from SPIFFS");
+        return true;
+    }
+
+    // 3. JSON migration: try SD paths
+    if (sdAvailable) {
+        const char* sdPath = SDLayout::configPathSD();
+        if (loadFrom((fs::FS&)SD, sdPath)) {
+            Serial.printf("[CONFIG] Migrated JSON from SD: '%s'\n", sdPath);
+            save();           // write binary to both SD + SPIFFS
+            SD.remove(sdPath);  // delete old JSON
+            Serial.printf("[CONFIG] Deleted old JSON: '%s'\n", sdPath);
+            return true;
+        }
+        if (SDLayout::usingNewLayout()) {
+            const char* legacyPath = SDLayout::legacyConfigPath();
+            if (loadFrom((fs::FS&)SD, legacyPath)) {
+                Serial.printf("[CONFIG] Migrated JSON from SD legacy: '%s'\n", legacyPath);
+                save();
+                SD.remove(legacyPath);
+                return true;
+            }
+        }
+    }
+
+    // 4. JSON migration: try SPIFFS
+    if (loadFrom((fs::FS&)SPIFFS, CONFIG_FILE)) {
+        Serial.println("[CONFIG] Migrated JSON from SPIFFS");
+        save();                      // write binary
+        SPIFFS.remove(CONFIG_FILE);  // delete old JSON
+        return true;
+    }
+
+    Serial.println("[CONFIG] No config found (binary or JSON)");
+    return false;
+}
+
+bool Config::loadPersonality() {
+    // Load from SPIFFS (always available)
+    File file = SPIFFS.open(PERSONALITY_FILE, FILE_READ);
+    if (!file) {
+        Serial.println("[CONFIG] Personality file not found in SPIFFS");
+        return false;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+
+    if (err) {
+        Serial.printf("[CONFIG] Personality JSON error: %s\n", err.c_str());
+        return false;
+    }
+
+    const char* name = doc["name"] | "Porkchop";
+    strncpy(personalityConfig.name, name, sizeof(personalityConfig.name) - 1);
+    personalityConfig.name[sizeof(personalityConfig.name) - 1] = '\0';
+
+    const char* callsign = doc["callsign"] | "";
+    strncpy(personalityConfig.callsign, callsign, sizeof(personalityConfig.callsign) - 1);
+    personalityConfig.callsign[sizeof(personalityConfig.callsign) - 1] = '\0';
+
+    personalityConfig.mood = doc["mood"] | 50;
+    personalityConfig.experience = doc["experience"] | 0;
+    personalityConfig.curiosity = doc["curiosity"] | 0.7f;
+    personalityConfig.aggression = doc["aggression"] | 0.3f;
+    personalityConfig.patience = doc["patience"] | 0.5f;
+    personalityConfig.soundEnabled = doc["soundEnabled"] | true;
+    personalityConfig.brightness = doc["brightness"] | 80;
+    personalityConfig.dimLevel = doc["dimLevel"] | 20;
+    personalityConfig.dimTimeout = doc["dimTimeout"] | 30;
+    personalityConfig.themeIndex = doc["themeIndex"] | 0;
+    uint8_t g0Action = doc["g0Action"] | static_cast<uint8_t>(G0Action::SCREEN_TOGGLE);
+    if (g0Action >= G0_ACTION_COUNT) {
+        g0Action = static_cast<uint8_t>(G0Action::SCREEN_TOGGLE);
+    }
+    personalityConfig.g0Action = static_cast<G0Action>(g0Action);
+    uint8_t bootMode = doc["bootMode"] | static_cast<uint8_t>(BootMode::IDLE);
+    if (bootMode >= BOOT_MODE_COUNT) {
+        bootMode = static_cast<uint8_t>(BootMode::IDLE);
+    }
+    personalityConfig.bootMode = static_cast<BootMode>(bootMode);
+
+    Serial.printf("[CONFIG] Personality: %s (mood: %d, sound: %s, bright: %d%%, dim: %ds, theme: %d)\n",
+                  personalityConfig.name,
+                  personalityConfig.mood,
+                  personalityConfig.soundEnabled ? "ON" : "OFF",
+                  personalityConfig.brightness,
+                  personalityConfig.dimTimeout,
+                  personalityConfig.themeIndex);
+    return true;
+}
+
+void Config::savePersonalityToSPIFFS() {
+    JsonDocument doc;
+    doc["name"] = personalityConfig.name;
+    doc["callsign"] = personalityConfig.callsign;
+    doc["mood"] = personalityConfig.mood;
+    doc["experience"] = personalityConfig.experience;
+    doc["curiosity"] = personalityConfig.curiosity;
+    doc["aggression"] = personalityConfig.aggression;
+    doc["patience"] = personalityConfig.patience;
+    doc["soundEnabled"] = personalityConfig.soundEnabled;
+    doc["brightness"] = personalityConfig.brightness;
+    doc["dimLevel"] = personalityConfig.dimLevel;
+    doc["dimTimeout"] = personalityConfig.dimTimeout;
+    doc["themeIndex"] = personalityConfig.themeIndex;
+    doc["g0Action"] = static_cast<uint8_t>(personalityConfig.g0Action);
+    doc["bootMode"] = static_cast<uint8_t>(personalityConfig.bootMode);
+
+    File file = SPIFFS.open(PERSONALITY_FILE, FILE_WRITE);
+    if (file) {
+        serializeJsonPretty(doc, file);
+        file.close();
+        Serial.printf("[CONFIG] Saved personality to SPIFFS (sound: %s)\n",
+                      personalityConfig.soundEnabled ? "ON" : "OFF");
+    } else {
+        Serial.println("[CONFIG] Failed to save personality to SPIFFS");
+    }
+}
+
+bool Config::save() {
+    ConfigBlob blob;
+    populateBlob(blob, gpsConfig, wifiConfig, bleConfig, mlConfig);
+
+    Serial.printf("[CONFIG] save(): sdAvail=%d, wpaKey=%s, wigle=%s\n",
+                  sdAvailable,
+                  strlen(wifiConfig.wpaSecKey) > 0 ? "(SET)" : "(EMPTY)",
+                  strlen(wifiConfig.wigleApiName) > 0 ? "(SET)" : "(EMPTY)");
+
+    bool ok = false;
+    if (sdAvailable) {
+        ok = writeBlobTo((fs::FS&)SD, configBinPathSD(), blob);
+    }
+
+    // Always mirror to SPIFFS
+    bool spiffsOk = writeBlobTo((fs::FS&)SPIFFS, CONFIG_BIN_FILE, blob);
+    if (!sdAvailable) ok = spiffsOk;
+
+    return ok;
+}
+
+bool Config::createDefaultConfig() {
+    gpsConfig = GPSConfig();
+    mlConfig = MLConfig();
+    wifiConfig = WiFiConfig();
+    sanitizeWiFiConfig(wifiConfig);
+    bleConfig = BLEConfig();
+    return true;
+}
+
+bool Config::createDefaultPersonality() {
+    strncpy(personalityConfig.name, "Porkchop", sizeof(personalityConfig.name) - 1);
+    personalityConfig.name[sizeof(personalityConfig.name) - 1] = '\0';
+    personalityConfig.mood = 50;
+    personalityConfig.experience = 0;
+    personalityConfig.curiosity = 0.7f;
+    personalityConfig.aggression = 0.3f;
+    personalityConfig.patience = 0.5f;
+    personalityConfig.soundEnabled = true;
+    personalityConfig.g0Action = G0Action::SCREEN_TOGGLE;
+    personalityConfig.bootMode = BootMode::IDLE;
+    return true;
+}
+
+void Config::setGPS(const GPSConfig& cfg) {
+    gpsConfig = cfg;
+    save();
+}
+
+void Config::setML(const MLConfig& cfg) {
+    mlConfig = cfg;
+    save();
+}
+
+void Config::setWiFi(const WiFiConfig& cfg) {
+    wifiConfig = cfg;
+    sanitizeWiFiConfig(wifiConfig);
+    save();
+}
+
+void Config::setBLE(const BLEConfig& cfg) {
+    bleConfig = cfg;
+    save();
+}
+
+void Config::setPersonality(const PersonalityConfig& cfg) {
+    personalityConfig = cfg;
+    savePersonalityToSPIFFS();
+}
+
+bool Config::loadWpaSecKeyFromFile() {
+    const char* keyFile = SDLayout::wpasecKeyPath();
+    const char* legacyKeyFile = SDLayout::legacyWpasecKeyPath();
+
+    if (!sdAvailable) {
+        return false;
+    }
+    if (!SD.exists(keyFile) && SD.exists(legacyKeyFile)) {
+        keyFile = legacyKeyFile;
+    }
+    if (!SD.exists(keyFile)) {
+        return false;
+    }
+
+    File f = SD.open(keyFile, FILE_READ);
+    if (!f) {
+        Serial.println("[CONFIG] Failed to open WPA-SEC key file");
+        return false;
+    }
+
+    char key[64];
+    size_t keyLen = f.readBytesUntil('\n', key, sizeof(key) - 1);
+    key[keyLen] = '\0';
+    f.close();
+    // Trim trailing whitespace
+    while (keyLen > 0 && (key[keyLen - 1] == '\r' || key[keyLen - 1] == ' ')) {
+        key[--keyLen] = '\0';
+    }
+
+    if (keyLen != 32) {
+        Serial.printf("[CONFIG] Invalid WPA-SEC key length: %d (expected 32)\n", (int)keyLen);
+        return false;
+    }
+
+    for (int i = 0; i < 32; i++) {
+        if (!isxdigit(key[i])) {
+            Serial.printf("[CONFIG] Invalid hex char in WPA-SEC key at position %d\n", i);
+            return false;
+        }
+    }
+
+    strncpy(wifiConfig.wpaSecKey, key, sizeof(wifiConfig.wpaSecKey) - 1);
+    wifiConfig.wpaSecKey[sizeof(wifiConfig.wpaSecKey) - 1] = '\0';
+    save();
+
+    if (SD.remove(keyFile)) {
+        Serial.println("[CONFIG] Deleted WPA-SEC key file after import");
+        SDLog::log("CFG", "WPA-SEC key imported from file");
+    } else {
+        Serial.println("[CONFIG] Warning: Could not delete WPA-SEC key file");
+    }
+
+    return true;
+}
+
+bool Config::loadWigleKeyFromFile() {
+    const char* keyFile = SDLayout::wigleKeyPath();
+    const char* legacyKeyFile = SDLayout::legacyWigleKeyPath();
+
+    if (!sdAvailable) {
+        return false;
+    }
+    if (!SD.exists(keyFile) && SD.exists(legacyKeyFile)) {
+        keyFile = legacyKeyFile;
+    }
+    if (!SD.exists(keyFile)) {
+        return false;
+    }
+
+    File f = SD.open(keyFile, FILE_READ);
+    if (!f) {
+        Serial.println("[CONFIG] Failed to open WiGLE key file");
+        return false;
+    }
+
+    char content[160];
+    size_t cLen = f.readBytesUntil('\n', content, sizeof(content) - 1);
+    content[cLen] = '\0';
+    f.close();
+    // Trim trailing whitespace
+    while (cLen > 0 && (content[cLen - 1] == '\r' || content[cLen - 1] == ' ')) {
+        content[--cLen] = '\0';
+    }
+
+    char* colonPos = strchr(content, ':');
+    if (!colonPos || colonPos == content) {
+        Serial.println("[CONFIG] Invalid WiGLE key format (expected name:token)");
+        return false;
+    }
+
+    *colonPos = '\0';  // Split into two strings
+    const char* apiName = content;
+    const char* apiToken = colonPos + 1;
+    // Trim leading spaces from token
+    while (*apiToken == ' ') apiToken++;
+
+    if (apiName[0] == '\0' || apiToken[0] == '\0') {
+        Serial.println("[CONFIG] WiGLE API name or token is empty");
+        return false;
+    }
+
+    // Use strncpy to safely copy strings to char arrays
+    strncpy(wifiConfig.wigleApiName, apiName, sizeof(wifiConfig.wigleApiName) - 1);
+    wifiConfig.wigleApiName[sizeof(wifiConfig.wigleApiName) - 1] = '\0';
+
+    strncpy(wifiConfig.wigleApiToken, apiToken, sizeof(wifiConfig.wigleApiToken) - 1);
+    wifiConfig.wigleApiToken[sizeof(wifiConfig.wigleApiToken) - 1] = '\0';
+    save();
+
+    if (SD.remove(keyFile)) {
+        Serial.println("[CONFIG] Deleted WiGLE key file after import");
+        SDLog::log("CFG", "WiGLE API keys imported from file");
+    } else {
+        Serial.println("[CONFIG] Warning: Could not delete WiGLE key file");
+    }
+
+    return true;
+}
+
+bool Config::importCredsFromJsonConf() {
+    if (!sdAvailable) return false;
+
+    // Check both new and legacy JSON config paths
+    const char* confPath = SDLayout::configPathSD();
+    if (!SD.exists(confPath)) {
+        if (SDLayout::usingNewLayout()) {
+            confPath = SDLayout::legacyConfigPath();
+            if (!SD.exists(confPath)) return false;
+        } else {
+            return false;
+        }
+    }
+
+    File file = SD.open(confPath, FILE_READ);
+    if (!file) return false;
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, file);
+    file.close();
+
+    if (err) {
+        Serial.printf("[CONFIG] importCreds: JSON parse error: %s ('%s')\n", err.c_str(), confPath);
+        return false;
+    }
+
+    if (!doc["wifi"].is<JsonObject>()) {
+        Serial.printf("[CONFIG] importCreds: no 'wifi' object in '%s'\n", confPath);
+        SD.remove(confPath);
+        return false;
+    }
+
+    bool merged = false;
+
+    // Import WPA-SEC key
+    const char* key = doc["wifi"]["wpaSecKey"] | "";
+    if (key[0] != '\0') {
+        strncpy(wifiConfig.wpaSecKey, key, sizeof(wifiConfig.wpaSecKey) - 1);
+        wifiConfig.wpaSecKey[sizeof(wifiConfig.wpaSecKey) - 1] = '\0';
+        Serial.println("[CONFIG] importCreds: WPA-SEC key merged from porkchop.conf");
+        merged = true;
+    }
+
+    // Import WiGLE API name
+    const char* apiName = doc["wifi"]["wigleApiName"] | "";
+    if (apiName[0] != '\0') {
+        strncpy(wifiConfig.wigleApiName, apiName, sizeof(wifiConfig.wigleApiName) - 1);
+        wifiConfig.wigleApiName[sizeof(wifiConfig.wigleApiName) - 1] = '\0';
+        Serial.println("[CONFIG] importCreds: WiGLE API name merged from porkchop.conf");
+        merged = true;
+    }
+
+    // Import WiGLE API token
+    const char* apiToken = doc["wifi"]["wigleApiToken"] | "";
+    if (apiToken[0] != '\0') {
+        strncpy(wifiConfig.wigleApiToken, apiToken, sizeof(wifiConfig.wigleApiToken) - 1);
+        wifiConfig.wigleApiToken[sizeof(wifiConfig.wigleApiToken) - 1] = '\0';
+        Serial.println("[CONFIG] importCreds: WiGLE API token merged from porkchop.conf");
+        merged = true;
+    }
+
+    if (merged) {
+        save();
+        SDLog::log("CFG", "Credentials imported from porkchop.conf");
+    }
+
+    // Delete the JSON conf after import (same pattern as key files)
+    if (SD.remove(confPath)) {
+        Serial.printf("[CONFIG] importCreds: deleted '%s' after import\n", confPath);
+    }
+
+    return merged;
+}

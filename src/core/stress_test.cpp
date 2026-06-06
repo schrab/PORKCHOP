@@ -5,7 +5,7 @@
 #include "../modes/donoham.h"
 #include "../ui/display.h"
 #include "heap_policy.h"
-// No M5Cardputer on ESP32-S3 Mini
+#include "../hal/hal_input.h"
 
 // Static member definitions
 bool StressTest::active = false;

@@ -1,4 +1,4 @@
-// Display management for ESP32-S3 Mini
+// Display management for 
 #pragma once
 
 #include "../hal/hal_display.h"

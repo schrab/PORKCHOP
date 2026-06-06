@@ -224,7 +224,7 @@ void WigleMenu::processAsyncScan() {
 }
 
 void WigleMenu::handleInput() {
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -234,19 +234,19 @@ void WigleMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    // auto keys = M5Cardputer.Keyboard.keysState();
+    auto keys = hal_input_keysState();
     
     // Handle sync modal
     if (syncModalActive) {
         if (syncState == WigleSyncState::ERROR || syncState == WigleSyncState::COMPLETE) {
-            // Enter or backspace closes the modal after completion/error
+            // Enter closes the modal after completion/error
             if (hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_BACKSPACE)) {
                 syncModalActive = false;
                 syncState = WigleSyncState::IDLE;
                 scanFiles();  // Rescan files after sync
             }
         } else {
-            // Backspace cancels during sync
+            // ESC cancels during sync
             if (hal_input_wasPressed(KEY_BACKSPACE)) {
                 cancelSync();
             }
@@ -283,8 +283,8 @@ void WigleMenu::handleInput() {
         return;
     }
     
-    // Navigation with UP and DOWN
-    if (hal_input_wasPressed(KEY_UP)) {
+    // Navigation with ; (prev) and . (next)
+    if (hal_input_wasPressed(';')) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -293,7 +293,7 @@ void WigleMenu::handleInput() {
         }
     }
     
-    if (hal_input_wasPressed(KEY_DOWN)) {
+    if (hal_input_wasPressed('.')) {
         if (!files.empty() && selectedIndex < files.size() - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {
@@ -307,7 +307,7 @@ void WigleMenu::handleInput() {
         detailViewActive = true;
     }
     
-    // S key triggers WiGLE sync — kept for non-joystick compatibility
+    // S key triggers WiGLE sync
     if (hal_input_wasPressed('s') || hal_input_wasPressed('S')) {
         startSync();
     }
@@ -365,7 +365,7 @@ void WigleMenu::draw(DisplayCanvas& canvas) {
     if (!Config::isSDAvailable()) {
         canvas.setCursor(4, 40);
         canvas.print("NO SD CARD");
-        canvas.setCursor(4, 55);
+        canvas.setCursor(4, 0); canvas.print(55);
         canvas.print("INSERT AND RESTART");
         return;
     }
@@ -378,11 +378,11 @@ void WigleMenu::draw(DisplayCanvas& canvas) {
     
     // Empty state
     if (files.empty()) {
-        canvas.setCursor(4, 36);
+        canvas.setCursor(4, 0); canvas.print(36);
         canvas.print("NO WIGLE FILES");
-        canvas.setCursor(4, 52);
+        canvas.setCursor(4, 0); canvas.print(52);
         canvas.print("PRESS [W] FOR WARHOG");
-        canvas.setCursor(4, 68);
+        canvas.setCursor(4, 0); canvas.print(68);
         canvas.print("[S] TO SYNC");
         return;
     }
@@ -403,13 +403,13 @@ void WigleMenu::draw(DisplayCanvas& canvas) {
     canvas.print(summary);
 
     // Header row
-    canvas.setCursor(4, 12);
+    canvas.setCursor(4, 0); canvas.print(12);
     canvas.print("FILE");
-    canvas.setCursor(105, 12);
+    canvas.setCursor(105, 0); canvas.print(12);
     canvas.print("ST");
-    canvas.setCursor(135, 12);
+    canvas.setCursor(135, 0); canvas.print(12);
     canvas.print("NETS");
-    canvas.setCursor(210, 12);
+    canvas.setCursor(210, 0); canvas.print(12);
     canvas.print("SIZE");
     
     // File list (always drawn, modals overlay on top)
@@ -442,10 +442,10 @@ void WigleMenu::draw(DisplayCanvas& canvas) {
         }
         
         // Network count and size
-        canvas.setCursor(135, y);
+        canvas.setCursor(135, 0); canvas.print(y);
         char sizeBuf[12];
         formatSize(sizeBuf, sizeof(sizeBuf), file.fileSize);
-        canvas.printf("~%u", (unsigned)file.networkCount);
+        canvas.print("~"); canvas.print((uint16_t)file.networkCount);
         
         canvas.setCursor(210, y);
         canvas.print(sizeBuf);
@@ -455,7 +455,7 @@ void WigleMenu::draw(DisplayCanvas& canvas) {
     
     // Scroll indicators
     if (scrollOffset > 0) {
-        canvas.setCursor(canvas.width() - 10, 22);
+        canvas.setCursor(canvas.width() - 10, y); canvas.print(22);
         canvas.setTextColor(COLOR_FG);
         canvas.print("^");
     }

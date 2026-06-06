@@ -561,7 +561,7 @@ static bool setSettingValue(SettingId id, int value) {
             if (Config::personality().brightness == newVal) return false;
             Config::personality().brightness = newVal;
             Display::resetDimTimer();
-            g_Display.setBrightness(newVal * 255 / 100);
+            hal_display_setBrightness(newVal * 255 / 100);
             return true;
         }
         case SET_SOUND: {
@@ -917,7 +917,7 @@ void SettingsMenu::saveIfDirty(bool showToast) {
     }
 }
 void SettingsMenu::handleInput() {
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
 
     if (!anyPressed) {
         keyWasPressed = false;
@@ -934,9 +934,9 @@ void SettingsMenu::handleInput() {
 
     lastInputMs = millis();
 
-    // auto keys = M5Cardputer.Keyboard.keysState();
-    bool up = hal_input_wasPressed(KEY_UP);
-    bool down = hal_input_wasPressed(KEY_DOWN);
+    auto keys = hal_input_keysState();
+    bool up = hal_input_wasPressed(';');
+    bool down = hal_input_wasPressed('.');
     bool back = hal_input_wasPressed(KEY_BACKSPACE);
 
     GroupId group = static_cast<GroupId>(activeGroup);
@@ -1024,7 +1024,7 @@ void SettingsMenu::handleInput() {
         }
     }
 
-    if (keys.enter) {
+    if (hal_input_wasPressed(KEY_ENTER)) {
         if (group == GROUP_NONE) {
             const RootEntry& entry = kRootEntries[rootIndex];
             if (entry.isGroup) {
@@ -1124,18 +1124,16 @@ void SettingsMenu::handleInput() {
     }
 }
 void SettingsMenu::handleTextInput() {
-    // auto keys = M5Cardputer.Keyboard.keysState();
-    bool anyPressed = hal_input_anyHeld();
+    auto keys = hal_input_keysState();
+    bool anyPressed = hal_input_isPressed();
 
     if (!anyPressed) {
         keyWasPressed = false;
         return;
     }
 
-    // 5-way joystick can't produce text characters — text editing is disabled
-    // Enter = accept current value, Backspace = go back to menu
-    bool hasPrintable = false;  // no text input from joystick
-    bool hasActionKey = hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_BACKSPACE);
+    bool hasPrintable = false;
+    bool hasActionKey = hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_ESC);
 
     if (!hasPrintable && !hasActionKey) {
         return;
@@ -1146,7 +1144,7 @@ void SettingsMenu::handleTextInput() {
 
     lastInputMs = millis();
 
-    if (keys.enter) {
+    if (hal_input_wasPressed(KEY_ENTER)) {
         SettingId sid = static_cast<SettingId>(textEditId);
         bool changed = setSettingText(sid, textBuffer);
         if (changed) {
@@ -1158,30 +1156,16 @@ void SettingsMenu::handleTextInput() {
         return;
     }
 
-    if (keys.del) {
+    if (hal_input_wasPressed(KEY_ESC)) {
         if (textLen > 0) {
             textBuffer[--textLen] = '\0';
         }
         return;
     }
 
-    for (char c : keys.word) {
-        if (c == '`') {
-            textEditing = false;
-            textBuffer[0] = '\0'; textLen = 0;
-            return;
-        }
-    }
-
+    
     const size_t limit = getTextLimit(static_cast<SettingId>(textEditId));
-    if (textLen < limit) {
-        for (char c : keys.word) {
-            if (c >= 32 && c <= 126 && c != '`' && textLen < limit) {
-                textBuffer[textLen++] = c;
-                textBuffer[textLen] = '\0';
-            }
-        }
-    }
+    
 }
 
 const char* SettingsMenu::getSelectedDescription() {

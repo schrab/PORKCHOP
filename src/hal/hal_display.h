@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <TFT_eSPI.h>
 
-// M5GFX text datum constants — values match TFT_eSPI natively
+// DisplayCanvas text datum constants — values match TFT_eSPI natively
 enum m5_textdatum_t {
     top_left       = 0,
     top_center     = 1,
@@ -40,8 +40,9 @@ public:
     void drawFastHLine(int32_t x, int32_t y, int32_t w, uint32_t color);
     void drawFastVLine(int32_t x, int32_t y, int32_t h, uint32_t color);
 
-    // Text
-    void setTextColor(uint16_t fg, uint16_t bg);
+    // Text - overloaded methods for compatibility
+    void setTextColor(uint16_t fg);                    // single arg
+    void setTextColor(uint16_t fg, uint16_t bg);       // two args
     void setTextSize(float size);
     void setTextDatum(uint8_t datum);
     void setFont(const void* font);
@@ -49,10 +50,19 @@ public:
     void drawString(const char* str, int32_t x, int32_t y);
     void drawCentreString(const char* str, int32_t x, int32_t y);
     void drawRightString(const char* str, int32_t x, int32_t y);
+    void print(const char* str);                        // for M5Canvas compat
+    void print(int val);                                // for M5Canvas compat
+    void print(float val);                              // for M5Canvas compat
+    void drawChar(char c, int32_t x, int32_t y);       // draw single char
+    
+    // Canvas dimensions
+    int16_t width() const;
+    int16_t height() const;
+    int16_t textWidth(const char* str) const;
 
     // Color conversion
-    static uint16_t color565(uint8_t r, uint8_t g, uint8_t b);
-    static uint16_t color24to16(uint32_t c);
+    uint16_t color565(uint8_t r, uint8_t g, uint8_t b);
+    uint16_t color24to16(uint32_t c);
 
     // Raw access for callers that need it
     TFT_eSprite* getSprite() { return m_sprite; }
@@ -64,3 +74,7 @@ private:
 
 // Global display driver (extern, defined in hal_display.cpp)
 extern TFT_eSPI g_Display;
+
+// Initialize display subsystem
+void hal_display_init();
+void hal_display_setBrightness(uint8_t brightness);

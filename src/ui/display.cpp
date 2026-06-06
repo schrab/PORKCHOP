@@ -1,10 +1,7 @@
 // Display management implementation
 
 #include "display.h"
-#include "../hal/hal_pins.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_battery.h"
-#include "../hal/hal_display.h"
 #include <SD.h>
 #include <stdarg.h>
 #include <time.h>
@@ -28,6 +25,7 @@
 #include "../modes/pigsync_client.h"
 #include "../modes/pigsync_protocol.h"
 #include "../modes/bacon.h"
+#include "../modes/charging.h"
 #include "../gps/gps.h"
 #include "../web/fileserver.h"
 #include "menu.h"
@@ -212,7 +210,7 @@ void Display::init() {
     // CRITICAL: Set 8-bit mode for display AND sprites to avoid color conversion crashes
     // Must explicitly set sprite color depth - they don't inherit from display
     // 8-bit RGB332 saves ~50% memory: 240×135×3 sprites × 1 byte = ~97KB vs ~194KB
-    g_Display.setColorDepth(8);
+    // g_Display.setColorDepth(8); // skip - main display
     
     g_Display.fillScreen(COLOR_BG);
     g_Display.setTextColor(COLOR_FG);
@@ -300,7 +298,7 @@ void Display::update() {
     mainCanvas.fillSprite(bgColor);
     mainCanvas.setTextColor(COLOR_FG);
     mainCanvas.setTextDatum(TL_DATUM);  // Reset to top-left
-    // Reset to default font
+    mainCanvas.setFont(NULL);  // Reset to default font
     
     switch (mode) {
         case PorkchopMode::IDLE:
@@ -426,7 +424,7 @@ void Display::update() {
         // Black text on pink background
         mainCanvas.setTextColor(COLOR_BG, COLOR_FG);
         mainCanvas.setTextSize(1);
-
+        mainCanvas.setFont(NULL);
         mainCanvas.setTextDatum(TC_DATUM);
 
         // Draw each line centered
@@ -736,6 +734,7 @@ void Display::drawTopBarMessageTwoLineDirect() {
     line2Buf[len2] = '\0';
 
     topBar.setTextSize(1);
+    topBar.setFont(NULL);
     int maxWidth = DISPLAY_W - 4;
 
     auto truncateLine = [&](char* line) {
@@ -758,6 +757,7 @@ void Display::drawTopBarMessageTwoLineDirect() {
     g_Display.setTextColor(bg, fg);
     g_Display.setTextSize(1);
     g_Display.setCursor(2, 3);
+    g_Display.textfont = NULL;
     g_Display.print(line1Buf);
     g_Display.setCursor(2, TOP_BAR_H + 3);
     g_Display.print(line2Buf);
@@ -1025,13 +1025,13 @@ void Display::showInfoBox(const String& title, const String& line1,
     // Title
     mainCanvas.setTextDatum(top_center);
     mainCanvas.setTextSize(2);
-    mainCanvas.drawString(title, DISPLAY_W / 2, 15);
+    mainCanvas.drawString(title.c_str(), DISPLAY_W / 2, 15);
     
     // Content
     mainCanvas.setTextSize(1);
-    mainCanvas.drawString(line1, DISPLAY_W / 2, 45);
+    mainCanvas.drawString(line1.c_str(), DISPLAY_W / 2, 45);
     if (line2.length() > 0) {
-        mainCanvas.drawString(line2, DISPLAY_W / 2, 60);
+        mainCanvas.drawString(line2.c_str(), DISPLAY_W / 2, 60);
     }
     
     if (blocking) {
@@ -1044,12 +1044,16 @@ void Display::showInfoBox(const String& title, const String& line1,
         uint32_t startTime = millis();
         while ((millis() - startTime) < 60000) {  // 60s timeout
             hal_input_update();
+    hal_input_update();
             if (hal_input_wasPressed(KEY_ENTER)) {
-                hal_input_waitRelease();
+                while (hal_input_isPressed()) {
+                    hal_input_update();
+    hal_input_update();
+                    delay(20);  // TCA8418 I2C throttle
+                }
                 break;
             }
-            delay(20);
-            yield();  // Feed watchdog during blocking wait
+            delay(20);  // TCA8418 I2C throttle
         }
     }
 }
@@ -1062,10 +1066,10 @@ bool Display::showConfirmBox(const String& title, const String& message) {
     
     mainCanvas.setTextDatum(top_center);
     mainCanvas.setTextSize(2);
-    mainCanvas.drawString(title, DISPLAY_W / 2, 15);
+    mainCanvas.drawString(title.c_str(), DISPLAY_W / 2, 15);
     
     mainCanvas.setTextSize(1);
-    mainCanvas.drawString(message, DISPLAY_W / 2, 45);
+    mainCanvas.drawString(message.c_str(), DISPLAY_W / 2, 45);
     mainCanvas.drawString("[Y]ES / [N]O", DISPLAY_W / 2, MAIN_H - 20);
     
     pushAll();
@@ -1073,11 +1077,13 @@ bool Display::showConfirmBox(const String& title, const String& message) {
     uint32_t startTime = millis();
     while ((millis() - startTime) < 30000) {  // 30s timeout, default No
         hal_input_update();
-
-        if (hal_input_wasPressed(KEY_ENTER)) return true;  // [SEL] == YES
-        if (hal_input_wasPressed(KEY_ESC))    return false; // [ESC] == NO
+    hal_input_update();
         
-        delay(20);
+        if (hal_input_isChange()) {
+            if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) return true;
+            if (hal_input_wasPressed('n') || hal_input_wasPressed('N')) return false;
+        }
+        delay(20);  // TCA8418 I2C throttle
         yield();  // Feed watchdog during blocking wait
     }
     return false;  // Timeout = No
@@ -1096,6 +1102,7 @@ void Display::showChallenges() {
     
     mainCanvas.fillSprite(COLOR_BG);
     mainCanvas.setTextColor(COLOR_FG);
+    mainCanvas.setFont(NULL);
     
     // Title - pig personality
     mainCanvas.setTextDatum(TC_DATUM);
@@ -1188,13 +1195,20 @@ void Display::showChallenges() {
     uint32_t startTime = millis();
     while ((millis() - startTime) < 30000) {  // 30s timeout
         hal_input_update();
+    hal_input_update();
         
         if (hal_input_wasPressed(KEY_BACKSPACE) || 
             hal_input_wasPressed(KEY_ENTER)) {
-            hal_input_waitRelease();
+            // Wait for key release
+            while (hal_input_isPressed()) {
+                hal_input_update();
+    hal_input_update();
+                delay(20);
+                yield();  // Feed watchdog
+            }
             break;
         }
-        delay(20);
+        delay(20);  // TCA8418 I2C throttle
         yield();  // Feed watchdog during blocking wait
     }
 }
@@ -1203,6 +1217,7 @@ static void bootSplashDelay(uint32_t ms) {
     uint32_t start = millis();
     while ((millis() - start) < ms) {
         hal_input_update();
+    hal_input_update();
         SFX::update();
         delay(20);
         yield();
@@ -1213,7 +1228,7 @@ static void bootSplashDelay(uint32_t ms) {
 void Display::showBootSplash() {
     // Ensure splash uses 8-bit RGB332 to match sprite palette and avoid 16-bit conversion costs.
     // Splash draws directly to the display (no sprite heap allocation), but color depth still matters.
-    g_Display.setColorDepth(8);
+    // g_Display.setColorDepth(8); // skip - main display
 
     // Screen 1: OINK OINK
     g_Display.fillScreen(COLOR_BG);
@@ -1378,8 +1393,8 @@ void Display::clearTopBarMessage() {
     topBarMessageDuration = 0;
 }
 
-// NeoPixel LED on GPIO 33
-#define LED_PIN 33
+//  NeoPixel LED on GPIO 21
+#define LED_PIN 21
 #define SIREN_COOLDOWN_MS 2000
 
 void Display::flashSiren(uint8_t cycles) {
@@ -1444,6 +1459,7 @@ void Display::showLevelUp(uint8_t oldLevel, uint8_t newLevel) {
     mainCanvas.setTextColor(COLOR_BG, COLOR_FG);
     mainCanvas.setTextDatum(top_center);
     mainCanvas.setTextSize(1);
+    mainCanvas.setFont(NULL);
     
     int centerX = DISPLAY_W / 2;
     
@@ -1472,6 +1488,7 @@ void Display::showLevelUp(uint8_t oldLevel, uint8_t newLevel) {
     uint32_t startTime = millis();
     while ((millis() - startTime) < 2500) {
         hal_input_update();
+    hal_input_update();
         if (hal_input_isChange()) {
             break;  // Any key dismisses
         }
@@ -1508,6 +1525,7 @@ void Display::showClassPromotion(const char* oldClass, const char* newClass) {
     mainCanvas.setTextColor(COLOR_BG, COLOR_FG);
     mainCanvas.setTextDatum(top_center);
     mainCanvas.setTextSize(1);
+    mainCanvas.setFont(NULL);
     
     int centerX = DISPLAY_W / 2;
     
@@ -1532,6 +1550,7 @@ void Display::showClassPromotion(const char* oldClass, const char* newClass) {
     uint32_t startTime = millis();
     while ((millis() - startTime) < 2500) {
         hal_input_update();
+    hal_input_update();
         SFX::update();  // Tick audio during wait
         if (hal_input_isChange()) {
             break;
@@ -2404,6 +2423,7 @@ void Display::drawPigSyncDeviceSelect(DisplayCanvas& canvas) {
     canvas.fillSprite(COLOR_BG);
     canvas.setTextColor(COLOR_FG);
     canvas.setTextDatum(TL_DATUM);
+    uint32_t now = millis();
 
     // Title - terminal style
     canvas.setTextSize(2);
@@ -2820,14 +2840,14 @@ void Display::resetDimTimer() {
         screenForcedOff = false;
         dimmed = false;
         uint8_t brightness = Config::personality().brightness;
-        g_Display.setBrightness(brightness * 255 / 100);
+        hal_display_setBrightness(brightness * 255 / 100);
         return;
     }
     if (dimmed) {
         // Restore full brightness
         dimmed = false;
         uint8_t brightness = Config::personality().brightness;
-        g_Display.setBrightness(brightness * 255 / 100);
+        hal_display_setBrightness(brightness * 255 / 100);
     }
 }
 
@@ -2835,14 +2855,14 @@ void Display::toggleScreenPower() {
     screenForcedOff = !screenForcedOff;
     if (screenForcedOff) {
         dimmed = true;
-        g_Display.setBrightness(0);
+        hal_display_setBrightness(0);
         return;
     }
 
     dimmed = false;
     lastActivityTime = millis();
     uint8_t brightness = Config::personality().brightness;
-    g_Display.setBrightness(brightness * 255 / 100);
+    hal_display_setBrightness(brightness * 255 / 100);
 }
 
 void Display::updateDimming() {
@@ -2856,7 +2876,7 @@ void Display::updateDimming() {
         // Time to dim
         dimmed = true;
         uint8_t dimLevel = Config::personality().dimLevel;
-        g_Display.setBrightness(dimLevel * 255 / 100);
+        hal_display_setBrightness(dimLevel * 255 / 100);
     }
 }
 

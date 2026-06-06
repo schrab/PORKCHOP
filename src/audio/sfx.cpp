@@ -498,3 +498,38 @@ bool update() {
         if (now - stepStartTime >= note.pause) {
             // Pause finished, advance to next note
             currentStep++;
+            inNote = true;
+            stepStartTime = now;
+            
+            const Note& next = currentSequence[currentStep];
+            if (next.duration > 0 && next.freq > 0) {
+                hal_audio_play(next.freq, next.duration);
+            }
+        }
+    }
+    
+    return true;
+}
+
+bool isPlaying() {
+    taskENTER_CRITICAL(&queueMutex);
+    bool playing = currentSequence != nullptr || (queueTail != queueHead);
+    taskEXIT_CRITICAL(&queueMutex);
+    return playing;
+}
+
+void stop() {
+    currentSequence = nullptr;
+    currentStep = 0;
+    taskENTER_CRITICAL(&queueMutex);
+    queueHead = queueTail = 0;
+    taskEXIT_CRITICAL(&queueMutex);
+    hal_audio_stop();
+}
+
+void tone(uint16_t freq, uint16_t duration) {
+    if (!Config::personality().soundEnabled) return;
+    hal_audio_play(freq, duration);
+}
+
+}  // namespace SFX

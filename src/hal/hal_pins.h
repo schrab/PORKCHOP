@@ -52,4 +52,16 @@
 #define PIN_PIEZO             7
 #define PIEZO_LEDC_TIMER      LEDC_TIMER_0
 #define PIEZO_LEDC_CHANNEL    LEDC_CHANNEL_0
+#define DISPLAY_BL_LEDC_CHANNEL    LEDC_CHANNEL_2
 #define PIEZO_LEDC_RESOLUTION LEDC_TIMER_8_BIT
+#define DISPLAY_BL_LEDC_CHANNEL    0
+
+// --- Add missing aliases for HAL compatibility ---
+#define JOYSTICK_UP_PIN       PIN_JOY_UP
+#define JOYSTICK_DOWN_PIN     PIN_JOY_DOWN
+#define JOYSTICK_LEFT_PIN     PIN_JOY_LEFT
+#define JOYSTICK_RIGHT_PIN    PIN_JOY_RIGHT
+#define JOYSTICK_CENTER_PIN   PIN_JOY_SELECT
+#define BTN_A_PIN             33  // TODO: verify
+#define BTN_B_PIN             34  // TODO: verify
+#define SPEAKER_PIN           PIN_PIEZO

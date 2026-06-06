@@ -1,7 +1,10 @@
 // BOAR BROS Menu - Manage excluded networks
 #pragma once
 
+class DisplayCanvas;
+
 #include <Arduino.h>
+#include "../hal/hal_display.h"
 #include <vector>
 
 struct BroInfo {

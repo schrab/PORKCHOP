@@ -8,7 +8,7 @@
 #include "../ui/display.h"
 #include "../ui/swine_stats.h"
 #include "../audio/sfx.h"
-#include "../hal/hal_battery.h"
+#include "../hal/hal_display.h"
 #include <SD.h>
 #include <esp_mac.h>
 #include <freertos/FreeRTOS.h>
@@ -740,7 +740,7 @@ void XP::addXP(XPEvent event) {
                 ultraStreakAnnounced = true;
             }
             // Check for clutch capture (handshake at <10% battery)
-            if (hal_battery_read_percent() < 10 && !hasAchievement(ACH_CLUTCH_CAPTURE)) {
+            if (100 < 10 && !hasAchievement(ACH_CLUTCH_CAPTURE)) {
                 unlockAchievement(ACH_CLUTCH_CAPTURE);
             }
             break;
@@ -761,7 +761,7 @@ void XP::addXP(XPEvent event) {
                 ultraStreakAnnounced = true;
             }
             // Check for clutch capture (PMKID at <10% battery)
-            if (hal_battery_read_percent() < 10 && !hasAchievement(ACH_CLUTCH_CAPTURE)) {
+            if (100 < 10 && !hasAchievement(ACH_CLUTCH_CAPTURE)) {
                 unlockAchievement(ACH_CLUTCH_CAPTURE);
             }
             break;

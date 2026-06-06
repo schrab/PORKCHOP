@@ -21,7 +21,7 @@
 #include "../ui/display.h"
 #include "../piglet/mood.h"
 #include "../piglet/avatar.h"
-// No M5Cardputer on ESP32-S3 Mini
+#include "../hal/hal_input.h"
 #include <WiFi.h>
 #include <SD.h>
 #include <freertos/FreeRTOS.h>
@@ -498,3 +498,386 @@ bool WarhogMode::ensureCSVFileReady() {
     }
     
     f.println("BSSID,SSID,RSSI,Channel,AuthMode,Latitude,Longitude,Altitude,Timestamp");
+    f.close();
+    
+    return true;
+}
+
+// Append single network to CSV file
+void WarhogMode::appendCSVEntry(const uint8_t* bssid, const char* ssid,
+                                 int8_t rssi, uint8_t channel, wifi_auth_mode_t auth,
+                                 double lat, double lon, double alt) {
+    if (!ensureCSVFileReady()) return;
+    
+    File f = openFileWithRetry(currentFilename, FILE_APPEND);
+    if (!f) return;
+
+    f.printf("%02X:%02X:%02X:%02X:%02X:%02X,",
+            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+    writeCSVField(f, ssid);
+    f.print(",");
+    f.printf("%d,%d,%s,%.6f,%.6f,%.1f,%lu\n",
+            rssi, channel, authModeToString(auth),
+            lat, lon, alt, millis());
+    f.close();
+}
+
+// Check if WiGLE file needs rotation due to size
+void WarhogMode::checkWigleFileRotation() {
+    if (currentWigleFilename[0] == '\0') return;
+
+    File f = SD.open(currentWigleFilename, FILE_READ);
+    if (!f) return;
+
+    size_t fileSize = f.size();
+    f.close();
+
+    if (fileSize >= WIGLE_FILE_MAX_SIZE) {
+        currentWigleFilename[0] = '\0';  // Force new file creation on next append
+    }
+}
+
+// Ensure WiGLE file exists with header
+bool WarhogMode::ensureWigleFileReady() {
+    // Check if current file needs rotation
+    checkWigleFileRotation();
+    
+    if (currentWigleFilename[0] != '\0') return true;
+
+    // Ensure wardriving directory exists
+    const char* wardrivingDir = SDLayout::wardrivingDir();
+    if (!SD.exists(wardrivingDir)) {
+        if (!SD.mkdir(wardrivingDir)) {
+            return false;
+        }
+    }
+
+    generateFilename(currentWigleFilename, sizeof(currentWigleFilename), "wigle.csv");
+
+    File f = openFileWithRetry(currentWigleFilename, FILE_WRITE);
+    if (!f) {
+        currentWigleFilename[0] = '\0';
+        return false;
+    }
+    
+    // WiGLE format v1.6 pre-header
+    f.print("WigleWifi-1.6,appRelease=");
+    #ifdef BUILD_VERSION
+    f.print(BUILD_VERSION);
+    #else
+    f.print("0.1.x");
+    #endif
+    f.print(",model=,release=ESP32-S3,device=PORKCHOP,display=240x135,board=m5stack,brand=M5Stack,star=Sol,body=3,subBody=0\n");
+    
+    // WiGLE format header
+    f.println("MAC,SSID,AuthMode,FirstSeen,Channel,Frequency,RSSI,CurrentLatitude,CurrentLongitude,AltitudeMeters,AccuracyMeters,RCOIs,MfgrId,Type");
+    f.close();
+    
+    return true;
+}
+
+// Convert auth mode to WiGLE capability string format (returns string literal, zero allocation)
+const char* WarhogMode::authModeToWigleString(wifi_auth_mode_t mode) {
+    switch (mode) {
+        case WIFI_AUTH_OPEN:          return "[ESS]";
+        case WIFI_AUTH_WEP:           return "[WEP][ESS]";
+        case WIFI_AUTH_WPA_PSK:       return "[WPA-PSK-CCMP][ESS]";
+        case WIFI_AUTH_WPA2_PSK:      return "[WPA2-PSK-CCMP][ESS]";
+        case WIFI_AUTH_WPA_WPA2_PSK:  return "[WPA-PSK-CCMP+TKIP][WPA2-PSK-CCMP+TKIP][ESS]";
+        case WIFI_AUTH_WPA3_PSK:      return "[WPA3-SAE][ESS]";
+        case WIFI_AUTH_WPA2_WPA3_PSK: return "[WPA2-PSK-CCMP][WPA3-SAE][ESS]";
+        case WIFI_AUTH_WAPI_PSK:      return "[WAPI-PSK][ESS]";
+        default:                      return "[ESS]";
+    }
+}
+
+static int channelToFrequency(uint8_t channel) {
+    if (channel >= 1 && channel <= 13) {
+        return 2412 + (channel - 1) * 5;
+    }
+    if (channel == 14) {
+        return 2484;
+    }
+    if (channel <= 196) {
+        return 5000 + channel * 5;
+    }
+    if (channel <= 233) {
+        return 5950 + channel * 5;
+    }
+    return 0;
+}
+
+// Append single network to WiGLE file
+void WarhogMode::appendWigleEntry(const uint8_t* bssid, const char* ssid,
+                                   int8_t rssi, uint8_t channel, wifi_auth_mode_t auth,
+                                   double lat, double lon, double alt, double accuracy) {
+    if (!ensureWigleFileReady()) return;
+    
+    File f = openFileWithRetry(currentWigleFilename, FILE_APPEND);
+    if (!f) return;
+    
+    // MAC (BSSID with colons)
+    f.printf("%02X:%02X:%02X:%02X:%02X:%02X,",
+            bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+    
+    // SSID (escaped)
+    writeCSVField(f, ssid);
+    f.print(",");
+    
+    // AuthMode (WiGLE capability string)
+    f.print(authModeToWigleString(auth));
+    f.print(",");
+    
+    // FirstSeen (timestamp) - use GPS time if available, else millis
+    GPSData gps = GPS::getData();
+    if (gps.date > 0 && gps.time > 0) {
+        // date format: DDMMYY, time format: HHMMSSCC
+        uint8_t day = gps.date / 10000;
+        uint8_t month = (gps.date / 100) % 100;
+        uint8_t year = gps.date % 100;
+        uint8_t hour = gps.time / 1000000;
+        uint8_t minute = (gps.time / 10000) % 100;
+        uint8_t second = (gps.time / 100) % 100;
+        f.printf("20%02d-%02d-%02d %02d:%02d:%02d,", year, month, day, hour, minute, second);
+    } else {
+        // Fallback - use boot time reference
+        f.printf("1970-01-01 00:00:%02d,", (millis() / 1000) % 60);
+    }
+    
+    // Channel
+    f.printf("%d,", channel);
+    
+    // Frequency (best-effort mapping for 2.4/5/6 GHz)
+    int freq = channelToFrequency(channel);
+    f.printf("%d,", freq);
+    
+    // RSSI
+    f.printf("%d,", rssi);
+    
+    // Latitude, Longitude, Altitude
+    f.printf("%.6f,%.6f,%.1f,", lat, lon, alt);
+    
+    // AccuracyMeters (GPS HDOP as accuracy estimate, or default 10m)
+    f.printf("%.1f,", accuracy > 0 ? accuracy : 10.0);
+    
+    // RCOIs (empty), MfgrId (empty), Type (WIFI)
+    f.println(",,WIFI");
+    
+    f.close();
+}
+
+void WarhogMode::processScanResults() {
+    int n = scanResult;
+    
+    if (n < 0) {
+        WiFi.scanDelete();
+        return;
+    }
+    
+    // Get current GPS data - check for valid fix
+    GPSData gpsData = GPS::getData();
+    bool hasGPS = GPS::hasFix();
+    
+    SDLOG("WARHOG", "Processing %d networks (GPS: %s)", n, hasGPS ? "yes" : "no");
+    
+    uint32_t newThisScan = 0;
+    uint32_t geotaggedThisScan = 0;
+    
+    // Process each network with periodic yield to prevent WDT issues
+    for (int i = 0; i < n; i++) {
+        // Yield periodically during long processing loops to prevent WDT
+        if (i % 5 == 0) {
+            yield(); // Allow other tasks to run
+        }
+
+        uint8_t* bssidPtr = WiFi.BSSID(i);
+        if (!bssidPtr) continue;
+        
+        uint64_t bssidKey = bssidToKey(bssidPtr);
+        
+        // Skip if already processed this session (Bloom filter)
+        if (bloomTest(seenBloom, SEEN_BLOOM_MASK, SEEN_BLOOM_HASHES, bssidKey)) {
+            continue;
+        }
+
+        // Mark as seen and update bounty reservoir before any file writes
+        bloomAdd(seenBloom, SEEN_BLOOM_MASK, SEEN_BLOOM_HASHES, bssidKey);
+        bountySeenTotal++;
+        if (bountyPoolCount < BOUNTY_POOL_SIZE) {
+            bountyPool[bountyPoolCount++] = bssidKey;
+        } else {
+            uint32_t pick = esp_random() % bountySeenTotal;
+            if (pick < BOUNTY_POOL_SIZE) {
+                bountyPool[pick] = bssidKey;
+            }
+        }
+        
+        // Extract SSID to stack buffer — avoids heap String for each of 50+ networks
+        char ssidBuf[33];
+        strncpy(ssidBuf, WiFi.SSID(i).c_str(), sizeof(ssidBuf) - 1);
+        ssidBuf[sizeof(ssidBuf) - 1] = '\0';
+        const char* ssid = ssidBuf;
+        int8_t rssi = WiFi.RSSI(i);
+        uint8_t channel = WiFi.channel(i);
+        wifi_auth_mode_t authmode = WiFi.encryptionType(i);
+        
+        // Validate extracted data to prevent potential crashes
+        if (!ssid || strlen(ssid) > 32) continue;
+        if (channel == 0 || channel > 165) continue; // Valid WiFi channels are 1-165
+
+        // Update statistics
+        totalNetworks++;
+        newThisScan++;
+        
+        // Track auth types
+        switch (authmode) {
+            case WIFI_AUTH_OPEN:
+                openNetworks++;
+                XP::addXP(XPEvent::NETWORK_OPEN);
+                break;
+            case WIFI_AUTH_WEP:
+                wepNetworks++;
+                XP::addXP(XPEvent::NETWORK_WEP);
+                break;
+            case WIFI_AUTH_WPA3_PSK:
+            case WIFI_AUTH_WPA2_WPA3_PSK:
+                wpaNetworks++;
+                XP::addXP(XPEvent::NETWORK_WPA3);
+                break;
+            default:
+                wpaNetworks++;
+                XP::addXP(XPEvent::NETWORK_FOUND);
+                break;
+        }
+        
+        // Write to files based on GPS status
+        if (Config::isSDAvailable()) {
+            if (hasGPS) {
+                // Full wardriving: both CSV, WiGLE, and ML
+                appendCSVEntry(bssidPtr, ssid, rssi, channel, authmode,
+                              gpsData.latitude, gpsData.longitude, gpsData.altitude);
+                
+                // WiGLE format export (HDOP * 5 as rough accuracy estimate in meters)
+                double accuracy = gpsData.hdop > 0 ? gpsData.hdop * 5.0 : 10.0;
+                appendWigleEntry(bssidPtr, ssid, rssi, channel, authmode,
+                                gpsData.latitude, gpsData.longitude, gpsData.altitude, accuracy);
+                
+                savedCount++;
+                geotaggedThisScan++;
+                XP::addXP(XPEvent::WARHOG_LOGGED);  // +2 XP for geotagged network
+            }
+        }
+    }
+    
+    // Trigger mood update if we found new networks
+    if (newThisScan > 0) {
+        Mood::onWarhogFound(nullptr, 0);
+        SDLOG("WARHOG", "Found %lu new (%lu geotagged)", newThisScan, geotaggedThisScan);
+    }
+    
+    WiFi.scanDelete();
+}
+
+bool WarhogMode::hasGPSFix() {
+    return GPS::hasFix();
+}
+
+GPSData WarhogMode::getGPSData() {
+    return GPS::getData();
+}
+
+// Export functions - data is already on disk, these are for format conversion
+// They now read from the session CSV and convert format
+
+bool WarhogMode::exportCSV(const char* path) {
+    // Data is already in currentFilename as CSV
+    // This function would copy/rename, but for now just return status
+    return currentFilename[0] != '\0';
+}
+
+
+const char* WarhogMode::authModeToString(wifi_auth_mode_t mode) {
+    switch (mode) {
+        case WIFI_AUTH_OPEN:          return "OPEN";
+        case WIFI_AUTH_WEP:           return "WEP";
+        case WIFI_AUTH_WPA_PSK:       return "WPA";
+        case WIFI_AUTH_WPA2_PSK:      return "WPA2";
+        case WIFI_AUTH_WPA_WPA2_PSK:  return "WPA/WPA2";
+        case WIFI_AUTH_WPA3_PSK:      return "WPA3";
+        case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3";
+        case WIFI_AUTH_WAPI_PSK:      return "WAPI";
+        default:                      return "UNKNOWN";
+    }
+}
+
+// === BOUNTY SYSTEM (Phase 5) ===
+// Track which BSSIDs were actually captured (handshakes/PMKIDs) so Papa only sends misses
+void WarhogMode::markCaptured(const uint8_t* bssid) {
+    if (!bssid) return;
+    
+    uint64_t key = bssidToKey(bssid);
+    bloomAdd(capturedBloom, CAPTURED_BLOOM_MASK, CAPTURED_BLOOM_HASHES, key);
+
+    // Remove from bounty pool if present
+    for (uint16_t i = 0; i < bountyPoolCount; i++) {
+        if (bountyPool[i] == key) {
+            bountyPool[i] = bountyPool[bountyPoolCount - 1];
+            bountyPoolCount--;
+            break;
+        }
+    }
+}
+
+std::vector<uint64_t> WarhogMode::getUnclaimedBSSIDs() {
+    std::vector<uint64_t> unclaimed;
+    unclaimed.reserve(bountyPoolCount);
+    for (uint16_t i = 0; i < bountyPoolCount; i++) {
+        uint64_t key = bountyPool[i];
+        if (bloomTest(capturedBloom, CAPTURED_BLOOM_MASK, CAPTURED_BLOOM_HASHES, key)) {
+            continue;
+        }
+        unclaimed.push_back(key);
+    }
+    return unclaimed;
+}
+
+void WarhogMode::buildBountyList(uint8_t* buffer, uint8_t* count) {
+    if (!buffer || !count) return;
+    
+    auto unclaimed = getUnclaimedBSSIDs();
+    *count = 0;
+    
+    for (uint64_t key : unclaimed) {
+        if (*count >= MAX_BOUNTIES) break;  // Max 15 bounties
+        buffer[*count * 6 + 0] = (key >> 40) & 0xFF;
+        buffer[*count * 6 + 1] = (key >> 32) & 0xFF;
+        buffer[*count * 6 + 2] = (key >> 24) & 0xFF;
+        buffer[*count * 6 + 3] = (key >> 16) & 0xFF;
+        buffer[*count * 6 + 4] = (key >> 8) & 0xFF;
+        buffer[*count * 6 + 5] = key & 0xFF;
+        (*count)++;
+    }
+}
+
+void WarhogMode::generateFilename(char* buf, size_t bufSize, const char* ext) {
+    GPSData gps = GPS::getData();
+    const char* wardrivingDir = SDLayout::wardrivingDir();
+
+    if (gps.date > 0 && gps.time > 0) {
+        uint8_t day = gps.date / 10000;
+        uint8_t month = (gps.date / 100) % 100;
+        uint8_t year = gps.date % 100;
+        uint8_t hour = gps.time / 1000000;
+        uint8_t minute = (gps.time / 10000) % 100;
+        uint8_t second = (gps.time / 100) % 100;
+
+        snprintf(buf, bufSize, "%s/warhog_20%02d%02d%02d_%02d%02d%02d.%s",
+                wardrivingDir,
+                year, month, day, hour, minute, second, ext);
+    } else {
+        snprintf(buf, bufSize, "%s/warhog_%lu_%04X.%s",
+                wardrivingDir,
+                millis(), (uint16_t)esp_random(), ext);
+    }
+}
+

@@ -4,7 +4,6 @@
 
 #include "bounty_status_menu.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
 #include "display.h"
 #include "../modes/pigsync_client.h"
 #include "../modes/warhog.h"
@@ -86,7 +85,7 @@ void BountyStatusMenu::update() {
 }
 
 void BountyStatusMenu::handleInput() {
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -100,7 +99,7 @@ void BountyStatusMenu::handleInput() {
     size_t count = cachedBounties.size();
     
     // Navigation (; = up, . = down)
-    if (hal_input_wasPressed(KEY_UP)) {
+    if (hal_input_wasPressed(';')) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -109,7 +108,7 @@ void BountyStatusMenu::handleInput() {
         }
     }
     
-    if (hal_input_wasPressed(KEY_DOWN)) {
+    if (hal_input_wasPressed('.')) {
         if (count > 0 && selectedIndex < count - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {

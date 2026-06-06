@@ -5,7 +5,7 @@
 #include "config.h"
 #include "../ui/display.h"
 #include "../audio/sfx.h"
-// No M5Unified needed
+#include "../hal/hal_display.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 

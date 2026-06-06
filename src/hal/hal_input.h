@@ -1,7 +1,7 @@
 #pragma once
 #include <cstdint>
 
-// Key event codes — same as PORKCHOP's M5Cardputer.Keyboard codes
+// Key event codes — same as PORKCHOP's .Keyboard codes
 #define KEY_UP      0xDA
 #define KEY_DOWN    0xD9
 #define KEY_LEFT    0xD8
@@ -41,3 +41,10 @@ void hal_input_waitRelease();
 
 // Check if any key state changed since last update
 bool hal_input_isChange();
+
+// Get keyboard state (for M5Cardputer compatibility)
+InputEvent hal_input_keysState();
+
+bool hal_input_isKeyPressed(char key);
+bool hal_input_shouldExit();
+bool hal_input_isPressed();

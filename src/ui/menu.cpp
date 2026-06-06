@@ -2,7 +2,6 @@
 
 #include "menu.h"
 #include "../hal/hal_input.h"
-#include "../hal/hal_display.h"
 #include "display.h"
 #include "../audio/sfx.h"
 #include <string.h>
@@ -364,7 +363,7 @@ void Menu::update() {
 // ============================================================================
 
 void Menu::handleInput() {
-    bool anyPressed = hal_input_anyHeld();
+    bool anyPressed = hal_input_isPressed();
     
     if (!anyPressed) {
         keyWasPressed = false;
@@ -374,13 +373,13 @@ void Menu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    // auto keys = M5Cardputer.Keyboard.keysState();
+    auto keys = hal_input_keysState();
     
     if (activeGroup != GroupId::NONE) {
         // === MODAL INPUT ===
         uint8_t groupSize = getGroupSize(activeGroup);
         
-        if (hal_input_wasPressed(KEY_UP)) {
+        if (hal_input_wasPressed(';')) {
             if (modalIdx > 0) {
                 modalIdx--;
                 SFX::play(SFX::MENU_CLICK);
@@ -390,7 +389,7 @@ void Menu::handleInput() {
             }
         }
         
-        if (hal_input_wasPressed(KEY_DOWN)) {
+        if (hal_input_wasPressed('.')) {
             if (modalIdx < groupSize - 1) {
                 modalIdx++;
                 SFX::play(SFX::MENU_CLICK);
@@ -415,7 +414,7 @@ void Menu::handleInput() {
         
     } else {
         // === ROOT INPUT ===
-        if (hal_input_wasPressed(KEY_UP)) {
+        if (hal_input_wasPressed(';')) {
             // Move up, skip non-selectable
             int newIdx = rootIdx;
             do {
@@ -432,7 +431,7 @@ void Menu::handleInput() {
             }
         }
         
-        if (hal_input_wasPressed(KEY_DOWN)) {
+        if (hal_input_wasPressed('.')) {
             // Move down, skip non-selectable
             int newIdx = rootIdx;
             do {
@@ -623,7 +622,7 @@ void Menu::drawModal(DisplayCanvas& canvas) {
     
     // Background with border
     canvas.fillRoundRect(boxX, boxY, boxW, boxH, 6, fg);
-    canvas.drawRoundRect(boxX, boxY, boxW, boxH, 6, bg);
+    canvas.fillRoundRect(boxX, boxY, boxW, boxH, 6, bg);
     
     // Title
     canvas.setTextColor(bg);
