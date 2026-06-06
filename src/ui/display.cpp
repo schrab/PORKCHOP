@@ -1,7 +1,10 @@
 // Display management implementation
 
 #include "display.h"
-#include <M5Cardputer.h>
+#include "../hal/hal_pins.h"
+#include "../hal/hal_input.h"
+#include "../hal/hal_battery.h"
+#include "../hal/hal_display.h"
 #include <SD.h>
 #include <stdarg.h>
 #include <time.h>
@@ -97,14 +100,14 @@ static void getSystemTimeString(char* out, size_t len) {
 
 static portMUX_TYPE displayMux = portMUX_INITIALIZER_UNLOCKED;
 
-static void drawHeartIcon(M5Canvas& canvas, int x, int y, uint16_t color) {
+static void drawHeartIcon(DisplayCanvas& canvas, int x, int y, uint16_t color) {
     // Upright heart built from two circles + triangle
     canvas.fillCircle(x + 2, y + 2, 2, color);
     canvas.fillCircle(x + 6, y + 2, 2, color);
     canvas.fillTriangle(x, y + 3, x + 8, y + 3, x + 4, y + 6, color);
 }
 
-static void drawTopBarHeapHealth(M5Canvas& topBar) {
+static void drawTopBarHeapHealth(DisplayCanvas& topBar) {
     topBar.fillSprite(COLOR_FG);
     topBar.setTextColor(COLOR_BG);
     topBar.setTextSize(1);
@@ -160,9 +163,9 @@ static void drawTopBarHeapHealth(M5Canvas& topBar) {
 }
 
 // Static member initialization
-M5Canvas Display::topBar(&M5.Display);
-M5Canvas Display::mainCanvas(&M5.Display);
-M5Canvas Display::bottomBar(&M5.Display);
+DisplayCanvas Display::topBar(&g_Display);
+DisplayCanvas Display::mainCanvas(&g_Display);
+DisplayCanvas Display::bottomBar(&g_Display);
 bool Display::gpsStatus = false;
 bool Display::wifiStatus = false;
 bool Display::mlStatus = false;
@@ -205,15 +208,15 @@ void Display::showLoot(const String& ssid) {
 extern Porkchop porkchop;
 
 void Display::init() {
-    M5.Display.setRotation(1);
+    g_Display.setRotation(1);
     
     // CRITICAL: Set 8-bit mode for display AND sprites to avoid color conversion crashes
     // Must explicitly set sprite color depth - they don't inherit from display
     // 8-bit RGB332 saves ~50% memory: 240×135×3 sprites × 1 byte = ~97KB vs ~194KB
-    M5.Display.setColorDepth(8);
+    g_Display.setColorDepth(8);
     
-    M5.Display.fillScreen(COLOR_BG);
-    M5.Display.setTextColor(COLOR_FG);
+    g_Display.fillScreen(COLOR_BG);
+    g_Display.setTextColor(COLOR_FG);
     
     // Create canvas sprites - then explicitly set them to 8-bit RGB332
     topBar.createSprite(DISPLAY_W, TOP_BAR_H);
@@ -298,7 +301,7 @@ void Display::update() {
     mainCanvas.fillSprite(bgColor);
     mainCanvas.setTextColor(COLOR_FG);
     mainCanvas.setTextDatum(TL_DATUM);  // Reset to top-left
-    mainCanvas.setFont(&fonts::Font0);  // Reset to default font
+    // Reset to default font
     
     switch (mode) {
         case PorkchopMode::IDLE:
@@ -424,7 +427,7 @@ void Display::update() {
         // Black text on pink background
         mainCanvas.setTextColor(COLOR_BG, COLOR_FG);
         mainCanvas.setTextSize(1);
-        mainCanvas.setFont(&fonts::Font0);
+
         mainCanvas.setTextDatum(TC_DATUM);
 
         // Draw each line centered
@@ -472,11 +475,11 @@ void Display::clear() {
 }
 
 void Display::pushAll() {
-    M5.Display.startWrite();
+    g_Display.startWrite();
     topBar.pushSprite(0, 0);
     mainCanvas.pushSprite(0, TOP_BAR_H);
     bottomBar.pushSprite(0, DISPLAY_H - BOTTOM_BAR_H);
-    M5.Display.endWrite();
+    g_Display.endWrite();
 
     if (topBarMessageTwoLineActive) {
         drawTopBarMessageTwoLineDirect();
@@ -674,7 +677,7 @@ void Display::drawTopBar() {
     static int lastBattLevel = 0;
     uint32_t now = millis();
     if (lastBattUpdateMs == 0 || (now - lastBattUpdateMs) >= 2000) {
-        lastBattLevel = M5.Power.getBatteryLevel();
+        lastBattLevel = hal_battery_read_percent();
         lastBattUpdateMs = now;
     }
     int battLevel = lastBattLevel;
@@ -734,7 +737,6 @@ void Display::drawTopBarMessageTwoLineDirect() {
     line2Buf[len2] = '\0';
 
     topBar.setTextSize(1);
-    topBar.setFont(&fonts::Font0);
     int maxWidth = DISPLAY_W - 4;
 
     auto truncateLine = [&](char* line) {
@@ -753,14 +755,13 @@ void Display::drawTopBarMessageTwoLineDirect() {
 
     uint16_t fg = getColorFG();
     uint16_t bg = getColorBG();
-    M5Cardputer.Display.fillRect(0, 0, DISPLAY_W, TOP_BAR_H * 2, fg);
-    M5Cardputer.Display.setTextColor(bg, fg);
-    M5Cardputer.Display.setTextSize(1);
-    M5Cardputer.Display.setCursor(2, 3);
-    M5Cardputer.Display.setFont(&fonts::Font0);
-    M5Cardputer.Display.print(line1Buf);
-    M5Cardputer.Display.setCursor(2, TOP_BAR_H + 3);
-    M5Cardputer.Display.print(line2Buf);
+    g_Display.fillRect(0, 0, DISPLAY_W, TOP_BAR_H * 2, fg);
+    g_Display.setTextColor(bg, fg);
+    g_Display.setTextSize(1);
+    g_Display.setCursor(2, 3);
+    g_Display.print(line1Buf);
+    g_Display.setCursor(2, TOP_BAR_H + 3);
+    g_Display.print(line2Buf);
 }
 
 void Display::drawBottomBar() {
@@ -1043,17 +1044,13 @@ void Display::showInfoBox(const String& title, const String& line1,
     if (blocking) {
         uint32_t startTime = millis();
         while ((millis() - startTime) < 60000) {  // 60s timeout
-            M5.update();
-            M5Cardputer.update();
-            if (M5Cardputer.Keyboard.isKeyPressed(KEY_ENTER)) {
-                while (M5Cardputer.Keyboard.isPressed()) {
-                    M5.update();
-                    M5Cardputer.update();
-                    delay(20);  // TCA8418 I2C throttle
-                }
+            hal_input_update();
+            if (hal_input_wasPressed(KEY_ENTER)) {
+                hal_input_waitRelease();
                 break;
             }
-            delay(20);  // TCA8418 I2C throttle
+            delay(20);
+            yield();  // Feed watchdog during blocking wait
         }
     }
 }
@@ -1105,7 +1102,6 @@ void Display::showChallenges() {
     
     mainCanvas.fillSprite(COLOR_BG);
     mainCanvas.setTextColor(COLOR_FG);
-    mainCanvas.setFont(&fonts::Font0);
     
     // Title - pig personality
     mainCanvas.setTextDatum(TC_DATUM);
@@ -1231,15 +1227,15 @@ static void bootSplashDelay(uint32_t ms) {
 void Display::showBootSplash() {
     // Ensure splash uses 8-bit RGB332 to match sprite palette and avoid 16-bit conversion costs.
     // Splash draws directly to the display (no sprite heap allocation), but color depth still matters.
-    M5.Display.setColorDepth(8);
+    g_Display.setColorDepth(8);
 
     // Screen 1: OINK OINK
-    M5.Display.fillScreen(COLOR_BG);
-    M5.Display.setTextColor(COLOR_FG);
-    M5.Display.setTextDatum(middle_center);
-    M5.Display.setTextSize(4);
-    M5.Display.drawString("OINK", DISPLAY_W / 2, DISPLAY_H / 2 - 20);
-    M5.Display.drawString("OINK", DISPLAY_W / 2, DISPLAY_H / 2 + 20);
+    g_Display.fillScreen(COLOR_BG);
+    g_Display.setTextColor(COLOR_FG);
+    g_Display.setTextDatum(middle_center);
+    g_Display.setTextSize(4);
+    g_Display.drawString("OINK", DISPLAY_W / 2, DISPLAY_H / 2 - 20);
+    g_Display.drawString("OINK", DISPLAY_W / 2, DISPLAY_H / 2 + 20);
     
     // Pig wake-up grunt: "oink oink"
     SFX::play(SFX::BOOT);
@@ -1247,39 +1243,39 @@ void Display::showBootSplash() {
     bootSplashDelay(800);
     
     // Screen 2: MY NAME IS
-    M5.Display.fillScreen(COLOR_BG);
-    M5.Display.setTextSize(3);
-    M5.Display.drawString("MY NAME IS", DISPLAY_W / 2, DISPLAY_H / 2);
+    g_Display.fillScreen(COLOR_BG);
+    g_Display.setTextSize(3);
+    g_Display.drawString("MY NAME IS", DISPLAY_W / 2, DISPLAY_H / 2);
     bootSplashDelay(800);
     
     // Screen 3: PORKCHOP in big stylized text
-    M5.Display.fillScreen(COLOR_BG);
-    M5.Display.setTextDatum(middle_center);
-    M5.Display.setTextSize(3);
-    M5.Display.drawString("PORKCHOP", DISPLAY_W / 2, DISPLAY_H / 2 - 15);
+    g_Display.fillScreen(COLOR_BG);
+    g_Display.setTextDatum(middle_center);
+    g_Display.setTextSize(3);
+    g_Display.drawString("PORKCHOP", DISPLAY_W / 2, DISPLAY_H / 2 - 15);
     
     // Subtitle
-    M5.Display.setTextSize(1);
-    M5.Display.drawString("BASICALLY YOU, BUT AS AN ASCII PIG.", DISPLAY_W / 2, DISPLAY_H / 2 + 20);
-    M5.Display.drawString("IDENTITY CRISIS EDITION.", DISPLAY_W / 2, DISPLAY_H / 2 + 35);
+    g_Display.setTextSize(1);
+    g_Display.drawString("BASICALLY YOU, BUT AS AN ASCII PIG.", DISPLAY_W / 2, DISPLAY_H / 2 + 20);
+    g_Display.drawString("IDENTITY CRISIS EDITION.", DISPLAY_W / 2, DISPLAY_H / 2 + 35);
 
     bootSplashDelay(1200);
 
     // Screen 4 (optional): Welcome back when callsign is set
     const char* cs = Config::personality().callsign;
     if (cs[0] != '\0') {
-        M5.Display.fillScreen(COLOR_BG);
-        M5.Display.setTextDatum(middle_center);
-        M5.Display.setTextSize(2);
-        M5.Display.drawString("WELCOME BACK", DISPLAY_W / 2, DISPLAY_H / 2 - 15);
-        M5.Display.setTextSize(3);
-        M5.Display.drawString(cs, DISPLAY_W / 2, DISPLAY_H / 2 + 15);
+        g_Display.fillScreen(COLOR_BG);
+        g_Display.setTextDatum(middle_center);
+        g_Display.setTextSize(2);
+        g_Display.drawString("WELCOME BACK", DISPLAY_W / 2, DISPLAY_H / 2 - 15);
+        g_Display.setTextSize(3);
+        g_Display.drawString(cs, DISPLAY_W / 2, DISPLAY_H / 2 + 15);
         bootSplashDelay(1000);
     }
 
     // Reset display state for main UI compatibility
-    M5.Display.setTextDatum(top_left);
-    M5.Display.setTextSize(1);
+    g_Display.setTextDatum(top_left);
+    g_Display.setTextSize(1);
 }
 
 
@@ -1462,7 +1458,6 @@ void Display::showLevelUp(uint8_t oldLevel, uint8_t newLevel) {
     mainCanvas.setTextColor(COLOR_BG, COLOR_FG);
     mainCanvas.setTextDatum(top_center);
     mainCanvas.setTextSize(1);
-    mainCanvas.setFont(&fonts::Font0);
     
     int centerX = DISPLAY_W / 2;
     
@@ -1528,7 +1523,6 @@ void Display::showClassPromotion(const char* oldClass, const char* newClass) {
     mainCanvas.setTextColor(COLOR_BG, COLOR_FG);
     mainCanvas.setTextDatum(top_center);
     mainCanvas.setTextSize(1);
-    mainCanvas.setFont(&fonts::Font0);
     
     int centerX = DISPLAY_W / 2;
     
@@ -2003,7 +1997,7 @@ static void pigsyncTermTick() {
 }
 
 // ==[ DIALOGUE OVERLAY FUNCTIONS ]==
-static void drawDialogueOverlay(M5Canvas& canvas, int dialogueY) {
+static void drawDialogueOverlay(DisplayCanvas& canvas, int dialogueY) {
     if (!dialogueActive || dialogueReveal == 0) return;
 
     canvas.setTextColor(COLOR_FG, COLOR_BG);
@@ -2422,11 +2416,10 @@ static void pigsyncTermUpdateState() {
     }
 }
 
-void Display::drawPigSyncDeviceSelect(M5Canvas& canvas) {
+void Display::drawPigSyncDeviceSelect(DisplayCanvas& canvas) {
     canvas.fillSprite(COLOR_BG);
     canvas.setTextColor(COLOR_FG);
     canvas.setTextDatum(TL_DATUM);
-    uint32_t now = millis();
 
     // Title - terminal style
     canvas.setTextSize(2);
@@ -2535,7 +2528,7 @@ void Display::setMLStatus(bool active) {
 
 
 // Helper functions for mode screens
-void Display::drawModeInfo(M5Canvas& canvas, PorkchopMode mode) {
+void Display::drawModeInfo(DisplayCanvas& canvas, PorkchopMode mode) {
     canvas.setTextColor(COLOR_FG);
     canvas.setTextDatum(top_left);
     canvas.setTextSize(1);
@@ -2593,7 +2586,7 @@ void Display::drawModeInfo(M5Canvas& canvas, PorkchopMode mode) {
     }
 }
 
-void Display::drawSettingsScreen(M5Canvas& canvas) {
+void Display::drawSettingsScreen(DisplayCanvas& canvas) {
     canvas.setTextColor(COLOR_FG);
     canvas.setTextDatum(top_center);
     canvas.setTextSize(1);
@@ -2664,7 +2657,7 @@ void Display::onAboutEnterPressed() {
     aboutQuoteIndex = (aboutQuoteIndex + 1) % ABOUT_QUOTES_COUNT;
 }
 
-void Display::drawAboutScreen(M5Canvas& canvas) {
+void Display::drawAboutScreen(DisplayCanvas& canvas) {
     canvas.setTextColor(COLOR_FG);
     canvas.setTextDatum(top_center);
     
@@ -2707,7 +2700,7 @@ void Display::drawAboutScreen(M5Canvas& canvas) {
     canvas.drawString("[ENTER] ???", DISPLAY_W / 2, MAIN_H - 12);
 }
 
-void Display::drawFileTransferScreen(M5Canvas& canvas) {
+void Display::drawFileTransferScreen(DisplayCanvas& canvas) {
     canvas.setTextColor(COLOR_FG);
     canvas.setTextDatum(top_center);
     
@@ -2843,14 +2836,14 @@ void Display::resetDimTimer() {
         screenForcedOff = false;
         dimmed = false;
         uint8_t brightness = Config::personality().brightness;
-        M5.Display.setBrightness(brightness * 255 / 100);
+        g_Display.setBrightness(brightness * 255 / 100);
         return;
     }
     if (dimmed) {
         // Restore full brightness
         dimmed = false;
         uint8_t brightness = Config::personality().brightness;
-        M5.Display.setBrightness(brightness * 255 / 100);
+        g_Display.setBrightness(brightness * 255 / 100);
     }
 }
 
@@ -2858,14 +2851,14 @@ void Display::toggleScreenPower() {
     screenForcedOff = !screenForcedOff;
     if (screenForcedOff) {
         dimmed = true;
-        M5.Display.setBrightness(0);
+        g_Display.setBrightness(0);
         return;
     }
 
     dimmed = false;
     lastActivityTime = millis();
     uint8_t brightness = Config::personality().brightness;
-    M5.Display.setBrightness(brightness * 255 / 100);
+    g_Display.setBrightness(brightness * 255 / 100);
 }
 
 void Display::updateDimming() {
@@ -2879,7 +2872,7 @@ void Display::updateDimming() {
         // Time to dim
         dimmed = true;
         uint8_t dimLevel = Config::personality().dimLevel;
-        M5.Display.setBrightness(dimLevel * 255 / 100);
+        g_Display.setBrightness(dimLevel * 255 / 100);
     }
 }
 
@@ -3012,7 +3005,7 @@ bool Display::takeScreenshot() {
     // BMP stores bottom-to-top, so read from bottom up
     for (int y = image_height - 1; y >= 0; y--) {
         // Read one line of RGB data from display
-        M5.Display.readRectRGB(0, y, image_width, 1, line_data);
+        g_Display.readRectRGB(0, y, image_width, 1, line_data);
         
         // Swap R and B, BMP uses BGR order
         for (int x = 0; x < image_width; x++) {
@@ -3054,7 +3047,7 @@ bool Display::shouldShowUploadProgress() {
     return uploadInProgress && (millis() - uploadStartTime) < 60000;  // 60 seconds
 }
 
-void Display::drawUploadProgress(M5Canvas& topBar) {
+void Display::drawUploadProgress(DisplayCanvas& topBar) {
     // Draw upload progress in top bar (similar to XP notification)
     // Format: "UPLOAD XX% [::.]"
 
@@ -3104,10 +3097,10 @@ void Display::drawUploadProgressDirect() {
     uint16_t bgColor = getColorBG();
 
     // Draw in top-left corner directly to physical display with inverted colors (like XP notification)
-    M5Cardputer.Display.setTextColor(bgColor, fgColor);  // Use BG color as text, FG color as background
-    M5Cardputer.Display.setTextSize(1);
-    M5Cardputer.Display.setCursor(2, 3);  // Same Y=3 as XP notification
-    M5Cardputer.Display.print(progressText);
+    g_Display.setTextColor(bgColor, fgColor);  // Use BG color as text, FG color as background
+    g_Display.setTextSize(1);
+    g_Display.setCursor(2, 3);  // Same Y=3 as XP notification
+    g_Display.print(progressText);
 }
 
 void Display::clearUploadProgress() {
