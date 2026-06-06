@@ -28,7 +28,6 @@
 #include "../modes/pigsync_client.h"
 #include "../modes/pigsync_protocol.h"
 #include "../modes/bacon.h"
-#include "../modes/charging.h"
 #include "../gps/gps.h"
 #include "../web/fileserver.h"
 #include "menu.h"

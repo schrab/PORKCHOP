@@ -25,7 +25,6 @@
 #include "../modes/spectrum.h"
 #include "../modes/pigsync_client.h"
 #include "../modes/bacon.h"
-#include "../modes/charging.h"
 #include "../web/fileserver.h"
 #include "../audio/sfx.h"
 #include "config.h"
@@ -65,147 +64,6 @@ static const char* modeToString(PorkchopMode mode) {
         case PorkchopMode::PIGSYNC_DEVICE_SELECT: return "PIGSYNC_DEVICE_SELECT";
         case PorkchopMode::BACON_MODE: return "BACON";
         case PorkchopMode::SD_FORMAT: return "SD_FORMAT";
-        case PorkchopMode::CHARGING: return "CHARGING";
-        case PorkchopMode::ABOUT: return "ABOUT";
-        default: return "UNKNOWN";
-    }
-}
-
-// Crash-loop guard: count early reboots using RTC memory (survives soft resets).
-RTC_DATA_ATTR static uint8_t bootGuardStreak = 0;
-static uint32_t bootGuardStartMs = 0;
-static const uint8_t BOOT_GUARD_THRESHOLD = 3;
-static const uint32_t BOOT_GUARD_WINDOW_MS = 60000;
-
-static PorkchopMode bootModeToPorkchop(BootMode mode) {
-    switch (mode) {
-        case BootMode::OINK: return PorkchopMode::OINK_MODE;
-        case BootMode::DNOHAM: return PorkchopMode::DNH_MODE;
-        case BootMode::WARHOG: return PorkchopMode::WARHOG_MODE;
-        case BootMode::IDLE:
-        default:
-            return PorkchopMode::IDLE;
-    }
-}
-
-static const char* bootModeLabel(BootMode mode) {
-    switch (mode) {
-        case BootMode::OINK: return "OINK";
-        case BootMode::DNOHAM: return "DN0HAM";
-        case BootMode::WARHOG: return "WARHOG";
-        case BootMode::IDLE:
-        default:
-            return "IDLE";
-    }
-}
-
-static bool healthBootToastShown = false;
-
-Porkchop::Porkchop() 
-    : currentMode(PorkchopMode::IDLE)
-    , previousMode(PorkchopMode::IDLE)
-    , startTime(0)
-    , handshakeCount(0)
-    , networkCount(0)
-    , deauthCount(0) {
-}
-
-static bool isAutoConditionSafe(PorkchopMode mode) {
-    switch (mode) {
-        case PorkchopMode::IDLE:
-        case PorkchopMode::MENU:
-        case PorkchopMode::SETTINGS:
-        case PorkchopMode::ABOUT:
-        case PorkchopMode::ACHIEVEMENTS:
-        case PorkchopMode::CRASH_VIEWER:
-        case PorkchopMode::DIAGNOSTICS:
-        case PorkchopMode::SWINE_STATS:
-        case PorkchopMode::BOAR_BROS:
-        case PorkchopMode::UNLOCKABLES:
-        case PorkchopMode::BOUNTY_STATUS:
-        case PorkchopMode::SD_FORMAT:
-            return true;
-        default:
-            return false;
-    }
-}
-
-static void maybeAutoConditionHeap(PorkchopMode mode) {
-    if (!isAutoConditionSafe(mode)) {
-        return;
-    }
-    if (FileServer::isRunning() || FileServer::isConnecting()) {
-        return;
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-        return;
-    }
-    // At Critical pressure (<30KB free), brew needs 35KB transient — would fail anyway
-    if (static_cast<uint8_t>(HeapHealth::getPressureLevel()) > HeapPolicy::kMaxPressureLevelForAutoBrew) {
-        return;
-    }
-    if (!HeapHealth::consumeConditionRequest()) {
-        return;
-    }
-
-    bool wasReconRunning = NetworkRecon::isRunning();
-    if (wasReconRunning) {
-        NetworkRecon::pause();
-    }
-    // Small, low-disruption brew to coalesce heap when health drops.
-    WiFiUtils::brewHeap(HeapPolicy::kBrewAutoDwellMs, false);
-    if (wasReconRunning) {
-        NetworkRecon::resume();
-    }
-}
-
-void Porkchop::init() {
-    startTime = millis();
-    
-    // Initialize background network reconnaissance service
-    NetworkRecon::init();
-    
-    // Initialize XP system
-    XP::init();
-    
-    // Initialize SwineStats (buff/debuff system)
-    SwineStats::init();
-    
-    // Register level up callback to show popup
-    XP::setLevelUpCallback([](uint8_t oldLevel, uint8_t newLevel) {
-        Display::showLevelUp(oldLevel, newLevel);
-        Avatar::cuteJump();  // Celebratory jump on level up!
-        
-        // Check if class tier changed (every 5 levels: 6, 11, 16, 21, 26, 31, 36)
-        PorkClass oldClass = XP::getClassForLevel(oldLevel);
-        PorkClass newClass = XP::getClassForLevel(newLevel);
-        if (newClass != oldClass) {
-            // Small delay between popups
-            delay(500);
-            Display::showClassPromotion(
-                XP::getClassNameFor(oldClass),
-                XP::getClassNameFor(newClass)
-            );
-        }
-    });
-    
-    // Register default event handlers
-    registerCallback(PorkchopEvent::HANDSHAKE_CAPTURED, [this](PorkchopEvent, void*) {
-        handshakeCount++;
-    });
-    
-    registerCallback(PorkchopEvent::NETWORK_FOUND, [this](PorkchopEvent, void*) {
-        networkCount++;
-    });
-    
-    registerCallback(PorkchopEvent::DEAUTH_SENT, [this](PorkchopEvent, void*) {
-        deauthCount++;
-    });
-    
-    // Menu selection handler - items now defined in menu.cpp as static arrays
-    Menu::setCallback([this](uint8_t actionId) {
-        switch (actionId) {
-            case 1: setMode(PorkchopMode::OINK_MODE); break;
             case 2: setMode(PorkchopMode::WARHOG_MODE); break;
             case 3: setMode(PorkchopMode::FILE_TRANSFER); break;
             case 4: setMode(PorkchopMode::CAPTURES); break;
@@ -225,134 +83,6 @@ void Porkchop::init() {
             case 18: setMode(PorkchopMode::BACON_MODE); break;
             case 19: setMode(PorkchopMode::DIAGNOSTICS); break;
             case 20: setMode(PorkchopMode::SD_FORMAT); break;
-            case 21: setMode(PorkchopMode::CHARGING); break;
-        }
-    });
-
-    bootGuardStartMs = millis();
-    if (bootGuardStreak < 255) {
-        bootGuardStreak++;
-    }
-    bool bootGuardActive = bootGuardStreak >= BOOT_GUARD_THRESHOLD;
-
-    BootMode bootMode = Config::personality().bootMode;
-    bootModeTarget = bootModeToPorkchop(bootMode);
-    if (bootModeTarget != PorkchopMode::IDLE && !bootGuardActive) {
-        bootModePending = true;
-        bootModeStartMs = millis();
-        char buf[32];
-        snprintf(buf, sizeof(buf), "BOOT -> %s IN 5S", bootModeLabel(bootMode));
-        Display::showToast(buf, 5000);
-    } else if (bootModeTarget != PorkchopMode::IDLE && bootGuardActive) {
-        Display::showToast("BOOT GUARD - IDLE", 4000);
-    }
-    
-    Avatar::setState(AvatarState::HAPPY);
-    
-    // Initialize non-blocking audio system
-    SFX::init();
-
-    if (!healthBootToastShown) {
-        healthBootToastShown = true;
-        Display::showToast(
-            "HEALTH BAR IS HEAP HEALTH.\n"
-            "LARGEST CONTIG DRIVES TLS.\n"
-            "FRAGMENTATION YOINKS IT.\n"
-            "BREW FIXES. JAH BLESS DI RF.",
-            5000
-        );
-    }
-    
-    Serial.println("[PORKCHOP] Initialized");
-    SDLog::log("PORK", "Initialized - LV%d %s", XP::getLevel(), XP::getTitle());
-}
-
-void Porkchop::update() {
-    // Update background network reconnaissance (channel hopping, cleanup)
-    NetworkRecon::update();
-    
-    processEvents();
-    yield(); // Allow other tasks to run between operations
-    handleInput();
-    yield(); // Allow other tasks to run between operations
-    
-    if (bootGuardStreak > 0 && (millis() - bootGuardStartMs >= BOOT_GUARD_WINDOW_MS)) {
-        bootGuardStreak = 0;
-    }
-    if (bootModePending) {
-        if (currentMode != PorkchopMode::IDLE) {
-            bootModePending = false;
-        } else if (millis() - bootModeStartMs >= 5000) {
-            bootModePending = false;
-            setMode(bootModeTarget);
-        }
-    }
-    updateMode();
-
-    maybeAutoConditionHeap(currentMode);
-    
-    // Tick non-blocking audio engine
-    SFX::update();
-    yield(); // Allow other tasks to run between operations
-    
-    // Process one queued achievement celebration (debounced)
-    XP::processAchievementQueue();
-    yield(); // Allow other tasks to run between operations
-    
-    // Stress test injection (if active)
-    StressTest::update();
-    yield(); // Allow other tasks to run between operations
-    
-    // Check for session time XP bonuses
-    XP::updateSessionTime();
-    yield(); // Allow other tasks to run between operations
-}
-
-void Porkchop::setMode(PorkchopMode mode) {
-    if (mode == currentMode) return;
-    
-    // Store the mode we're leaving for cleanup
-    PorkchopMode oldMode = currentMode;
-
-    Serial.printf("[MODE] EXIT %s free=%u largest=%u\n",
-        modeToString(oldMode),
-        (unsigned)esp_get_free_heap_size(),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-    
-    // Save "real" modes as previous (not modal menus)
-    // Exception: CAPTURES and WIGLE_MENU ARE saved as previousMode so OINK recovery returns to them
-    if (currentMode != PorkchopMode::SETTINGS &&
-        currentMode != PorkchopMode::ABOUT &&
-        currentMode != PorkchopMode::ACHIEVEMENTS &&
-        currentMode != PorkchopMode::MENU &&
-        currentMode != PorkchopMode::FILE_TRANSFER &&
-        currentMode != PorkchopMode::CRASH_VIEWER &&
-        currentMode != PorkchopMode::DIAGNOSTICS &&
-        currentMode != PorkchopMode::SWINE_STATS &&
-        currentMode != PorkchopMode::BOAR_BROS &&
-        currentMode != PorkchopMode::BOUNTY_STATUS &&
-        currentMode != PorkchopMode::PIGSYNC_DEVICE_SELECT &&
-        currentMode != PorkchopMode::UNLOCKABLES &&
-        currentMode != PorkchopMode::SD_FORMAT) {
-        previousMode = currentMode;
-    }
-    // ALSO save CAPTURES and WIGLE_MENU as return points from OINK recovery
-    if (currentMode == PorkchopMode::CAPTURES ||
-        currentMode == PorkchopMode::WIGLE_MENU) {
-        previousMode = currentMode;
-    }
-    currentMode = mode;
-
-    Serial.printf("[MODE] ENTER %s free=%u largest=%u\n",
-        modeToString(currentMode),
-        (unsigned)esp_get_free_heap_size(),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-    
-    // Cleanup the mode we're actually leaving (oldMode), not previousMode
-    switch (oldMode) {
-        case PorkchopMode::OINK_MODE:
-            OinkMode::stop();
-            break;
         case PorkchopMode::DNH_MODE:
             DoNoHamMode::stop();
             break;
@@ -412,9 +142,6 @@ void Porkchop::setMode(PorkchopMode mode) {
             break;
         case PorkchopMode::BACON_MODE:
             BaconMode::stop();
-            break;
-        case PorkchopMode::CHARGING:
-            ChargingMode::stop();
             break;
         default:
             break;
@@ -524,10 +251,6 @@ void Porkchop::setMode(PorkchopMode mode) {
             break;
         case PorkchopMode::ABOUT:
             Display::resetAboutState();
-            break;
-        case PorkchopMode::CHARGING:
-            SDLog::log("PORK", "Mode: CHARGING");
-            ChargingMode::start();
             break;
         default:
             break;
@@ -784,8 +507,6 @@ void Porkchop::handleInput() {
                     break;
                 case 'c': // Charging mode
                 case 'C':
-                    setMode(PorkchopMode::CHARGING);
-                    break;
             }
         }
         yield(); // Allow other tasks to run after processing all keys
@@ -968,12 +689,6 @@ void Porkchop::updateMode() {
             if (!PigSyncMode::isRunning()) {
                 // User exited, go back to menu
                 setMode(PorkchopMode::MENU);
-            }
-            break;
-        case PorkchopMode::CHARGING:
-            ChargingMode::update();
-            if (ChargingMode::shouldExit()) {
-                setMode(PorkchopMode::IDLE);
             }
             break;
         default:

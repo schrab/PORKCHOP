@@ -1,32 +1,31 @@
-1|// Bounty Status Menu - View bounties to send to kid (Sirloin)
-2|// Porkchop sends wardriven networks to Sirloin for hunting
-3|#pragma once
-4|
-5|#include <Arduino.h>
-6|7|
-8|class BountyStatusMenu {
-9|public:
-10|    static void init();
-11|    static void show();
-12|    static void hide();
-13|    static void update();
-14|    static void draw(DisplayCanvas& canvas);
-15|    static bool isActive() { return active; }
-16|    static void getSelectedInfo(char* out, size_t len);
-17|    
-18|private:
-19|    static uint16_t selectedIndex;   // uint16_t: supports up to 65535 bounties (MAX_SEEN_BSSIDS=5000)
-20|    static uint16_t scrollOffset;    // uint16_t: matches selectedIndex
-21|    static bool active;
-22|    static bool keyWasPressed;
-23|    
-24|    // Layout constants (match boar_bros_menu pattern - no header)
-25|    static const uint8_t VISIBLE_ITEMS = 6;  // 6 items, full canvas
-26|    static const int LINE_H = 17;            // Line height (107px / 6 items)
-27|    static const int COL_LEFT = 4;           // Left margin
-28|    
-29|    static void handleInput();
-30|    static void drawList(DisplayCanvas& canvas);
-31|    static void drawEmpty(DisplayCanvas& canvas);
-32|};
-33|
+// Bounty Status Menu - View bounties to send to kid (Sirloin)
+// Porkchop sends wardriven networks to Sirloin for hunting
+#pragma once
+
+#include <Arduino.h>
+
+class BountyStatusMenu {
+public:
+    static void init();
+    static void show();
+    static void hide();
+    static void update();
+    static void draw(DisplayCanvas& canvas);
+    static bool isActive() { return active; }
+    static void getSelectedInfo(char* out, size_t len);
+    
+private:
+    static uint16_t selectedIndex;   // uint16_t: supports up to 65535 bounties (MAX_SEEN_BSSIDS=5000)
+    static uint16_t scrollOffset;    // uint16_t: matches selectedIndex
+    static bool active;
+    static bool keyWasPressed;
+    
+    // Layout constants (match boar_bros_menu pattern - no header)
+    static const uint8_t VISIBLE_ITEMS = 6;  // 6 items, full canvas
+    static const int LINE_H = 17;            // Line height (107px / 6 items)
+    static const int COL_LEFT = 4;           // Left margin
+    
+    static void handleInput();
+    static void drawList(DisplayCanvas& canvas);
+    static void drawEmpty(DisplayCanvas& canvas);
+};

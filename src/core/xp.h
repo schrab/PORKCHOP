@@ -1,7 +1,7 @@
 // Porkchop RPG XP and Leveling System
 #pragma once
 
-5|#include <Preferences.h>
+#include <Preferences.h>
 
 // Class tiers (every 5 levels)
 enum class PorkClass : uint8_t {

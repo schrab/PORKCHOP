@@ -1,29 +1,28 @@
-1|// Achievements Menu - View unlocked achievements
-2|#pragma once
-3|
-4|#include <Arduino.h>
-5|6|
-7|class AchievementsMenu {
-8|public:
-9|    static void init();
-10|    static void show();
-11|    static void hide();
-12|    static void update();
-13|    static void draw(DisplayCanvas& canvas);
-14|    static bool isActive() { return active; }
-15|    static const uint8_t TOTAL_ACHIEVEMENTS = 63;  // 48 base + 12 DNH/BOAR + 3 CLIENT MONITOR
-16|    
-17|private:
-18|    static uint8_t selectedIndex;
-19|    static uint8_t scrollOffset;
-20|    static bool active;
-21|    static bool keyWasPressed;
-22|    static bool showingDetail;  // Showing achievement detail popup
-23|    
-24|    static const uint8_t VISIBLE_ITEMS = 5;
-25|    
-26|    static void handleInput();
-27|    static void drawDetail(DisplayCanvas& canvas);
-28|    static void updateBottomOverlay();
-29|};
-30|
+// Achievements Menu - View unlocked achievements
+#pragma once
+
+#include <Arduino.h>
+
+class AchievementsMenu {
+public:
+    static void init();
+    static void show();
+    static void hide();
+    static void update();
+    static void draw(DisplayCanvas& canvas);
+    static bool isActive() { return active; }
+    static const uint8_t TOTAL_ACHIEVEMENTS = 63;  // 48 base + 12 DNH/BOAR + 3 CLIENT MONITOR
+    
+private:
+    static uint8_t selectedIndex;
+    static uint8_t scrollOffset;
+    static bool active;
+    static bool keyWasPressed;
+    static bool showingDetail;  // Showing achievement detail popup
+    
+    static const uint8_t VISIBLE_ITEMS = 5;
+    
+    static void handleInput();
+    static void drawDetail(DisplayCanvas& canvas);
+    static void updateBottomOverlay();
+};
