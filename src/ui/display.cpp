@@ -170,28 +170,39 @@ uint32_t Display::lastActivityTime = 0;
 bool Display::dimmed = false;
 bool Display::screenForcedOff = false;
 bool Display::snapping = false;
-char Display::toastMessage[160] = {0};
+
+// Large char buffers moved to PSRAM (.ext_ram.bss section) to keep them out of the
+// internal SRAM BSS region where they sit adjacent to the DisplayCanvas objects.
+// A stray write into these buffers previously corrupted bottomBar.m_sprite with
+// the PSRAM heap-poison value 0xa5a5a5a5, causing a LoadProhibited crash in
+// drawBottomBar(). Placing them in ext_ram.bss physically separates them from the
+// DisplayCanvas vtable/pointer fields in internal SRAM BSS.
+// NOTE: .ext_ram.bss is the correct section name — it's what sections.ld routes to
+// PSRAM. The custom.ld/.psram_bss approach doesn't work because > ext_ram is not
+// defined in the framework MEMORY block available to secondary -T scripts.
+char Display::toastMessage[160]           __attribute__((section(".ext_ram.bss"))) = {0};
+char Display::topBarMessage[96]           __attribute__((section(".ext_ram.bss"))) = {0};
+char Display::bottomOverlay[96]           __attribute__((section(".ext_ram.bss"))) = {0};
+char Display::pendingTopBarMessageBuf[96] __attribute__((section(".ext_ram.bss"))) = {0};
+char Display::uploadStatus[64]            __attribute__((section(".ext_ram.bss"))) = {0};
+
 uint32_t Display::toastStartTime = 0;
 uint32_t Display::toastDurationMs = 2000;
 bool Display::toastActive = false;
-char Display::topBarMessage[96] = {0};
 uint32_t Display::topBarMessageStart = 0;
 uint32_t Display::topBarMessageDuration = 0;
 bool Display::topBarMessageTwoLineActive = false;
-char Display::bottomOverlay[96] = {0};
 volatile bool Display::pendingTopBarMessage = false;
-char Display::pendingTopBarMessageBuf[96] = {0};
 uint32_t Display::pendingTopBarDurationMs = 0;
 
 // Upload progress tracking
 bool Display::uploadInProgress = false;
 uint8_t Display::uploadProgress = 0;
-char Display::uploadStatus[64] = {0};
 uint32_t Display::uploadStartTime = 0;
 
 
 // PWNED banner state, persists until reboot
-static char lootSSID[20] = {0};
+static char lootSSID[20] __attribute__((section(".psram_bss"))) = {0};
 
 void Display::showLoot(const String& ssid) {
     if (ssid.length() == 0) {
@@ -205,23 +216,27 @@ void Display::showLoot(const String& ssid) {
 extern Porkchop porkchop;
 
 void Display::init() {
-    g_Display.setRotation(1);
+    // DO NOT call setRotation() here — hal_display_init() already set rotation 3.
+    // Overriding to rotation 1 causes CGRAM address mismatch between sprite pushSprite()
+    // and the hardware window, which corrupts BSS via DMA offset overflow.
     
     // CRITICAL: Set 8-bit mode for display AND sprites to avoid color conversion crashes
     // Must explicitly set sprite color depth - they don't inherit from display
-    // 8-bit RGB332 saves ~50% memory: 240×135×3 sprites × 1 byte = ~97KB vs ~194KB
+    // 8-bit RGB332 saves ~50% memory: 320×14 + 320×142 + 320×14 sprites × 1 byte = ~54KB
     // g_Display.setColorDepth(8); // skip - main display
     
     g_Display.fillScreen(COLOR_BG);
     g_Display.setTextColor(COLOR_FG);
     
-    // Create canvas sprites - then explicitly set them to 8-bit RGB332
+    // All three canvases use sprite buffers for double-buffering (no flicker).
+    // bottomBar is now given a real sprite — calling sprite methods on a null sprite
+    // is safe via the if(m_sprite) guard, but if m_sprite is ever corrupted to a
+    // non-null garbage value (e.g. 0xa5a5a5a5 from PSRAM heap poison) the guard
+    // passes and the crash occurs. Give it a real sprite to prevent that.
     topBar.createSprite(DISPLAY_W, TOP_BAR_H);
     topBar.setColorDepth(8);
-    
     mainCanvas.createSprite(DISPLAY_W, MAIN_H);
     mainCanvas.setColorDepth(8);
-    
     bottomBar.createSprite(DISPLAY_W, BOTTOM_BAR_H);
     bottomBar.setColorDepth(8);
     
@@ -477,7 +492,6 @@ void Display::pushAll() {
     mainCanvas.pushSprite(0, TOP_BAR_H);
     bottomBar.pushSprite(0, DISPLAY_H - BOTTOM_BAR_H);
     g_Display.endWrite();
-
     if (topBarMessageTwoLineActive) {
         drawTopBarMessageTwoLineDirect();
     }
@@ -766,21 +780,21 @@ void Display::drawTopBarMessageTwoLineDirect() {
 void Display::drawBottomBar() {
     PorkchopMode mode = porkchop.getMode();
 
-    // Set colors based on mode - PIGSYNC_DEVICE_SELECT uses normal colors, others use inverted
+    // Fill bottomBar sprite and set colors based on mode
     if (mode == PorkchopMode::PIGSYNC_DEVICE_SELECT) {
-        bottomBar.fillSprite(COLOR_BG);  // Normal BG background
-        bottomBar.setTextColor(COLOR_FG);  // Normal FG text
+        bottomBar.fillSprite(COLOR_BG);
+        bottomBar.setTextColor(COLOR_FG);
     } else {
-        bottomBar.fillSprite(COLOR_FG);  // Inverted: FG background
-        bottomBar.setTextColor(COLOR_BG);  // Inverted: BG text
+        bottomBar.fillSprite(COLOR_FG);
+        bottomBar.setTextColor(COLOR_BG);
     }
     bottomBar.setTextSize(1);
-    bottomBar.setTextDatum(top_left);
+    bottomBar.setTextDatum(TL_DATUM);
 
-    // Check for overlay message, used during confirmation dialogs
+    // Check for overlay message
     if (bottomOverlay[0] != '\0') {
-        bottomBar.setTextDatum(top_center);
-        bottomBar.drawString(bottomOverlay, DISPLAY_W / 2, 3);
+        bottomBar.setTextDatum(CC_DATUM);
+        bottomBar.drawString(bottomOverlay, DISPLAY_W / 2, BOTTOM_BAR_H / 2);
         return;
     }
     char statsBuf[96];
@@ -966,7 +980,9 @@ void Display::drawBottomBar() {
         const int heartW = 9;
         int heartX = barX - gap - heartW;
         int heartY = 3;
-        drawHeartIcon(bottomBar, heartX, heartY, COLOR_BG);
+        bottomBar.fillCircle(heartX + 2, heartY + 2, 2, COLOR_BG);
+        bottomBar.fillCircle(heartX + 6, heartY + 2, 2, COLOR_BG);
+        bottomBar.fillTriangle(heartX, heartY + 3, heartX + 8, heartY + 3, heartX + 4, heartY + 6, COLOR_BG);
 
         bottomBar.drawRect(barX, barY, barW, barH, COLOR_BG);
         int fillW = (barW - 2) * pct / 100;
@@ -976,17 +992,16 @@ void Display::drawBottomBar() {
 
         char pctBuf[8];
         snprintf(pctBuf, sizeof(pctBuf), "%3d%%", pct);
-        bottomBar.setTextDatum(top_left);
         bottomBar.drawString(pctBuf, barX + barW + gap, 3);
     }
     
     // Right: uptime or PIGSYNC channel
-    bottomBar.setTextDatum(top_right);
+    bottomBar.setTextDatum(TL_DATUM);
     if (mode == PorkchopMode::PIGSYNC_DEVICE_SELECT) {
         char chBuf[12];
         uint8_t ch = PigSyncMode::getDataChannel();
         snprintf(chBuf, sizeof(chBuf), "CH:%02d", ch);
-        bottomBar.drawString(chBuf, DISPLAY_W - 2, 3);
+        bottomBar.drawString(chBuf, DISPLAY_W - 2 - bottomBar.textWidth(chBuf), 3);
     } else if (mode == PorkchopMode::MENU ||
                mode == PorkchopMode::SETTINGS ||
                mode == PorkchopMode::CAPTURES ||
@@ -1010,7 +1025,7 @@ void Display::drawBottomBar() {
         uint16_t secs = uptime % 60;
         char uptimeBuf[12];
         snprintf(uptimeBuf, sizeof(uptimeBuf), "%u:%02u", mins, secs);
-        bottomBar.drawString(uptimeBuf, DISPLAY_W - 2, 3);
+        bottomBar.drawString(uptimeBuf, DISPLAY_W - 2 - bottomBar.textWidth(uptimeBuf), 3);
     }
 }
 

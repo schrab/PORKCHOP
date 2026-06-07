@@ -15,13 +15,19 @@ enum m5_textdatum_t {
     bottom_right   = 8,
 };
 
-// Thin wrapper around TFT_eSprite to match DisplayCanvas API used by PORKCHOP
+// Thin wrapper around TFT_eSprite to match DisplayCanvas API used by PORKCHOP.
+//
+// IMPORTANT: TFT_eSprite is embedded by VALUE (not pointer) to avoid heap
+// allocation.  Storing TFT_eSprite* on the heap and then new/delete-ing it
+// made the pointer vulnerable to TLSF heap-poison overwrites (0xa5a5a5a5)
+// from adjacent BLE/WiFi deallocation, causing LoadProhibited crashes.
+// Embedding the object in BSS alongside m_display makes it immune.
 class DisplayCanvas {
 public:
-    DisplayCanvas(TFT_eSPI* display);
+    explicit DisplayCanvas(TFT_eSPI* display);
     ~DisplayCanvas();
 
-    // Lifecycle
+    // Lifecycle — PSRAM pixel buffer allocation only (object itself is embedded)
     void createSprite(int32_t w, int32_t h);
     void deleteSprite();
     void setColorDepth(int8_t b);
@@ -40,9 +46,9 @@ public:
     void drawFastHLine(int32_t x, int32_t y, int32_t w, uint32_t color);
     void drawFastVLine(int32_t x, int32_t y, int32_t h, uint32_t color);
 
-    // Text - overloaded methods for compatibility
-    void setTextColor(uint16_t fg);                    // single arg
-    void setTextColor(uint16_t fg, uint16_t bg);       // two args
+    // Text
+    void setTextColor(uint16_t fg);
+    void setTextColor(uint16_t fg, uint16_t bg);
     void setTextSize(float size);
     void setTextDatum(uint8_t datum);
     void setFont(const void* font);
@@ -50,11 +56,11 @@ public:
     void drawString(const char* str, int32_t x, int32_t y);
     void drawCentreString(const char* str, int32_t x, int32_t y);
     void drawRightString(const char* str, int32_t x, int32_t y);
-    void print(const char* str);                        // for M5Canvas compat
-    void print(int val);                                // for M5Canvas compat
-    void print(float val);                              // for M5Canvas compat
-    void drawChar(char c, int32_t x, int32_t y);       // draw single char
-    
+    void print(const char* str);
+    void print(int val);
+    void print(float val);
+    void drawChar(char c, int32_t x, int32_t y);
+
     // Canvas dimensions
     int16_t width() const;
     int16_t height() const;
@@ -64,13 +70,21 @@ public:
     uint16_t color565(uint8_t r, uint8_t g, uint8_t b);
     uint16_t color24to16(uint32_t c);
 
-    // Raw access for callers that need it
-    TFT_eSprite* getSprite() { return m_sprite; }
+    // Raw access — returns pointer to embedded sprite (never null after construction)
+    TFT_eSprite* getSprite() { return m_created ? &m_sprite : nullptr; }
 
 private:
-    TFT_eSPI* m_display;
-    TFT_eSprite* m_sprite;
+    TFT_eSPI*           m_display;   // pointer to the shared TFT driver (4 bytes)
+    bool                m_created;   // true once createSprite() has succeeded
+    mutable TFT_eSprite m_sprite;    // embedded by value — lives in BSS, never heap-allocated
 };
+
+// Global display driver (extern, defined in hal_display.cpp)
+extern TFT_eSPI g_Display;
+
+// Initialize display subsystem
+void hal_display_init();
+void hal_display_setBrightness(uint8_t brightness);
 
 // Global display driver (extern, defined in hal_display.cpp)
 extern TFT_eSPI g_Display;

@@ -72,8 +72,42 @@ src/
 # Build
 pio run -e esp32s3-mini
 
-# Clean
-pio run -e esp32s3-mini --target clean
+# Clean + rebuild
+pio run -e esp32s3-mini --target clean && pio run -e esp32s3-mini
+
+# Upload (always use explicit port if first attempt times out)
+pio run -e esp32s3-mini --target upload --upload-port COM35
+```
+
+## Display Port Status
+
+**See full technical report**: `docs/display_port_report.md`
+
+### Working
+- ✅ Full 320×170 resolution, ST7789 driver
+- ✅ SPI3_HOST (HSPI) via `USE_HSPI_PORT` in User_Setup.h
+- ✅ Colors: BGR order, inversion on
+- ✅ UI boots and responds to input
+- ✅ SPI stable at 40 MHz
+
+### Not Working
+- ❌ **180° rotation**: MX and MY bits in MADCTL register have **no effect** on this display module. Only MV bit works. The orientation is fixed at hardware level.
+- ❌ **Vertical shift**: CGRAM offset shifts content up 35px, leaving unwritten area at bottom.
+- ❌ **Sprite corruption**: mainCanvas sprite (320×142, 8-bit) buffer gets corrupted between init and first loop. `m_sprite` pointer becomes `0xA5A5A5A5` (freed heap fill).
+- ❌ **Dim wake**: After dimming, keys sometimes don't restore brightness.
+
+### Key Display Config (User_Setup.h)
+```cpp
+#define USER_SETUP_LOADED
+#define ST7789_DRIVER
+#define CGRAM_OFFSET                     // Enables rowstart/colstart in rotation code
+#define TFT_WIDTH  170                   // Portrait native — rotation swaps to 320x170
+#define TFT_HEIGHT 320
+#define USE_HSPI_PORT                    // SPI3_HOST (correct bus)
+#define SPI_FREQUENCY  40000000          // 40 MHz — matches WiFiTool
+#define TFT_RGB_ORDER TFT_BGR
+#define TFT_INVERSION_ON
+// In hal_display_init(): g_Display.setRotation(3);  // MV|MY|BGR=0xA8
 ```
 
 ## HAL API Reference
@@ -179,9 +213,9 @@ bool hal_imu_getAccel(float* x, float* y, float* z);  // Stub: x=0, y=0, z=1.0
 
 ### Display layout (320×170)
 ```
-TOP_BAR     = 18px   (status + notifications)
-MAIN_AREA   = 134px  (mode content)
-BOTTOM_BAR  = 18px   (bottom overlay)
+TOP_BAR     = 14px   (status + notifications)
+MAIN_AREA   = 142px  (mode content)
+BOTTOM_BAR  = 14px   (bottom overlay)
 ```
 
 ## Convention

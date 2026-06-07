@@ -529,7 +529,9 @@ void XP::init() {
 }
 
 void XP::load() {
-    prefs.begin("porkxp", true);  // Read-only
+    if (!prefs.begin("porkxp", true)) {  // Read-only guard
+        return;
+    }
     
     data.totalXP = prefs.getUInt("totalxp", 0);
     // Read achievements as two 32-bit values for uint64_t
@@ -562,7 +564,7 @@ void XP::load() {
     data.unlockables = prefs.getUInt("unlock", 0);  // Unlockables v0.1.8
     data.cachedLevel = calculateLevel(data.totalXP);
     
-    prefs.end();
+            prefs.end();
     lastSavedCRC = computeDataCRC(&data);
 }
 
@@ -570,7 +572,7 @@ void XP::save() {
     uint32_t currentCRC = computeDataCRC(&data);
     if (currentCRC == lastSavedCRC) return;
 
-    prefs.begin("porkxp", false);  // Read-write
+    if (prefs.begin("porkxp", false)) {  // Read-write
     
     prefs.putUInt("totalxp", data.totalXP);
     // Store achievements as two 32-bit values for uint64_t
@@ -601,7 +603,8 @@ void XP::save() {
     prefs.putUChar("titleo", static_cast<uint8_t>(data.titleOverride));
     prefs.putUInt("unlock", data.unlockables);  // Unlockables v0.1.8
     
-    prefs.end();
+        prefs.end();
+    }
     lastSavedCRC = currentCRC;
 
     Serial.printf("[XP] Saved - LV%d (%lu XP)\n", getLevel(), data.totalXP);

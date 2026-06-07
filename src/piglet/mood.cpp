@@ -1269,11 +1269,14 @@ void Mood::init() {
     lastMoodTierToastMs = 0;
     
     // Phase 10: Load saved mood from NVS
-    moodPrefs.begin(MOOD_NVS_NAMESPACE, true);  // Read-only
-    int8_t savedMood = moodPrefs.getChar("mood", 50);
-    uint32_t savedTime = moodPrefs.getULong("time", 0);
-    moodPrefs.end();
-    
+    int8_t savedMood = 50;
+    uint32_t savedTime = 0;
+    if (moodPrefs.begin(MOOD_NVS_NAMESPACE, true)) {  // Read-only
+        savedMood = moodPrefs.getChar("mood", 50);
+        savedTime = moodPrefs.getULong("time", 0);
+        moodPrefs.end();
+    }
+
     // Calculate time since last save
     uint32_t now = millis();  // Can't compare to NVS time directly, use as session marker
     
@@ -1330,10 +1333,11 @@ void Mood::init() {
 
 // Phase 10: Save mood to NVS (call on mode exit or periodically)
 void Mood::saveMood() {
-    moodPrefs.begin(MOOD_NVS_NAMESPACE, false);  // Read-write
-    moodPrefs.putChar("mood", (int8_t)constrain(happiness, -100, 100));
-    moodPrefs.putULong("time", millis());
-    moodPrefs.end();
+    if (moodPrefs.begin(MOOD_NVS_NAMESPACE, false)) {  // Read-write
+        moodPrefs.putChar("mood", (int8_t)constrain(happiness, -100, 100));
+        moodPrefs.putULong("time", millis());
+        moodPrefs.end();
+    }
 }
 
 void Mood::update() {

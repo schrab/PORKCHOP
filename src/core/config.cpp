@@ -5,27 +5,22 @@
 #include "sdlog.h"
 #include "sd_layout.h"
 #include "../hal/hal_input.h"
+#include "../hal/hal_pins.h"
 #include <SD.h>
 #include <SPIFFS.h>
 #include <SPI.h>
 #include <driver/gpio.h>
 
 // ---- Cardputer microSD wiring (explicit, per Cardputer v1.1 schematic) ----
-// ESP32-S3FN8:
-//   microSD Socket  CS   MOSI  CLK   MISO
-//                  G12  G14   G40   G39
-//
-// (Your previous patch used ESP32 “classic” pins + CS=4, which breaks SD on Cardputer/StampS3.)
-static constexpr int SD_CS_PIN   = 12;  // CS
-static constexpr int SD_MOSI_PIN = 14;  // MOSI
-static constexpr int SD_MISO_PIN = 39;  // MISO
-static constexpr int SD_SCK_PIN  = 40;  // SCK/CLK
+// ESP32-S3 Mini microSD (SPI2_HOST):
+//   CS=6  MOSI=5  MISO=3  SCLK=4
+static constexpr int SD_CS_PIN   = PIN_SD_CS;
+static constexpr int SD_MOSI_PIN = PIN_SD_MOSI;
+static constexpr int SD_MISO_PIN = PIN_SD_MISO;
+static constexpr int SD_SCK_PIN  = PIN_SD_SCLK;
 
-// Dedicated SPI bus instance for SD.
-// Cardputer microSD pinmap (from M5 docs): CS=12 MOSI=14 CLK=40 MISO=39.
-// In practice, Arduino-ESP32/PlatformIO combos vary; using FSPI with explicit
-// pins is the most reliable on Cardputer builds.
-static SPIClass sdSPI(FSPI);
+// Dedicated SPI bus instance for SD (SPI2_HOST)
+static SPIClass sdSPI(SD_SPI_HOST);
 static bool sdSpiBegun = false;
 
 // Static member initialization
