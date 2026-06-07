@@ -283,8 +283,8 @@ void WigleMenu::handleInput() {
         return;
     }
     
-    // Navigation with ; (prev) and . (next)
-    if (hal_input_wasPressed(';')) {
+    // Navigation with UP (prev) and DOWN (next)
+    if (hal_input_wasPressed(KEY_UP)) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -292,8 +292,8 @@ void WigleMenu::handleInput() {
             }
         }
     }
-    
-    if (hal_input_wasPressed('.')) {
+
+    if (hal_input_wasPressed(KEY_DOWN)) {
         if (!files.empty() && selectedIndex < files.size() - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {

@@ -2,6 +2,7 @@
 #include "hal_pins.h"
 #include <cstdio>
 #include <SPI.h>
+#include "driver/ledc.h"
 
 TFT_eSPI g_Display = TFT_eSPI();
 
@@ -63,6 +64,9 @@ int16_t DisplayCanvas::width() const { return m_created ? m_sprite.width() : (m_
 int16_t DisplayCanvas::height() const { return m_created ? m_sprite.height() : (m_display ? m_display->height() : 0); }
 int16_t DisplayCanvas::textWidth(const char* s) const { if (!m_created || !s) return 0; return m_sprite.textWidth(s); }
 
+// Track whether backlight LEDC has been initialized
+static bool bl_ledc_initialized = false;
+
 void hal_display_init() {
     pinMode(PIN_DISPLAY_RST, OUTPUT);
     digitalWrite(PIN_DISPLAY_RST, LOW);
@@ -79,6 +83,31 @@ void hal_display_init() {
 }
 
 void hal_display_setBrightness(uint8_t brightness) {
-    ledcAttachPin(PIN_DISPLAY_BL, DISPLAY_BL_LEDC_CHANNEL);
-    ledcWrite(DISPLAY_BL_LEDC_CHANNEL, brightness);
+    if (!bl_ledc_initialized) {
+        // One-time LEDC setup using ESP-IDF API (avoids Arduino/ESP-IDF API conflicts)
+        // Uses separate timer (TIMER_1) and channel (CHANNEL_1) from piezo (TIMER_0/CHANNEL_0)
+        ledc_timer_config_t bl_timer = {
+            .speed_mode = LEDC_LOW_SPEED_MODE,
+            .duty_resolution = LEDC_TIMER_8_BIT,
+            .timer_num = DISPLAY_BL_LEDC_TIMER,
+            .freq_hz = 5000,
+            .clk_cfg = LEDC_AUTO_CLK
+        };
+        ledc_timer_config(&bl_timer);
+
+        ledc_channel_config_t bl_channel = {
+            .gpio_num = PIN_DISPLAY_BL,
+            .speed_mode = LEDC_LOW_SPEED_MODE,
+            .channel = DISPLAY_BL_LEDC_CHANNEL,
+            .timer_sel = DISPLAY_BL_LEDC_TIMER,
+            .duty = brightness,
+            .hpoint = 0
+        };
+        ledc_channel_config(&bl_channel);
+        bl_ledc_initialized = true;
+    } else {
+        // Just update duty cycle
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, DISPLAY_BL_LEDC_CHANNEL, brightness);
+        ledc_update_duty(LEDC_LOW_SPEED_MODE, DISPLAY_BL_LEDC_CHANNEL);
+    }
 }

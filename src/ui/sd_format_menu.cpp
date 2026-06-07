@@ -165,9 +165,9 @@ void SdFormatMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
 
-    bool up = hal_input_wasPressed(';');
-    bool down = hal_input_wasPressed('.');
-    bool back = hal_input_wasPressed(KEY_BACKSPACE);
+    bool up = hal_input_wasPressed(KEY_UP);
+    bool down = hal_input_wasPressed(KEY_DOWN);
+    bool back = hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_BACKSPACE);
 
     // ---- CONFIRM_ENTRY STATE ----
     // Entry warning dialog: Y to enter, N to bail

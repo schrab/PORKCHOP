@@ -935,9 +935,9 @@ void SettingsMenu::handleInput() {
     lastInputMs = millis();
 
     auto keys = hal_input_keysState();
-    bool up = hal_input_wasPressed(';');
-    bool down = hal_input_wasPressed('.');
-    bool back = hal_input_wasPressed(KEY_BACKSPACE);
+    bool up = hal_input_wasPressed(KEY_UP);
+    bool down = hal_input_wasPressed(KEY_DOWN);
+    bool back = hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_BACKSPACE);
 
     GroupId group = static_cast<GroupId>(activeGroup);
     const size_t rootCount = sizeof(kRootEntries) / sizeof(kRootEntries[0]);

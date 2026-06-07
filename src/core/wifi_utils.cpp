@@ -48,8 +48,19 @@ static bool isTimeValid() {
 }
 
 static void ensureNvsReady() {
-    // Safe even if already initialised
-    (void)nvs_flash_init();
+    // Initialize NVS flash. If the partition has stale/corrupt data from a
+    // previous flash layout, erase and reinitialize automatically.
+    esp_err_t err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        Serial.printf("[NVS] Flash needs erase (err=0x%x), erasing...\n", err);
+        nvs_flash_erase();
+        err = nvs_flash_init();
+        if (err != ESP_OK) {
+            Serial.printf("[NVS] Init after erase failed (err=0x%x)\n", err);
+        } else {
+            Serial.println("[NVS] Reinitialized OK after erase");
+        }
+    }
 }
 
 void stopPromiscuous() {

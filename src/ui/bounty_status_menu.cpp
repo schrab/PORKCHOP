@@ -98,8 +98,8 @@ void BountyStatusMenu::handleInput() {
     // Use cached bounties (refreshed by draw() each frame)
     size_t count = cachedBounties.size();
     
-    // Navigation (; = up, . = down)
-    if (hal_input_wasPressed(';')) {
+    // Navigation (UP = up, DOWN = down)
+    if (hal_input_wasPressed(KEY_UP)) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -107,8 +107,8 @@ void BountyStatusMenu::handleInput() {
             }
         }
     }
-    
-    if (hal_input_wasPressed('.')) {
+
+    if (hal_input_wasPressed(KEY_DOWN)) {
         if (count > 0 && selectedIndex < count - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {

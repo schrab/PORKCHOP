@@ -123,8 +123,8 @@ void UnlockablesMenu::handleInput() {
     
     auto keys = hal_input_keysState();
     
-    // Navigation with ; (up) and . (down)
-    if (hal_input_wasPressed(';')) {
+    // Navigation with UP and DOWN
+    if (hal_input_wasPressed(KEY_UP)) {
         if (selectedIndex > 0 && TOTAL_UNLOCKABLES > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -133,8 +133,8 @@ void UnlockablesMenu::handleInput() {
             updateBottomOverlay();
         }
     }
-    
-    if (hal_input_wasPressed('.')) {
+
+    if (hal_input_wasPressed(KEY_DOWN)) {
         if (TOTAL_UNLOCKABLES > 0 && selectedIndex < TOTAL_UNLOCKABLES - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {

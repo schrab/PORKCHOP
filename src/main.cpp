@@ -10,6 +10,7 @@
 #include <SD.h>
 #include <WiFi.h>              // <-- PATCH: init WiFi early (before heap fragmentation)
 #include <esp_heap_caps.h>     // For heap conditioning
+#include <nvs_flash.h>         // For NVS init + recovery at boot
 #include <string.h>            // For memset
 #include "core/porkchop.h"
 #include "core/config.h"
@@ -94,14 +95,24 @@ void setup() {
     delay(100);
     Serial.println("\n=== PORKCHOP STARTING (ESP32-S3 Mini) ===\n");
 
+    // NVS init — must run before Preferences, Config, XP, or anything using NVS.
+    // Recover automatically if the partition has stale data from a previous flash layout.
+    {
+        esp_err_t nvsErr = nvs_flash_init();
+        if (nvsErr == ESP_ERR_NVS_NO_FREE_PAGES || nvsErr == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+            Serial.printf("[BOOT] NVS corrupt (0x%x), erasing and reinitializing...\n", nvsErr);
+            nvs_flash_erase();
+            nvsErr = nvs_flash_init();
+        }
+        Serial.printf("[BOOT] NVS init: %s\n", nvsErr == ESP_OK ? "OK" : esp_err_to_name(nvsErr));
+    }
+
     // Init hal_gpio_setup — configure pins (display, input, audio, etc.)
     hal_gpio_setup();
 
     // Init display early for boot messages
     hal_display_init();
-    ledcAttachPin(PIN_DISPLAY_BL, DISPLAY_BL_LEDC_CHANNEL);
-    ledcSetup(DISPLAY_BL_LEDC_CHANNEL, 5000, 8);
-    ledcWrite(DISPLAY_BL_LEDC_CHANNEL, 200);
+    hal_display_setBrightness(200);  // Initial brightness using ESP-IDF LEDC API
 
     // Init NeoPixel
     hal_neopixel_init();

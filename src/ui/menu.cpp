@@ -379,7 +379,7 @@ void Menu::handleInput() {
         // === MODAL INPUT ===
         uint8_t groupSize = getGroupSize(activeGroup);
         
-        if (hal_input_wasPressed(';')) {
+        if (hal_input_wasPressed(KEY_UP)) {
             if (modalIdx > 0) {
                 modalIdx--;
                 SFX::play(SFX::MENU_CLICK);
@@ -389,7 +389,7 @@ void Menu::handleInput() {
             }
         }
         
-        if (hal_input_wasPressed('.')) {
+        if (hal_input_wasPressed(KEY_DOWN)) {
             if (modalIdx < groupSize - 1) {
                 modalIdx++;
                 SFX::play(SFX::MENU_CLICK);
@@ -407,14 +407,14 @@ void Menu::handleInput() {
             }
             closeModal();
         }
-        
-        if (hal_input_wasPressed(KEY_BACKSPACE)) {
+
+        if (hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_BACKSPACE)) {
             closeModal();
         }
         
     } else {
         // === ROOT INPUT ===
-        if (hal_input_wasPressed(';')) {
+        if (hal_input_wasPressed(KEY_UP)) {
             // Move up, skip non-selectable
             int newIdx = rootIdx;
             do {
@@ -431,7 +431,7 @@ void Menu::handleInput() {
             }
         }
         
-        if (hal_input_wasPressed('.')) {
+        if (hal_input_wasPressed(KEY_DOWN)) {
             // Move down, skip non-selectable
             int newIdx = rootIdx;
             do {
@@ -539,8 +539,8 @@ void Menu::drawRoot(DisplayCanvas& canvas) {
     // Root items
     canvas.setTextDatum(top_left);
     canvas.setTextSize(2);
-    int yOffset = 25;
-    int lineHeight = 18;
+    int yOffset = 32;  // Scaled for 320x170 display (25 * 1.28)
+    int lineHeight = 23;  // Scaled for 320x170 display (18 * 1.28)
     
     for (uint8_t i = 0; i < VISIBLE_ITEMS && (rootScroll + i) < ROOT_COUNT; i++) {
         uint8_t idx = rootScroll + i;
@@ -614,11 +614,11 @@ void Menu::drawModal(DisplayCanvas& canvas) {
     uint16_t fg = getColorFG();
     uint16_t bg = getColorBG();
     
-    // Modal dimensions - Sirloin-style
-    int boxW = 220;
-    int boxH = 90;
+    // Modal dimensions - Sirloin-style (scaled for 320x170 display)
+    int boxW = 293;  // Scaled from 220 (220 * 1.33)
+    int boxH = 125;  // Increased to fit 5 items without bottom bar overlap
     int boxX = (DISPLAY_W - boxW) / 2;
-    int boxY = 20;
+    int boxY = 20;   // Moved up to avoid bottom bar overlap
     
     // Background with border
     canvas.fillRoundRect(boxX, boxY, boxW, boxH, 6, fg);
@@ -635,10 +635,10 @@ void Menu::drawModal(DisplayCanvas& canvas) {
     // Items
     const MenuItem* items = getGroupItems(activeGroup);
     uint8_t groupSize = getGroupSize(activeGroup);
-    int itemStartY = boxY + 24;
-    int itemHeight = 16;
-    int itemPadX = 6;
-    int textIndent = 10;
+    int itemStartY = boxY + 30;  // Scaled from 24 (24 * 1.26)
+    int itemHeight = 20;  // Scaled from 16 (16 * 1.26)
+    int itemPadX = 8;  // Scaled from 6 (6 * 1.33)
+    int textIndent = 13;  // Scaled from 10 (10 * 1.33)
     int valueMargin = 14;
     
     canvas.setTextSize(2);

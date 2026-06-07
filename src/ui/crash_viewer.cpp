@@ -372,11 +372,11 @@ void CrashViewer::update() {
     }
 
     if (fileViewActive) {
-        if (hal_input_wasPressed(';')) {
+        if (hal_input_wasPressed(KEY_UP)) {
             if (fileScroll > 0) {
                 fileScroll--;
             }
-        } else if (hal_input_wasPressed('.')) {
+        } else if (hal_input_wasPressed(KEY_DOWN)) {
             if (totalLines > VISIBLE_LINES && fileScroll < totalLines - VISIBLE_LINES) {
                 fileScroll++;
             }
@@ -389,14 +389,14 @@ void CrashViewer::update() {
         return;
     }
 
-    if (hal_input_wasPressed(';')) {
+    if (hal_input_wasPressed(KEY_UP)) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < listScroll) {
                 listScroll = selectedIndex;
             }
         }
-    } else if (hal_input_wasPressed('.')) {
+    } else if (hal_input_wasPressed(KEY_DOWN)) {
         if (selectedIndex + 1 < crashFiles.size()) {
             selectedIndex++;
             if (selectedIndex >= listScroll + VISIBLE_LINES) {

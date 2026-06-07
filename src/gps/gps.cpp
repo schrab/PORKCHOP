@@ -26,9 +26,9 @@ void GPS::init(uint8_t rxPin, uint8_t txPin, uint32_t baud) {
         mutex = xSemaphoreCreateMutex();
     }
     
-    // Use Serial2 for GPS (UART2)
-    Serial2.begin(baud, SERIAL_8N1, rxPin, txPin);
-    serial = &Serial2;
+    // Use Serial1 for GPS (UART1) - matches hal_pins.h GPS_UART_NUM = 1
+    Serial1.begin(baud, SERIAL_8N1, rxPin, txPin);
+    serial = &Serial1;
     active = true;
     
     // Clear initial data - safe to use portMAX_DELAY during init (not a hot path, mutex just created)
@@ -43,17 +43,17 @@ void GPS::init(uint8_t rxPin, uint8_t txPin, uint32_t baud) {
 void GPS::reinit(uint8_t rxPin, uint8_t txPin, uint32_t baud) {
     // Stop existing serial connection
     if (serial) {
-        Serial2.end();
+        Serial1.end();
         serial = nullptr;
         active = false;
     }
-    
+
     // Small delay to let hardware settle
     delay(50);
-    
+
     // Re-initialize with new parameters
-    Serial2.begin(baud, SERIAL_8N1, rxPin, txPin);
-    serial = &Serial2;
+    Serial1.begin(baud, SERIAL_8N1, rxPin, txPin);
+    serial = &Serial1;
     active = true;
     
     // Reset GPS state - safe to use portMAX_DELAY during reinit (configuration path, not hot path)
@@ -177,7 +177,7 @@ void GPS::sleep() {
 
     // AT6668 (ATGM336H) does not support u-blox UBX protocol.
     // Stop UART to cease processing and reduce CPU overhead.
-    Serial2.end();
+    Serial1.end();
     serial = nullptr;
     active = false;
     Serial.println("[GPS] Entering sleep mode (UART stopped)");
@@ -191,8 +191,8 @@ void GPS::wake() {
     uint8_t rxPin = Config::gps().rxPin;
     uint8_t txPin = Config::gps().txPin;
     uint32_t baud = Config::gps().baudRate;
-    Serial2.begin(baud, SERIAL_8N1, rxPin, txPin);
-    serial = &Serial2;
+    Serial1.begin(baud, SERIAL_8N1, rxPin, txPin);
+    serial = &Serial1;
     active = true;
     Serial.println("[GPS] Waking up (UART restarted)");
 }
@@ -204,8 +204,8 @@ void GPS::ensureContinuousMode() {
         uint8_t rxPin = Config::gps().rxPin;
         uint8_t txPin = Config::gps().txPin;
         uint32_t baud = Config::gps().baudRate;
-        Serial2.begin(baud, SERIAL_8N1, rxPin, txPin);
-        serial = &Serial2;
+        Serial1.begin(baud, SERIAL_8N1, rxPin, txPin);
+        serial = &Serial1;
     }
     active = true;
     Serial.println("[GPS] Continuous mode enforced");

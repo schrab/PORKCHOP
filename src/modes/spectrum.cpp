@@ -26,16 +26,17 @@
 #include <string.h>
 
 // Layout constants - spectrum + waterfall + channel labels + status bar
-const int SPECTRUM_LEFT = 20;       // Space for dB labels
-const int SPECTRUM_RIGHT = 238;     // Right edge
-const int SPECTRUM_WIDTH = 218;     // SPECTRUM_RIGHT - SPECTRUM_LEFT
-const int SPECTRUM_TOP = 2;         // Top margin
-const int SPECTRUM_BOTTOM = 56;     // Lowered to give more vertical range
-const int WATERFALL_TOP = 58;       // Waterfall starts here
-const int WATERFALL_ROWS = 22;      // Number of history rows
-const int WATERFALL_BOTTOM = 80;    // WATERFALL_TOP + WATERFALL_ROWS
-const int CHANNEL_LABEL_Y = 82;     // Channel number row
-const int XP_BAR_Y = 94;            // Filter/status bar
+// ESP32-S3 Mini: 320x170 display (scaled from 240x135 Cardputer)
+const int SPECTRUM_LEFT = 27;       // Space for dB labels (scaled)
+const int SPECTRUM_RIGHT = 317;     // Right edge (scaled to 320)
+const int SPECTRUM_WIDTH = 290;     // SPECTRUM_RIGHT - SPECTRUM_LEFT
+const int SPECTRUM_TOP = 3;         // Top margin (scaled)
+const int SPECTRUM_BOTTOM = 71;     // Lowered to give more vertical range (scaled)
+const int WATERFALL_TOP = 73;       // Waterfall starts here (scaled)
+const int WATERFALL_ROWS = 28;      // Number of history rows (scaled for height)
+const int WATERFALL_BOTTOM = 101;   // WATERFALL_TOP + WATERFALL_ROWS
+const int CHANNEL_LABEL_Y = 103;    // Channel number row (scaled)
+const int XP_BAR_Y = 118;           // Filter/status bar (scaled)
 
 // RSSI scale
 const int8_t RSSI_MIN = -95;        // Bottom of scale (weak signals)
@@ -691,11 +692,11 @@ void SpectrumMode::handleInput() {
     
     auto keys = hal_input_keysState();
     
-    // Pan spectrum with , (left) and / (right)
+    // Pan spectrum with LEFT and RIGHT joystick
     if (hal_input_wasPressed(KEY_LEFT)) {
         viewCenterMHz = fmax(MIN_CENTER_MHZ, viewCenterMHz - PAN_STEP_MHZ);
     }
-    if (hal_input_wasPressed('/')) {
+    if (hal_input_wasPressed(KEY_RIGHT)) {
         viewCenterMHz = fmin(MAX_CENTER_MHZ, viewCenterMHz + PAN_STEP_MHZ);
     }
     
@@ -717,29 +718,29 @@ void SpectrumMode::handleInput() {
         }
     }
     
-    // Cycle through matching networks with ; and .
-    if (hal_input_wasPressed(';') && !networks.empty()) {
+    // Cycle through matching networks with UP and DOWN joystick
+    if (hal_input_wasPressed(KEY_UP) && !networks.empty()) {
         int startIdx = selectedIndex;
         int count = 0;
         do {
             selectedIndex = (selectedIndex - 1 + (int)networks.size()) % (int)networks.size();
             count++;
         } while (!matchesFilter(networks[selectedIndex]) && count < (int)networks.size());
-        
+
         if (!matchesFilter(networks[selectedIndex])) {
             selectedIndex = startIdx;  // No match found, stay put
         } else if (selectedIndex >= 0 && selectedIndex < (int)networks.size()) {
             viewCenterMHz = channelToFreq(networks[selectedIndex].channel);
         }
     }
-    if (hal_input_wasPressed('.') && !networks.empty()) {
+    if (hal_input_wasPressed(KEY_DOWN) && !networks.empty()) {
         int startIdx = selectedIndex;
         int count = 0;
         do {
             selectedIndex = (selectedIndex + 1) % (int)networks.size();
             count++;
         } while (!matchesFilter(networks[selectedIndex]) && count < (int)networks.size());
-        
+
         if (!matchesFilter(networks[selectedIndex])) {
             selectedIndex = startIdx;  // No match found, stay put
         } else if (selectedIndex >= 0 && selectedIndex < (int)networks.size()) {
@@ -822,15 +823,15 @@ void SpectrumMode::handleClientMonitorInput() {
     
     // Navigation only if clients exist [P14]
     if (clientCount > 0) {
-        if (hal_input_wasPressed(';')) {
+        if (hal_input_wasPressed(KEY_UP)) {
             selectedClientIndex = max(0, selectedClientIndex - 1);
             // Adjust scroll if needed
             if (selectedClientIndex < clientScrollOffset) {
                 clientScrollOffset = selectedClientIndex;
             }
         }
-        
-        if (hal_input_wasPressed('.')) {
+
+        if (hal_input_wasPressed(KEY_DOWN)) {
             selectedClientIndex = min(clientCount - 1, selectedClientIndex + 1);
             // Adjust scroll if needed
             if (selectedClientIndex >= clientScrollOffset + VISIBLE_CLIENTS) {

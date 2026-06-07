@@ -172,8 +172,8 @@ void BoarBrosMenu::handleInput() {
         return;
     }
     
-    // Navigation with ; (prev/up) and . (next/down)
-    if (hal_input_wasPressed(';')) {
+    // Navigation with UP (prev/up) and DOWN (next/down)
+    if (hal_input_wasPressed(KEY_UP)) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -181,8 +181,8 @@ void BoarBrosMenu::handleInput() {
             }
         }
     }
-    
-    if (hal_input_wasPressed('.')) {
+
+    if (hal_input_wasPressed(KEY_DOWN)) {
         if (!bros.empty() && selectedIndex < bros.size() - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {

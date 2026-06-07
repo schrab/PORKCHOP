@@ -485,8 +485,8 @@ void CapturesMenu::handleInput() {
         return;  // Block other inputs while detail view is open
     }
     
-    // Navigation with ; (up) and . (down) — also rotates hints
-    if (hal_input_wasPressed(';')) {
+    // Navigation with UP and DOWN — also rotates hints
+    if (hal_input_wasPressed(KEY_UP)) {
         hintIndex = (hintIndex + 1) % HINT_COUNT;
         if (selectedIndex > 0) {
             selectedIndex--;
@@ -496,7 +496,7 @@ void CapturesMenu::handleInput() {
         }
     }
 
-    if (hal_input_wasPressed('.')) {
+    if (hal_input_wasPressed(KEY_DOWN)) {
         hintIndex = (hintIndex + 1) % HINT_COUNT;
         if (!captures.empty() && selectedIndex < captures.size() - 1) {
             selectedIndex++;

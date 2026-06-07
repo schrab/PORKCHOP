@@ -466,6 +466,7 @@ bool update() {
     
     // Check if sequence ended (duration=0 marks end)
     if (note.duration == 0) {
+        hal_audio_stop();  // Ensure piezo is silent when sequence ends
         currentSequence = nullptr;
         currentStep = 0;
         taskENTER_CRITICAL(&queueMutex);
@@ -477,7 +478,8 @@ bool update() {
     if (inNote) {
         // In note phase - wait for duration
         if (now - stepStartTime >= note.duration) {
-            // Note finished, enter pause phase
+            // Note finished - stop audio before entering pause phase
+            hal_audio_stop();
             inNote = false;
             stepStartTime = now;
             

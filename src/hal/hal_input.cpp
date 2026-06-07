@@ -11,14 +11,18 @@ static const uint8_t JOY_KEYS[] = {
 static const int NUM_JOY_PINS = sizeof(JOY_PINS) / sizeof(JOY_PINS[0]);
 
 // Debounce state
-static bool stableState[5] = {true, true, true, true, true}; // pull-up → HIGH = released
-static bool lastRaw[5] = {true, true, true, true, true};
+static bool stableState[5] = {false, false, false, false, false}; // pull-up → HIGH = released
+static bool lastRaw[5] = {false, false, false, false, false};
 static uint32_t lastDebounce[5] = {0, 0, 0, 0, 0};
 static const uint32_t DEBOUNCE_MS = 50;
 
 // Edge detection
 static bool risingEdge[5] = {false, false, false, false, false};
-static bool consumed[5] = {false, false, false, false, false};
+
+// Long-press LEFT → ESC synthesis
+static uint32_t leftPressStart = 0;
+static bool leftLongFired = false;
+static const uint32_t LONG_PRESS_MS = 800;
 
 // Change flag
 static bool stateChanged = false;
@@ -26,9 +30,8 @@ static bool stateChanged = false;
 void hal_input_init() {
     for (int i = 0; i < NUM_JOY_PINS; i++) {
         pinMode(JOY_PINS[i], INPUT_PULLUP);
-        stableState[i] = true;
-        lastRaw[i] = true;
-        consumed[i] = true; // don't fire on initial reading
+        stableState[i] = false;
+        lastRaw[i] = false;
     }
 }
 
@@ -68,17 +71,31 @@ void hal_input_update() {
             // Only capture rising edges (presses, not releases)
             if (raw) {
                 risingEdge[i] = true;
-                consumed[i] = false;
                 stateChanged = true;
             }
         }
+    }
+
+    // Long-press LEFT (index 2) → synthesize KEY_ESC
+    bool leftHeld = stableState[2];
+    if (leftHeld) {
+        if (leftPressStart == 0) {
+            leftPressStart = now;
+            leftLongFired = false;
+        } else if (!leftLongFired && (now - leftPressStart) >= LONG_PRESS_MS) {
+            leftLongFired = true;
+            stateChanged = true;
+        }
+    } else {
+        leftPressStart = 0;
+        leftLongFired = false;
     }
 }
 
 uint8_t hal_input_getch() {
     for (int i = 0; i < NUM_JOY_PINS; i++) {
-        if (risingEdge[i] && !consumed[i]) {
-            consumed[i] = true;
+        if (risingEdge[i]) {
+            risingEdge[i] = false;
             return JOY_KEYS[i];
         }
     }
@@ -86,9 +103,14 @@ uint8_t hal_input_getch() {
 }
 
 bool hal_input_wasPressed(uint8_t keyCode) {
+    // Check synthesized ESC from long-press LEFT
+    if (keyCode == KEY_ESC && leftLongFired) {
+        leftLongFired = false;
+        return true;
+    }
     for (int i = 0; i < NUM_JOY_PINS; i++) {
-        if (JOY_KEYS[i] == keyCode && risingEdge[i] && !consumed[i]) {
-            consumed[i] = true;
+        if (JOY_KEYS[i] == keyCode && risingEdge[i]) {
+            risingEdge[i] = false;
             return true;
         }
     }

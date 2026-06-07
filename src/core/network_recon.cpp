@@ -581,13 +581,6 @@ static void processDataFrame(const uint8_t* payload, uint16_t len, int8_t rssi) 
 static void promiscuousCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (!buf) return;
     if (!running || paused) return;
-    if (busy) {
-        PacketCallback cb = modeCallback.load(std::memory_order_relaxed);
-        if (cb) {
-            cb((wifi_promiscuous_pkt_t*)buf, type);
-        }
-        return;
-    }
     
     wifi_promiscuous_pkt_t* pkt = (wifi_promiscuous_pkt_t*)buf;
     uint16_t len = pkt->rx_ctrl.sig_len;
@@ -602,7 +595,10 @@ static void promiscuousCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
     const uint8_t* payload = pkt->payload;
     uint8_t frameSubtype = (payload[0] >> 4) & 0x0F;
     
-    // Basic network tracking (always happens)
+    // Basic network tracking ALWAYS runs — even when busy flag is set.
+    // The busy flag only means the main thread is iterating vectors; beacon
+    // processing here uses its own deferred queue (pendingNetworks ring buffer)
+    // and does NOT touch the main networks vector directly.
     switch (type) {
         case WIFI_PKT_MGMT:
             if (frameSubtype == 0x08) {  // Beacon
@@ -625,9 +621,13 @@ static void promiscuousCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
     }
     
     // Mode-specific callback (for EAPOL capture, PCAP logging, etc.)
-    PacketCallback cb = modeCallback.load(std::memory_order_relaxed);
-    if (cb) {
-        cb(pkt, type);
+    // Only call when NOT busy — mode callbacks may touch mode-specific vectors
+    // that the main thread holds under oinkBusy/dnhBusy.
+    if (!busy) {
+        PacketCallback cb = modeCallback.load(std::memory_order_relaxed);
+        if (cb) {
+            cb(pkt, type);
+        }
     }
 }
 
@@ -829,9 +829,12 @@ void start() {
     WiFi.disconnect();
     delay(50);
     
-    // Set up promiscuous mode
+    // Set up promiscuous mode — filter mask 0 = receive MGMT + DATA + MISC + CTRL
+    static const wifi_promiscuous_filter_t kPromiscFilter = {
+        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
+    };
     esp_wifi_set_promiscuous_rx_cb(promiscuousCallback);
-    esp_wifi_set_promiscuous_filter(nullptr);  // Receive all packet types
+    esp_wifi_set_promiscuous_filter(&kPromiscFilter);
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
     
@@ -898,8 +901,11 @@ void resume() {
     delay(50);
     
     // Re-enable promiscuous
+    static const wifi_promiscuous_filter_t kPromiscFilter = {
+        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
+    };
     esp_wifi_set_promiscuous_rx_cb(promiscuousCallback);
-    esp_wifi_set_promiscuous_filter(nullptr);
+    esp_wifi_set_promiscuous_filter(&kPromiscFilter);
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
     

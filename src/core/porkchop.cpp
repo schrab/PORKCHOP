@@ -580,53 +580,18 @@ void Porkchop::processEvents() {
 }
 
 void Porkchop::handleInput() {
-    // G0 button (GPIO0 on top side) - configurable action
-    static bool g0WasPressed = false;
-    bool g0Pressed = (digitalRead(0) == LOW);  // G0 is active LOW
+    // G0 button not present on ESP32-S3 Mini - skip check to avoid floating GPIO triggering
 
-    if (g0Pressed && !g0WasPressed) {
-        G0Action g0Action = Config::personality().g0Action;
-        if (g0Action != G0Action::SCREEN_TOGGLE) {
-            Display::resetDimTimer();  // Wake screen on G0
-        }
-        Serial.printf("[PORKCHOP] G0 pressed! Current mode: %d\n", (int)currentMode);
-        switch (g0Action) {
-            case G0Action::SCREEN_TOGGLE:
-                Display::toggleScreenPower();
-                break;
-            case G0Action::OINK:
-                setMode(PorkchopMode::OINK_MODE);
-                break;
-            case G0Action::DNOHAM:
-                setMode(PorkchopMode::DNH_MODE);
-                break;
-            case G0Action::SPECTRUM:
-                setMode(PorkchopMode::SPECTRUM_MODE);
-                break;
-            case G0Action::PIGSYNC:
-                setMode(PorkchopMode::PIGSYNC_DEVICE_SELECT);
-                break;
-            case G0Action::IDLE:
-                setMode(PorkchopMode::IDLE);
-                break;
-            default:
-                break;
-        }
-        g0WasPressed = true;
-        return;
-    }
-    if (!g0Pressed) {
-        g0WasPressed = false;
-    }
-    
     if (!hal_input_isChange()) return;
-    
-    // Any keyboard input resets the screen dim timer
+
+    // Reset dim timer on any key state change
     Display::resetDimTimer();
     
     InputEvent keys = hal_input_keysState();
-    // ESC maps to the key above Tab (shares ` / ~)
-    bool escPressed = hal_input_isKeyPressed('`');
+    (void)keys;  // joystick build: all navigation via wasPressed(), not raw keysState
+    // ESC = SELECT held (handled by hal_input_shouldExit) or BACKSPACE button
+    bool escPressed = hal_input_wasPressed(KEY_ESC) || hal_input_wasPressed(KEY_BACKSPACE)
+                      || hal_input_shouldExit();
 
     // ESC to return to IDLE from any active mode
     if (escPressed && currentMode != PorkchopMode::IDLE) {
@@ -636,17 +601,13 @@ void Porkchop::handleInput() {
     
     // In MENU mode, let Menu::handleInput() process navigation keys
     if (currentMode == PorkchopMode::MENU) {
-        // Do NOT return here - let Menu::update() handle navigation
-        // But we already consumed isChange(), so Menu won't see it
-        // Instead, call Menu::update() directly here
         Menu::update();
-        yield(); // Allow other tasks to run during menu updates
+        yield();
         return;
     }
     
     // In SETTINGS mode, let SettingsMenu handle everything
     if (currentMode == PorkchopMode::SETTINGS) {
-        // Check if settings wants to exit
         if (SettingsMenu::shouldExit()) {
             SettingsMenu::clearExit();
             SettingsMenu::hide();
@@ -659,129 +620,82 @@ void Porkchop::handleInput() {
     if (currentMode == PorkchopMode::PIGSYNC_DEVICE_SELECT) {
         uint8_t deviceCount = PigSyncMode::getDeviceCount();
 
-        // Handle device navigation (up/down) - only if devices exist
+        // Handle device navigation (up/down) with joystick
         if (deviceCount > 0) {
-            if (hal_input_isKeyPressed(';')) {
-                // Up arrow - select previous device
+            if (hal_input_wasPressed(KEY_UP)) {
                 PigSyncMode::selectDevice(PigSyncMode::getSelectedIndex() > 0 ?
                     PigSyncMode::getSelectedIndex() - 1 : deviceCount - 1);
             }
-            if (hal_input_isKeyPressed('.')) {
-                // Down arrow - select next device
+            if (hal_input_wasPressed(KEY_DOWN)) {
                 PigSyncMode::selectDevice((PigSyncMode::getSelectedIndex() + 1) % deviceCount);
             }
         }
 
-        // Enter to connect to selected device
-        if (hal_input_isKeyPressed(KEY_ENTER) && PigSyncMode::getDeviceCount() > 0) {
+        // ENTER/SELECT to connect
+        if (hal_input_wasPressed(KEY_ENTER) && PigSyncMode::getDeviceCount() > 0) {
             uint8_t selectedIdx = PigSyncMode::getSelectedIndex();
             if (selectedIdx < PigSyncMode::getDeviceCount()) {
                 PigSyncMode::connectTo(selectedIdx);
             }
         }
 
-        // A to abort sync (when connected)
-        if (PigSyncMode::isConnected() && hal_input_isKeyPressed('a')) {
+        // LEFT to abort sync (when connected)
+        if (PigSyncMode::isConnected() && hal_input_wasPressed(KEY_LEFT)) {
             if (PigSyncMode::isSyncing()) {
                 PigSyncMode::abortSync();
             }
         }
 
-        // D to disconnect (when connected)
-        if (PigSyncMode::isConnected() && hal_input_isKeyPressed('d')) {
+        // RIGHT to disconnect (when connected)
+        if (PigSyncMode::isConnected() && hal_input_wasPressed(KEY_RIGHT)) {
             PigSyncMode::disconnect();
         }
 
-        // R to rescan (when not connected)
-        if (!PigSyncMode::isConnected() && hal_input_isKeyPressed('r')) {
+        // SELECT (ENTER) to rescan (when not connected)
+        if (!PigSyncMode::isConnected() && hal_input_wasPressed(KEY_ENTER)) {
             PigSyncMode::startScan();
         }
 
-        return; // Consume input for PIGSYNC_DEVICE_SELECT
+        return;
     }
     
-    // Backtick opens menu from IDLE (kept out of back/exit flow)
-    if (currentMode == PorkchopMode::IDLE &&
-        hal_input_isKeyPressed('`')) {
+    // ENTER from IDLE opens menu
+    if (currentMode == PorkchopMode::IDLE && hal_input_wasPressed(KEY_ENTER)) {
         setMode(PorkchopMode::MENU);
         return;
     }
     
-    // Screenshot with P key (global, works in any mode)
-    if (hal_input_isKeyPressed('p') || hal_input_isKeyPressed('P')) {
-        if (!Display::isSnapping()) {
-            Display::takeScreenshot();
-        }
-        return;
-    }
-    
-    // T key stress test cycle disabled
-    
-    // Enter key in About mode - easter egg
-    if (hal_input_isKeyPressed(KEY_ENTER)) {
+    // Screenshot: LEFT+RIGHT held simultaneously is too complex for 5-way; skip on joystick build
+    // ENTER in About mode - easter egg
+    if (hal_input_wasPressed(KEY_ENTER)) {
         if (currentMode == PorkchopMode::ABOUT) {
             Display::onAboutEnterPressed();
             return;
         }
     }
     
-    // Mode shortcuts when in IDLE
+    // Joystick navigation in IDLE:
+    // UP   → OINK (attack mode)
+    // DOWN → DO NO HAM (passive mode)
+    // LEFT → SPECTRUM
+    // RIGHT→ WARHOG (wardriving)
+    // ENTER→ menu (handled above)
     if (currentMode == PorkchopMode::IDLE) {
-        uint8_t c = keys.key; {
-            switch (c) {
-                case 'o': // Oink mode
-                case 'O':
-                    setMode(PorkchopMode::OINK_MODE);
-                    break;
-                case 'w': // Warhog mode
-                case 'W':
-                    setMode(PorkchopMode::WARHOG_MODE);
-                    break;
-                case 'b': // Piggy Blues mode
-                case 'B':
-                    setMode(PorkchopMode::PIGGYBLUES_MODE);
-                    break;
-                case 'h': // HOG ON SPECTRUM mode
-                case 'H':
-                    setMode(PorkchopMode::SPECTRUM_MODE);
-                    break;
-                case 's': // SWINE STATS
-                case 'S':
-                    setMode(PorkchopMode::SWINE_STATS);
-                    break;
-                case 't': // Settings (Tweak)
-                case 'T':
-                    setMode(PorkchopMode::SETTINGS);
-                    break;
-                case 'd': // DO NO HAM mode
-                case 'D':
-                    setMode(PorkchopMode::DNH_MODE);
-                    break;
-                case 'f': // File transfer (PORKCHOP COMMANDER)
-                case 'F':
-                    setMode(PorkchopMode::FILE_TRANSFER);
-                    break;
-                case '1': // PIG DEMANDS overlay
-                    Display::showChallenges();
-                    break;
-                case '2': // PIGSYNC device select
-                    setMode(PorkchopMode::PIGSYNC_DEVICE_SELECT);
-                    break;
-                case 'c': // Charging mode
-                case 'C':
-                    setMode(PorkchopMode::IDLE);
-                    break;
-            }
+        if (hal_input_wasPressed(KEY_UP)) {
+            setMode(PorkchopMode::OINK_MODE);
+        } else if (hal_input_wasPressed(KEY_DOWN)) {
+            setMode(PorkchopMode::DNH_MODE);
+        } else if (hal_input_wasPressed(KEY_LEFT)) {
+            setMode(PorkchopMode::SPECTRUM_MODE);
+        } else if (hal_input_wasPressed(KEY_RIGHT)) {
+            setMode(PorkchopMode::WARHOG_MODE);
         }
-        yield(); // Allow other tasks to run after processing all keys
+        yield();
     }
     
-    // OINK mode - B to exclude network
+    // OINK mode - LEFT to exclude current network (BOAR BRO), RIGHT to switch to DNH
     if (currentMode == PorkchopMode::OINK_MODE) {
-        // B key - add selected network to BOAR BROS exclusion list
-        static bool bWasPressed = false;
-        bool bPressed = hal_input_isKeyPressed('b') || hal_input_isKeyPressed('B');
-        if (bPressed && !bWasPressed) {
+        if (hal_input_wasPressed(KEY_LEFT)) {
             int idx = OinkMode::getSelectionIndex();
             if (OinkMode::excludeNetwork(idx)) {
                 Display::showToast("BOAR BRO ADDED!");
@@ -792,58 +706,37 @@ void Porkchop::handleInput() {
                 delay(500);
             }
         }
-        bWasPressed = bPressed;
-        
-        // D key - switch to DO NO HAM mode (seamless mode switch)
-        static bool dWasPressed_oink = false;
-        bool dPressed = hal_input_isKeyPressed('d') || hal_input_isKeyPressed('D');
-        if (dPressed && !dWasPressed_oink) {
-            // Track passive time for achievements
+        if (hal_input_wasPressed(KEY_RIGHT)) {
             SessionStats& sess = const_cast<SessionStats&>(XP::getSession());
             sess.passiveTimeStart = millis();
-            
-            // Show toast before mode switch (loading screen)
             Display::notify(NoticeKind::STATUS, "IRIE VIBES ONLY NOW", 0, NoticeChannel::TOP_BAR);
             delay(800);
-            
-            // Seamless switch to DNH mode
             setMode(PorkchopMode::DNH_MODE);
-            return;  // Prevent fall-through to DNH block this frame
+            return;
         }
-        dWasPressed_oink = dPressed;
     }
     
-    // DNH mode - O key to switch back to OINK
+    // DNH mode - RIGHT to switch back to OINK
     if (currentMode == PorkchopMode::DNH_MODE) {
-        // O key - switch back to OINK mode (seamless mode switch)
-        static bool oWasPressed_dnh = false;
-        bool oPressed = hal_input_isKeyPressed('o') || hal_input_isKeyPressed('O');
-        if (oPressed && !oWasPressed_dnh) {
-            // Clear passive time tracking
+        if (hal_input_wasPressed(KEY_RIGHT)) {
             SessionStats& sess = const_cast<SessionStats&>(XP::getSession());
             sess.passiveTimeStart = 0;
-            
-            // Show toast before mode switch (loading screen)
             Display::notify(NoticeKind::STATUS, "PROPER MAD ONE INNIT", 0, NoticeChannel::TOP_BAR);
             delay(800);
-            
-            // Seamless switch to OINK mode
             setMode(PorkchopMode::OINK_MODE);
-            return;  // Prevent any subsequent key handling this frame
+            return;
         }
-        oWasPressed_dnh = oPressed;
     }
     
-    // WARHOG mode - use ESC to return to idle
+    // WARHOG mode - ESC returns to idle globally
     if (currentMode == PorkchopMode::WARHOG_MODE) {
-        // no-op: ESC handled globally
+        // no-op: ESC handled globally above
     }
     
-    // PIGGYBLUES mode - use ESC to return to idle
+    // PIGGYBLUES mode - ESC returns to idle globally
     if (currentMode == PorkchopMode::PIGGYBLUES_MODE) {
-        // no-op: ESC handled globally
+        // no-op: ESC handled globally above
     }
-    
     
     // SPECTRUM mode - ESC returns to idle globally
     // If monitoring a network, Spectrum handles its own keys

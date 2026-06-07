@@ -139,8 +139,8 @@ void AchievementsMenu::handleInput() {
         return;
     }
     
-    // Navigation with ; (up) and . (down)
-    if (hal_input_wasPressed(';')) {
+    // Navigation with UP and DOWN
+    if (hal_input_wasPressed(KEY_UP)) {
         if (selectedIndex > 0) {
             selectedIndex--;
             if (selectedIndex < scrollOffset) {
@@ -149,8 +149,8 @@ void AchievementsMenu::handleInput() {
             updateBottomOverlay();
         }
     }
-    
-    if (hal_input_wasPressed('.')) {
+
+    if (hal_input_wasPressed(KEY_DOWN)) {
         if (selectedIndex < TOTAL_ACHIEVEMENTS - 1) {
             selectedIndex++;
             if (selectedIndex >= scrollOffset + VISIBLE_ITEMS) {

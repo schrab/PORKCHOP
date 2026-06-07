@@ -34,14 +34,14 @@
 #define PIN_JOY_SELECT        38
 
 // --- GPS: UART ---
-#define PIN_GPS_TX            1
-#define PIN_GPS_RX            2
+#define PIN_GPS_TX            2
+#define PIN_GPS_RX            1
 #define GPS_UART_NUM          1     // UART1
 #define GPS_BAUD_DEFAULT      9600
 
 // --- NeoPixel ---
 #define PIN_NEOPIXEL          33
-#define NEOPIXEL_POWER        200   // default brightness 0-255
+#define NEOPIXEL_POWER        50   // default brightness 0-255
 
 // --- Battery ADC ---
 #define PIN_BATTERY_ADC       8
@@ -52,9 +52,11 @@
 #define PIN_PIEZO             7
 #define PIEZO_LEDC_TIMER      LEDC_TIMER_0
 #define PIEZO_LEDC_CHANNEL    LEDC_CHANNEL_0
-#define DISPLAY_BL_LEDC_CHANNEL    LEDC_CHANNEL_2
 #define PIEZO_LEDC_RESOLUTION LEDC_TIMER_8_BIT
-#define DISPLAY_BL_LEDC_CHANNEL    0
+
+// --- Display Backlight (LEDC PWM, separate timer/channel from piezo) ---
+#define DISPLAY_BL_LEDC_TIMER     LEDC_TIMER_1
+#define DISPLAY_BL_LEDC_CHANNEL   LEDC_CHANNEL_1
 
 // --- Add missing aliases for HAL compatibility ---
 #define JOYSTICK_UP_PIN       PIN_JOY_UP

@@ -41,10 +41,8 @@ void hal_audio_play(uint16_t frequency, uint32_t duration_ms) {
     ledc_set_duty(LEDC_LOW_SPEED_MODE, PIEZO_LEDC_CHANNEL, duty);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, PIEZO_LEDC_CHANNEL);
     ledc_set_freq(LEDC_LOW_SPEED_MODE, PIEZO_LEDC_TIMER, frequency);
-    if (duration_ms > 0) {
-        delay(duration_ms);
-        hal_audio_stop();
-    }
+    // Non-blocking: SFX engine manages note duration and calls hal_audio_stop()
+    (void)duration_ms;
 }
 
 void hal_audio_stop() {
