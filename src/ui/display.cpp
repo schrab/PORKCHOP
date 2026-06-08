@@ -27,9 +27,11 @@
 #include "../modes/bacon.h"
 #include "../modes/pork_patrol.h"
 #include "../modes/swine_radar.h"
+#include "../modes/snout.h"
 #include "../modes/charging.h"
 #include "../gps/gps.h"
 #include "../web/fileserver.h"
+#include "../web/webui.h"
 #include "menu.h"
 #include "settings_menu.h"
 #include "captures_menu.h"
@@ -238,7 +240,7 @@ void Display::init() {
     topBar.createSprite(DISPLAY_W, TOP_BAR_H);
     topBar.setColorDepth(8);
     mainCanvas.createSprite(DISPLAY_W, MAIN_H);
-    mainCanvas.setColorDepth(8);
+    mainCanvas.setColorDepth(16);
     bottomBar.createSprite(DISPLAY_W, BOTTOM_BAR_H);
     bottomBar.setColorDepth(8);
     
@@ -418,6 +420,42 @@ void Display::update() {
         case PorkchopMode::SWINE_RADAR:
             SwineRadarMode::draw(mainCanvas);
             break;
+        case PorkchopMode::SNOUT_MODE:
+            SnoutMode::draw(mainCanvas);
+            break;
+        case PorkchopMode::WEBUI_MODE: {
+            mainCanvas.fillSprite(COLOR_BG);
+            mainCanvas.setTextColor(COLOR_FG);
+            mainCanvas.setTextSize(1);
+            mainCanvas.setTextDatum(TC_DATUM);
+            mainCanvas.drawString("WEB REMOTE", DISPLAY_W / 2, 8);
+            mainCanvas.drawLine(0, 18, DISPLAY_W, 18, COLOR_FG);
+            mainCanvas.setTextDatum(TL_DATUM);
+            int y = 24; const int dy = 14;
+            if (WebUI::isActive()) {
+                mainCanvas.drawString("STATUS: ACTIVE", 6, y); y += dy;
+                mainCanvas.drawString("SSID:  PORKCHOP", 6, y); y += dy;
+                mainCanvas.drawString("IP:    192.168.4.1", 6, y); y += dy;
+                mainCanvas.drawString("PASS:  none (open)", 6, y); y += dy + 4;
+                mainCanvas.drawLine(0, y, DISPLAY_W, y, COLOR_FG); y += 6;
+                mainCanvas.setTextDatum(TC_DATUM);
+                mainCanvas.drawString("1. Connect to PORKCHOP wifi", DISPLAY_W / 2, y); y += dy;
+                mainCanvas.drawString("2. Browse 192.168.4.1", DISPLAY_W / 2, y); y += dy + 4;
+                mainCanvas.drawLine(0, y, DISPLAY_W, y, COLOR_FG); y += 6;
+                mainCanvas.drawString("SELECT: stop  ESC: back", DISPLAY_W / 2, y);
+            } else {
+                mainCanvas.drawString("STATUS: OFF", 6, y); y += dy + 4;
+                mainCanvas.drawLine(0, y, DISPLAY_W, y, COLOR_FG); y += 6;
+                mainCanvas.setTextDatum(TC_DATUM);
+                mainCanvas.drawString("Browser remote control.", DISPLAY_W / 2, y); y += dy;
+                mainCanvas.drawString("Live screen mirror.", DISPLAY_W / 2, y); y += dy;
+                mainCanvas.drawString("Full mode switching.", DISPLAY_W / 2, y); y += dy + 4;
+                mainCanvas.drawLine(0, y, DISPLAY_W, y, COLOR_FG); y += 6;
+                mainCanvas.drawString("SELECT: start  ESC: back", DISPLAY_W / 2, y);
+            }
+            mainCanvas.setTextDatum(TL_DATUM);
+            break;
+        }
         case PorkchopMode::SD_FORMAT:
             SdFormatMenu::draw(mainCanvas);
             break;
@@ -661,6 +699,10 @@ void Display::drawTopBar() {
             break;
         case PorkchopMode::SWINE_RADAR:
             snprintf(modeBuf, sizeof(modeBuf), "SWINERADAR");
+            modeColor = COLOR_DANGER;
+            break;
+        case PorkchopMode::SNOUT_MODE:
+            snprintf(modeBuf, sizeof(modeBuf), "SN0UT");
             modeColor = COLOR_DANGER;
             break;
     }

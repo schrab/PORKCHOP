@@ -32,7 +32,9 @@ enum class PorkchopMode : uint8_t {
     SD_FORMAT,      // SD card format utility
         CHARGING,        // Low power charging mode
         PORK_PATROL,     // Flock Safety + Axon bodycam detection
-        SWINE_RADAR      // 5-tab threat detection radar
+        SWINE_RADAR,     // 5-tab threat detection radar
+        WEBUI_MODE,      // Browser screen mirror + remote control
+        SNOUT_MODE       // Evil twin + deauth storm + hidden SSID prober
 };
 
 // Events for async callbacks

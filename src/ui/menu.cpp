@@ -52,6 +52,11 @@ static const char* const H_BLUES[] = {
     "BECAUSE SILENCE IS FOR WELL-ADJUSTED.",
     "I OPTIMIZED IT. NOW IT FAILS FASTER."
 };
+static const char* const H_SNOUT[] = {
+    "EVIL TWIN SPOTTED. DEAUTH STORMING.",
+    "HIDDEN SSID? NOT ANYMORE.",
+    "TRIPLE THREAT. PURE DETECTION."
+};
 static const char* const H_DNOHAM[] = {
     "DO NO HAM. ZERO TX. PURE POVERTY.",
     "PASSIVE MODE: MY WILL TO DEBUG.",
@@ -106,6 +111,11 @@ static const char* const H_XFIL[] = {
     "LOOT OUT. LIGHTS OUT.",
     "BYTES LEAVING. TROUBLE STAYING.",
     "HEAP DIED. PRAISE THE SUN."
+};
+static const char* const H_WEBUI[] = {
+    "PIG GOES REMOTE. BROWSER TAKES OVER.",
+    "SCREEN MIRROR. FULL CONTROL.",
+    "CONNECT TO PORKCHOP WIFI. BROWSE 192.168.4.1."
 };
 static const char* const H_FLEX[] = {
     "SHOW YOUR GRIND. HIDE THE PAIN.",
@@ -172,7 +182,8 @@ const uint8_t Menu::ROOT_COUNT = sizeof(ROOT_ITEMS) / sizeof(ROOT_ITEMS[0]);
 // Group: ATTACK - offensive TX operations
 const MenuItem Menu::GROUP_ATTACK[] = {
     {"/>", "OINKS",  1,  H_OINK,   (uint8_t)(sizeof(H_OINK)/sizeof(H_OINK[0]))},
-    {"!!", "BLUES", 8,  H_BLUES,  (uint8_t)(sizeof(H_BLUES)/sizeof(H_BLUES[0]))}
+    {"!!", "BLUES", 8,  H_BLUES,  (uint8_t)(sizeof(H_BLUES)/sizeof(H_BLUES[0]))},
+    {"SN", "SNOUT", 25, H_SNOUT,  (uint8_t)(sizeof(H_SNOUT)/sizeof(H_SNOUT[0]))}
 };
 const uint8_t Menu::GROUP_ATTACK_SIZE = sizeof(GROUP_ATTACK) / sizeof(GROUP_ATTACK[0]);
 
@@ -198,7 +209,8 @@ const uint8_t Menu::GROUP_LOOT_SIZE = sizeof(GROUP_LOOT) / sizeof(GROUP_LOOT[0])
 const MenuItem Menu::GROUP_COMMS[] = {
     {"@)", "PIGSYNC",    16, H_SYNC,    (uint8_t)(sizeof(H_SYNC)/sizeof(H_SYNC[0]))},
     {"))", "BACONTX", 18, H_BACONTX, (uint8_t)(sizeof(H_BACONTX)/sizeof(H_BACONTX[0]))},
-    {"FX", "TRANSFR",    3,  H_XFIL,    (uint8_t)(sizeof(H_XFIL)/sizeof(H_XFIL[0]))}
+    {"FX", "TRANSFR",    3,  H_XFIL,    (uint8_t)(sizeof(H_XFIL)/sizeof(H_XFIL[0]))},
+    {"@#", "WEBUI",     24, H_WEBUI,   (uint8_t)(sizeof(H_WEBUI)/sizeof(H_WEBUI[0]))}
 };
 const uint8_t Menu::GROUP_COMMS_SIZE = sizeof(GROUP_COMMS) / sizeof(GROUP_COMMS[0]);
 
@@ -631,11 +643,12 @@ void Menu::drawModal(DisplayCanvas& canvas) {
     uint16_t fg = getColorFG();
     uint16_t bg = getColorBG();
     
-    // Modal dimensions - Sirloin-style (scaled for 320x170 display)
-    int boxW = 293;  // Scaled from 220 (220 * 1.33)
-    int boxH = 125;  // Increased to fit 5 items without bottom bar overlap
+    // Modal dimensions - proportionally scaled from M5Cardputer (240x135)
+    // M5: boxW=220/240=91.7%, boxH=90/135=66.7%, boxY=20/135=14.8%
+    int boxW = 293;  // 320 * 0.917
+    int boxH = 113;  // 170 * 0.667
     int boxX = (DISPLAY_W - boxW) / 2;
-    int boxY = 20;   // Moved up to avoid bottom bar overlap
+    int boxY = 25;   // 170 * 0.148
     
     // Background with border
     canvas.fillRoundRect(boxX, boxY, boxW, boxH, 6, fg);
@@ -649,13 +662,13 @@ void Menu::drawModal(DisplayCanvas& canvas) {
     canvas.drawLine(boxX + 10, boxY + 20, boxX + boxW - 10, boxY + 20, bg);
     canvas.setTextDatum(top_left);
     
-    // Items
+    // Items — positioned to stay above bottom bar (safe area = MAIN_H - BOTTOM_BAR_H = 128)
     const MenuItem* items = getGroupItems(activeGroup);
     uint8_t groupSize = getGroupSize(activeGroup);
-    int itemStartY = boxY + 30;  // Scaled from 24 (24 * 1.26)
-    int itemHeight = 20;  // Scaled from 16 (16 * 1.26)
-    int itemPadX = 8;  // Scaled from 6 (6 * 1.33)
-    int textIndent = 13;  // Scaled from 10 (10 * 1.33)
+    int itemStartY = boxY + 24;
+    int itemHeight = 16;
+    int itemPadX = 6;
+    int textIndent = 10;
     int valueMargin = 14;
     
     canvas.setTextSize(2);

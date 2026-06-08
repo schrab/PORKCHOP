@@ -183,9 +183,31 @@ void BaconMode::update() {
 }
 
 void BaconMode::handleInput() {
-    if (hal_input_wasPressed(KEY_ENTER)) {
-        if (BaconMode::isRunning()) BaconMode::stop();
-        else BaconMode::start();
+    // ESC to exit
+    if (hal_input_shouldExit()) {
+        BaconMode::stop();
+        return;
+    }
+    // LEFT/RIGHT to cycle tiers
+    if (hal_input_wasPressed(KEY_LEFT)) {
+        if (currentTier > 1) {
+            currentTier--;
+        } else {
+            currentTier = 3;
+        }
+        beaconInterval = (currentTier == 1) ? BACON_TIER1_MS :
+                         (currentTier == 2) ? BACON_TIER2_MS : BACON_TIER3_MS;
+        Mood::setStatusMessage("TIER SHIFT");
+    }
+    if (hal_input_wasPressed(KEY_RIGHT)) {
+        if (currentTier < 3) {
+            currentTier++;
+        } else {
+            currentTier = 1;
+        }
+        beaconInterval = (currentTier == 1) ? BACON_TIER1_MS :
+                         (currentTier == 2) ? BACON_TIER2_MS : BACON_TIER3_MS;
+        Mood::setStatusMessage("TIER SHIFT");
     }
 }
 

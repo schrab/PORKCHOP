@@ -27,9 +27,12 @@
 #include "../modes/bacon.h"
 #include "../modes/pork_patrol.h"
 #include "../modes/swine_radar.h"
+#include "../modes/snout.h"
 #include "../core/ghost.h"
 #include "../core/wartales.h"
 #include "../web/fileserver.h"
+#include "../web/webui.h"
+#include "../web/serial_api.h"
 #include "../audio/sfx.h"
 #include "config.h"
 #include "heap_health.h"
@@ -71,6 +74,7 @@ static const char* modeToString(PorkchopMode mode) {
          return "CHARGING";
         case PorkchopMode::PORK_PATROL: return "PORKPATROL";
         case PorkchopMode::SWINE_RADAR: return "SWINERADAR";
+        case PorkchopMode::SNOUT_MODE: return "SNOUT";
         case PorkchopMode::ABOUT: return "ABOUT";
         default: return "UNKNOWN";
     }
@@ -229,8 +233,18 @@ void Porkchop::init() {
             case 11: setMode(PorkchopMode::SWINE_STATS); break;
             case 12: setMode(PorkchopMode::BOAR_BROS); break;
             case 13: setMode(PorkchopMode::WIGLE_MENU); break;
+            case 14: setMode(PorkchopMode::DNH_MODE); break;
+            case 15: setMode(PorkchopMode::UNLOCKABLES); break;
+            case 16: setMode(PorkchopMode::PIGSYNC_DEVICE_SELECT); break;
+            case 17: setMode(PorkchopMode::BOUNTY_STATUS); break;
+            case 18: setMode(PorkchopMode::BACON_MODE); break;
+            case 19: setMode(PorkchopMode::DIAGNOSTICS); break;
+            case 20: setMode(PorkchopMode::SD_FORMAT); break;
+            case 21: setMode(PorkchopMode::CHARGING); break;
             case 22: setMode(PorkchopMode::PORK_PATROL); break;
             case 23: setMode(PorkchopMode::SWINE_RADAR); break;
+            case 24: setMode(PorkchopMode::WEBUI_MODE); break;
+            case 25: setMode(PorkchopMode::SNOUT_MODE); break;
         }
     });
 
@@ -311,6 +325,10 @@ void Porkchop::update() {
     
     // Tick non-blocking audio engine
     SFX::update();
+    yield(); // Allow other tasks to run between operations
+    
+    // Poll serial for API key entry (SETTINGS mode only)
+    SerialAPI::poll();
     yield(); // Allow other tasks to run between operations
     
     // Process one queued achievement celebration (debounced)
@@ -433,6 +451,12 @@ void Porkchop::setMode(PorkchopMode mode) {
             break;
         case PorkchopMode::SWINE_RADAR:
             SwineRadarMode::stop();
+            break;
+        case PorkchopMode::SNOUT_MODE:
+            SnoutMode::stop();
+            break;
+        case PorkchopMode::WEBUI_MODE:
+            WebUI::stop();
             break;
         default:
             break;
@@ -557,6 +581,17 @@ void Porkchop::setMode(PorkchopMode mode) {
             SDLog::log("PORK", "Mode: SWINERADAR");
             Wartales::logEvent("SWINERADAR started");
             SwineRadarMode::start();
+            break;
+        case PorkchopMode::SNOUT_MODE:
+            Avatar::setState(AvatarState::HAPPY);
+            SDLog::log("PORK", "Mode: SNOUT");
+            Wartales::logEvent("SNOUT started");
+            SnoutMode::start();
+            break;
+        case PorkchopMode::WEBUI_MODE:
+            SDLog::log("PORK", "Mode: WEBUI");
+            Wartales::logEvent("WEBUI started");
+            WebUI::start();
             break;
         case PorkchopMode::ABOUT:
             Display::resetAboutState();
@@ -794,6 +829,13 @@ void Porkchop::handleInput() {
         // no-op: ESC handled globally
     }
     
+    // SNOUT mode - SELECT cycles tabs
+    if (currentMode == PorkchopMode::SNOUT_MODE) {
+        if (hal_input_wasPressed(KEY_ENTER)) {
+            SnoutMode::setTab(SnoutMode::getTab() + 1);
+        }
+    }
+    
     // FILE_TRANSFER mode - use ESC to return to idle
     if (currentMode == PorkchopMode::FILE_TRANSFER) {
         // no-op: ESC handled globally
@@ -831,6 +873,12 @@ void Porkchop::updateMode() {
             break;
         case PorkchopMode::SWINE_RADAR:
             SwineRadarMode::update();
+            break;
+        case PorkchopMode::SNOUT_MODE:
+            SnoutMode::update();
+            break;
+        case PorkchopMode::WEBUI_MODE:
+            WebUI::update();
             break;
         case PorkchopMode::CAPTURES:
             CapturesMenu::update();

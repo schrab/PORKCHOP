@@ -25,6 +25,8 @@ src/
 │   ├── xp.h/.cpp             RPG XP / leveling system
 │   ├── challenges.h/.cpp     Session challenges
 │   ├── network_recon.h/.cpp  Background WiFi scanning
+│   ├── ghost.h/.cpp          MAC randomization (Ghost Mode)
+│   ├── wartales.h/.cpp       Session diary (WarTales)
 │   ├── heap_*.h/.cpp         Heap management & diagnostics
 │   ├── sd_format.h/.cpp      SD card format utilities
 │   └── ...
@@ -40,20 +42,23 @@ src/
 │   └── hal_board.h/.cpp      Board type detection
 ├── ui/                       Display drawing
 │   ├── display.h/.cpp        3-canvas sprite system (topBar/mainCanvas/bottomBar)
-│   ├── menu.h/.cpp           Navigation menu
+│   ├── menu.h/.cpp           Navigation menu (6 groups: ATTACK/RECON/LOOT/COMMS/RANK/SYSTEM)
 │   ├── captures_menu.h/.cpp  Handshake capture viewer
 │   ├── settings_menu.h/.cpp  Configuration UI
 │   └── ... (13 UI menus)
 ├── modes/                    Operating modes
 │   ├── oink.h/.cpp           Deauth attack mode
-│   ├── donoham.h/.cpp        Passive recon mode
+│   ├── donoham.h/.cpp        Passive recon mode (DO NO HAM)
 │   ├── warhog.h/.cpp         Wardriving mode (CSV logging)
 │   ├── bacon.h/.cpp          Beacon injection mode
 │   ├── spectrum.h/.cpp       WiFi spectrum analyzer
 │   ├── piggyblues.h/.cpp     BLE advertisement spam
 │   ├── pigsync_client.h/.cpp ESP-NOW peer sync
 │   ├── charging.h/.cpp       Low-power battery display
-│   └── ... (9 modes total)
+│   ├── pork_patrol.h/.cpp    Flock Safety + Axon bodycam detection
+│   ├── swine_radar.h/.cpp    5-tab threat detection radar
+│   ├── snout.h/.cpp          Evil twin + deauth storm + hidden SSID prober
+│   └── (12 modes total)
 ├── piglet/                   Personality system
 │   ├── avatar.h/.cpp         ASCII pig avatar
 │   ├── mood.h/.cpp           Mood/phrase system
@@ -62,8 +67,10 @@ src/
 ├── gps/gps.h/.cpp            GPS parsing (TinyGPSPlus)
 └── web/                      HTTP file server + Wigle upload
     ├── fileserver.h/.cpp
+    ├── serial_api.h/.cpp    Serial API key entry (WIGLE/WPASEC)
     ├── wigle.h/.cpp
-    └── wpasec.h/.cpp
+    ├── wpasec.h/.cpp
+    └── webui.h/.cpp           Browser screen mirror + remote control
 ```
 
 ## Build
@@ -78,6 +85,73 @@ pio run -e esp32s3-mini --target clean && pio run -e esp32s3-mini
 # Upload (always use explicit port if first attempt times out)
 pio run -e esp32s3-mini --target upload --upload-port COM35
 ```
+
+## Modes
+
+### ATTACK Group
+| Mode | Menu ID | Description |
+|------|---------|-------------|
+| OINK | 1 | Deauth + handshake capture (primary attack mode) |
+| PIGGYBLUES | 8 | BLE notification spam |
+| SNOUT | 25 | Evil twin detection, deauth storm monitoring, hidden SSID prober |
+
+### RECON Group
+| Mode | Menu ID | Description |
+|------|---------|-------------|
+| DO NO HAM | 14 | Passive recon (zero TX, pure listening) |
+| WARHOG | 2 | Wardriving — GPS + CSV logging |
+| SPECTRUM | 10 | WiFi spectrum analyzer |
+| PORK PATROL | 22 | Flock Safety / Axon bodycam / tracker detection |
+| SWINE RADAR | 23 | 5-tab threat radar (cellular/Drones/Tags/Stingrays/Skimmers) |
+
+### LOOT Group
+| Mode | Menu ID | Description |
+|------|---------|-------------|
+| CAPTURES | 4 | View captured handshakes/PMKIDs |
+| TRACKS | 13 | WiGLE trail viewer |
+| BOUNTY | 17 | Active bounty tracker |
+
+### COMMS Group
+| Mode | Menu ID | Description |
+|------|---------|-------------|
+| PIGSYNC | 16 | ESP-NOW peer sync |
+| BACONTX | 18 | Beacon broadcast (hide & seek) |
+| TRANSFR | 3 | WiFi file transfer |
+| WEBUI | 24 | Browser screen mirror + remote control |
+
+### RANK Group
+| Mode | Menu ID | Description |
+|------|---------|-------------|
+| FLEXES | 9 | Session achievements |
+| BADGES | 11 | Lifetime achievements |
+| UNLOCK | 15 | Secret challenges |
+
+### SYSTEM Group
+| Mode | Menu ID | Description |
+|------|---------|-------------|
+| SETTINGS | 5 | Configuration |
+| BOARBROS | 12 | Excluded networks |
+| COREDUMP | 7 | Crash viewer |
+| DIAGDATA | 19 | System diagnostics |
+| FORMATSD | 20 | SD card format |
+| CHARGING | 21 | Low-power charging display |
+| ABOUTPIG | 6 | About / credits |
+
+## Core Services
+
+### Ghost Mode (`core/ghost.h/.cpp`)
+MAC randomization service. Generates locally-administered MACs via `esp_random()`.
+Applied at boot if `ghostEnabled` persists in config. Saves/restores real MAC.
+
+### WarTales (`core/wartales.h/.cpp`)
+Session diary with `[MM:SS]` uptime timestamps. Open file handle per session,
+flushes every 10 events or 10s. `logEvent()` records mode starts and key actions.
+`logCapture()` / `logDetection()` for OinkMode and PorkPatrol events.
+
+### NetworkRecon (`core/network_recon.h/.cpp`)
+Background WiFi scanning service. Channel hopping, stale network cleanup,
+promiscuous packet callback (one at a time). Thread-safe via mutex.
+`enterCritical()` / `exitCritical()` for vector access.
 
 ## Display Port Status
 
@@ -223,3 +297,5 @@ BOTTOM_BAR  = 14px   (bottom overlay)
 - **Commits**: One commit per meaningful phase (no batching)
 - **Branch**: `esp32-s3-mini-port` for this port — `main` is upstream M5Cardputer
 - **Style**: Arduino framework, C++17, snake_case for functions, PascalCase for classes
+- **Config**: New config fields append at end of `ConfigBlob` struct (packed, `CONFIG_VERSION=1`). Old blobs zero-initialize new fields via `memset`.
+- **SnOUT note**: `NetworkRecon::setPacketCallback()` supports only **one** callback at a time. SnOUT registers its deauth callback on start, clears on stop. Do not run SnOUT alongside modes that use packet callbacks.
