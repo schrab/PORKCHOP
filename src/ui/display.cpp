@@ -25,6 +25,8 @@
 #include "../modes/pigsync_client.h"
 #include "../modes/pigsync_protocol.h"
 #include "../modes/bacon.h"
+#include "../modes/pork_patrol.h"
+#include "../modes/swine_radar.h"
 #include "../modes/charging.h"
 #include "../gps/gps.h"
 #include "../web/fileserver.h"
@@ -410,6 +412,12 @@ void Display::update() {
         case PorkchopMode::BACON_MODE:
             BaconMode::draw(mainCanvas);
             break;
+        case PorkchopMode::PORK_PATROL:
+            PorkPatrolMode::draw(mainCanvas);
+            break;
+        case PorkchopMode::SWINE_RADAR:
+            SwineRadarMode::draw(mainCanvas);
+            break;
         case PorkchopMode::SD_FORMAT:
             SdFormatMenu::draw(mainCanvas);
             break;
@@ -650,6 +658,10 @@ void Display::drawTopBar() {
         case PorkchopMode::CHARGING:
             snprintf(modeBuf, sizeof(modeBuf), "CHARGING");
             modeColor = COLOR_SUCCESS;
+            break;
+        case PorkchopMode::SWINE_RADAR:
+            snprintf(modeBuf, sizeof(modeBuf), "SWINERADAR");
+            modeColor = COLOR_DANGER;
             break;
     }
     

@@ -25,6 +25,10 @@
 #include "../modes/spectrum.h"
 #include "../modes/pigsync_client.h"
 #include "../modes/bacon.h"
+#include "../modes/pork_patrol.h"
+#include "../modes/swine_radar.h"
+#include "../core/ghost.h"
+#include "../core/wartales.h"
 #include "../web/fileserver.h"
 #include "../audio/sfx.h"
 #include "config.h"
@@ -65,6 +69,8 @@ static const char* modeToString(PorkchopMode mode) {
         case PorkchopMode::BACON_MODE: return "BACON";
         case PorkchopMode::SD_FORMAT: return "SD_FORMAT";
          return "CHARGING";
+        case PorkchopMode::PORK_PATROL: return "PORKPATROL";
+        case PorkchopMode::SWINE_RADAR: return "SWINERADAR";
         case PorkchopMode::ABOUT: return "ABOUT";
         default: return "UNKNOWN";
     }
@@ -164,6 +170,12 @@ void Porkchop::init() {
     // Initialize background network reconnaissance service
     NetworkRecon::init();
     
+    // Initialize Ghost Mode (periodic MAC rotation)
+    GhostMode::init();
+    
+    // Initialize WarTales session diary
+    Wartales::init();
+    
     // Initialize XP system
     XP::init();
     
@@ -217,6 +229,8 @@ void Porkchop::init() {
             case 11: setMode(PorkchopMode::SWINE_STATS); break;
             case 12: setMode(PorkchopMode::BOAR_BROS); break;
             case 13: setMode(PorkchopMode::WIGLE_MENU); break;
+            case 22: setMode(PorkchopMode::PORK_PATROL); break;
+            case 23: setMode(PorkchopMode::SWINE_RADAR); break;
         }
     });
 
@@ -236,6 +250,13 @@ void Porkchop::init() {
         Display::showToast(buf, 5000);
     } else if (bootModeTarget != PorkchopMode::IDLE && bootGuardActive) {
         Display::showToast("BOOT GUARD - IDLE", 4000);
+    }
+    
+    // Boot-time actions
+    Wartales::sessionStart();
+    if (Config::wifi().ghostEnabled) {
+        GhostMode::apply();
+        Wartales::logEvent("GHOST MODE active from saved config");
     }
     
     Avatar::setState(AvatarState::HAPPY);
@@ -261,6 +282,12 @@ void Porkchop::init() {
 void Porkchop::update() {
     // Update background network reconnaissance (channel hopping, cleanup)
     NetworkRecon::update();
+    
+    // Update Ghost Mode (periodic MAC rotation)
+    GhostMode::update();
+    
+    // Update WarTales session diary (flush buffer)
+    Wartales::update();
     
     processEvents();
     yield(); // Allow other tasks to run between operations
@@ -401,6 +428,12 @@ void Porkchop::setMode(PorkchopMode mode) {
         case PorkchopMode::BACON_MODE:
             BaconMode::stop();
             break;
+        case PorkchopMode::PORK_PATROL:
+            PorkPatrolMode::stop();
+            break;
+        case PorkchopMode::SWINE_RADAR:
+            SwineRadarMode::stop();
+            break;
         default:
             break;
     }
@@ -417,17 +450,20 @@ void Porkchop::setMode(PorkchopMode mode) {
             Avatar::setState(AvatarState::HUNTING);
             Display::notify(NoticeKind::STATUS, "PROPER MAD ONE INNIT", 5000, NoticeChannel::TOP_BAR);
             SDLog::log("PORK", "Mode: OINK");
+            Wartales::logEvent("OINK MODE started");
             OinkMode::start();
             break;
         case PorkchopMode::DNH_MODE:
             Avatar::setState(AvatarState::NEUTRAL);  // Calm, passive state
             SDLog::log("PORK", "Mode: DO NO HAM");
+            Wartales::logEvent("DNH MODE started");
             DoNoHamMode::start();
             break;
         case PorkchopMode::WARHOG_MODE:
             Avatar::setState(AvatarState::EXCITED);
             Display::notify(NoticeKind::STATUS, "SNIFFING THE AIR", 5000, NoticeChannel::TOP_BAR);
             SDLog::log("PORK", "Mode: WARHOG");
+            Wartales::logEvent("WARHOG started");
             // Disable ML/Enhanced features for heap savings
             {
                 auto mlCfg = Config::ml();
@@ -440,6 +476,7 @@ void Porkchop::setMode(PorkchopMode mode) {
         case PorkchopMode::PIGGYBLUES_MODE:
             Avatar::setState(AvatarState::ANGRY);
             SDLog::log("PORK", "Mode: PIGGYBLUES");
+            Wartales::logEvent("PIGGYBLUES started");
             PiggyBluesMode::start();
             // If user aborted warning dialog, return to menu
             if (!PiggyBluesMode::isRunning()) {
@@ -450,6 +487,7 @@ void Porkchop::setMode(PorkchopMode mode) {
         case PorkchopMode::SPECTRUM_MODE:
             Avatar::setState(AvatarState::HUNTING);
             SDLog::log("PORK", "Mode: SPECTRUM");
+            Wartales::logEvent("SPECTRUM started");
             SpectrumMode::start();
             break;
         case PorkchopMode::MENU:
@@ -504,8 +542,21 @@ void Porkchop::setMode(PorkchopMode mode) {
         case PorkchopMode::BACON_MODE:
             Avatar::setState(AvatarState::HAPPY);
             SDLog::log("PORK", "Mode: BACON");
+            Wartales::logEvent("BACON started");
             BaconMode::init();
             BaconMode::start();
+            break;
+        case PorkchopMode::PORK_PATROL:
+            Avatar::setState(AvatarState::HUNTING);
+            SDLog::log("PORK", "Mode: PORKPATROL");
+            Wartales::logEvent("PORKPATROL started");
+            PorkPatrolMode::start();
+            break;
+        case PorkchopMode::SWINE_RADAR:
+            Avatar::setState(AvatarState::HUNTING);
+            SDLog::log("PORK", "Mode: SWINERADAR");
+            Wartales::logEvent("SWINERADAR started");
+            SwineRadarMode::start();
             break;
         case PorkchopMode::ABOUT:
             Display::resetAboutState();
@@ -774,6 +825,12 @@ void Porkchop::updateMode() {
             if (!BaconMode::isRunning()) {
                 setMode(PorkchopMode::MENU);
             }
+            break;
+        case PorkchopMode::PORK_PATROL:
+            PorkPatrolMode::update();
+            break;
+        case PorkchopMode::SWINE_RADAR:
+            SwineRadarMode::update();
             break;
         case PorkchopMode::CAPTURES:
             CapturesMenu::update();

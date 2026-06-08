@@ -65,6 +65,8 @@ struct __attribute__((packed)) ConfigBlob {
     uint16_t lockTime;
     uint8_t  enableDeauth;
     uint8_t  randomizeMAC;
+    uint8_t  ghostEnabled;
+    uint16_t ghostInterval;
     int8_t   spectrumMinRssi;
     int8_t   attackMinRssi;
     uint8_t  spectrumTopN;
@@ -115,6 +117,8 @@ static void populateBlob(ConfigBlob& b, const GPSConfig& gps, const WiFiConfig& 
     b.lockTime             = wifi.lockTime;
     b.enableDeauth         = wifi.enableDeauth ? 1 : 0;
     b.randomizeMAC         = wifi.randomizeMAC ? 1 : 0;
+    b.ghostEnabled         = wifi.ghostEnabled ? 1 : 0;
+    b.ghostInterval        = wifi.ghostInterval;
     b.spectrumMinRssi      = wifi.spectrumMinRssi;
     b.attackMinRssi        = wifi.attackMinRssi;
     b.spectrumTopN         = wifi.spectrumTopN;
@@ -195,6 +199,8 @@ static void extractBlob(const ConfigBlob& b, GPSConfig& gps, WiFiConfig& wifi,
     wifi.lockTime             = b.lockTime;
     wifi.enableDeauth         = b.enableDeauth != 0;
     wifi.randomizeMAC         = b.randomizeMAC != 0;
+    wifi.ghostEnabled         = b.ghostEnabled != 0;
+    wifi.ghostInterval        = b.ghostInterval;
     wifi.spectrumMinRssi      = b.spectrumMinRssi;
     wifi.attackMinRssi        = b.attackMinRssi;
     wifi.spectrumTopN         = b.spectrumTopN;
@@ -551,6 +557,8 @@ bool Config::applyJson(const JsonDocument& doc) {
         wifiConfig.lockTime = doc["wifi"]["lockTime"] | 12000;
         wifiConfig.enableDeauth = doc["wifi"]["enableDeauth"] | true;
         wifiConfig.randomizeMAC = doc["wifi"]["randomizeMAC"] | true;
+        wifiConfig.ghostEnabled = doc["wifi"]["ghostEnabled"] | false;
+        wifiConfig.ghostInterval = doc["wifi"]["ghostInterval"] | 5;
         int attackRssi = doc["wifi"]["attackMinRssi"] | -70;
         wifiConfig.attackMinRssi = clampI8(attackRssi, -90, -50);
         int minRssi = doc["wifi"]["spectrumMinRssi"] | -95;

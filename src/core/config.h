@@ -89,6 +89,8 @@ struct WiFiConfig {
     uint16_t lockTime = 12000;          // Time to discover clients before attacking (12s optimal, buffed 13s)
     bool enableDeauth = true;
     bool randomizeMAC = true;           // Randomize MAC on mode start for stealth
+    bool ghostEnabled = false;          // Ghost Mode: periodic MAC rotation
+    uint16_t ghostInterval = 5;         // Ghost Mode: re-randomization interval (minutes, 1-60)
     int8_t spectrumMinRssi = -95;       // Spectrum: minimum RSSI to render (dBm)
     int8_t attackMinRssi = -70;          // OINK/DNH: ignore networks weaker than this (dBm)
     uint8_t spectrumTopN = 0;           // Spectrum: cap visible APs (0 = no cap)
