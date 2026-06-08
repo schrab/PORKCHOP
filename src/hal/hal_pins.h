@@ -40,6 +40,7 @@
 #define GPS_BAUD_DEFAULT      9600
 
 // --- NeoPixel ---
+#undef PIN_NEOPIXEL          // Override ESP32-S3 variant default (GPIO 48)
 #define PIN_NEOPIXEL          33
 #define NEOPIXEL_POWER        50   // default brightness 0-255
 
@@ -64,6 +65,4 @@
 #define JOYSTICK_LEFT_PIN     PIN_JOY_LEFT
 #define JOYSTICK_RIGHT_PIN    PIN_JOY_RIGHT
 #define JOYSTICK_CENTER_PIN   PIN_JOY_SELECT
-#define BTN_A_PIN             33  // TODO: verify
-#define BTN_B_PIN             34  // TODO: verify
 #define SPEAKER_PIN           PIN_PIEZO

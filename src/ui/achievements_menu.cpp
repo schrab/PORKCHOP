@@ -131,7 +131,7 @@ void AchievementsMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = hal_input_keysState();
+
     
     // If showing detail, any key closes it
     if (showingDetail) {
@@ -167,7 +167,7 @@ void AchievementsMenu::handleInput() {
     }
     
     // Backspace - go back
-    if (hal_input_wasPressed(KEY_BACKSPACE)) {
+    if (hal_input_wasPressed(KEY_LEFT)) {
         hide();
     }
 }

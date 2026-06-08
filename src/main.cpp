@@ -169,13 +169,7 @@ void setup() {
 
     Serial.println("=== PORKCHOP READY ===");
     Serial.printf("Piglet: %s\n", Config::personality().name);
-    
-    // #region agent log
-    // [DEBUG] H1: Log heap after init to check static pool impact (~13KB expected reduction)
-    Serial.printf("[DBG-HEAP] After init: free=%u largest=%u\n", 
-                  (unsigned)ESP.getFreeHeap(), 
-                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-    // #endregion
+    Serial.printf("[BOOT] After init: free=%u\n", (unsigned)ESP.getFreeHeap());
     
     // Start background network reconnaissance service
     // This stabilizes heap by running WiFi promiscuous mode early
@@ -190,18 +184,6 @@ void setup() {
 
 void loop() {
     hal_input_update();
-    
-    // #region agent log
-    // [DEBUG] H1/H3: Periodic heap monitoring (every 5 seconds)
-    static uint32_t lastHeapLog = 0;
-    if (millis() - lastHeapLog > 5000) {
-        lastHeapLog = millis();
-        Serial.printf("[DBG-HEAP-LOOP] free=%u largest=%u minFree=%u\n",
-                      (unsigned)ESP.getFreeHeap(),
-                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
-                      (unsigned)ESP.getMinFreeHeap());
-    }
-    // #endregion
 
     // Persist session watermarks to SD (rate-limited to 60s internally)
     HeapHealth::persistWatermarks();

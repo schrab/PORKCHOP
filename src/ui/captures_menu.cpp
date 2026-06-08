@@ -38,7 +38,7 @@ uint8_t CapturesMenu::hintIndex = 0;
 const char* const CapturesMenu::HINTS[] = {
     "FEED YO HASHCAT.",
     "COLLECTED PAIN. COMPRESSED.",
-    "ENT:DET  S:SYNC  D:NUKE",
+    "ENT:DET  RGT:SYNC  LFT:BACK",
     "MALLOC SAID NAH.",
     "YOUR LOOT. YOUR PROBLEM."
 };
@@ -441,20 +441,19 @@ void CapturesMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = hal_input_keysState();
 
     // Handle sync modal
     if (syncModalActive) {
         if (syncState == SyncState::ERROR || syncState == SyncState::COMPLETE) {
             // Enter closes the modal after completion/error
-            if (hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_BACKSPACE)) {
+            if (hal_input_wasPressed(KEY_ENTER)) {
                 syncModalActive = false;
                 syncState = SyncState::IDLE;
                 scanCaptures();  // Rescan captures after sync
             }
         } else {
             // ESC cancels during sync
-            if (hal_input_wasPressed(KEY_BACKSPACE)) {
+            if (hal_input_wasPressed(KEY_LEFT)) {
                 cancelSync();
             }
         }
@@ -463,13 +462,13 @@ void CapturesMenu::handleInput() {
 
     // Handle nuke confirmation modal
     if (nukeConfirmActive) {
-        if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
+        if (hal_input_wasPressed(KEY_ENTER)) {
             nukeLoot();
             nukeConfirmActive = false;
             Display::clearBottomOverlay();
             scanCaptures();  // Refresh list (should be empty now)
-        } else if (hal_input_wasPressed('n') || hal_input_wasPressed('N') ||
-                   hal_input_wasPressed(KEY_BACKSPACE) || hal_input_wasPressed(KEY_ENTER)) {
+        } else if (hal_input_wasPressed(KEY_LEFT) ||
+                   hal_input_wasPressed(KEY_ESC)) {
             nukeConfirmActive = false;  // Cancel
             Display::clearBottomOverlay();
         }
@@ -478,7 +477,7 @@ void CapturesMenu::handleInput() {
     
     // Handle detail view modal - Enter/backspace closes
     if (detailViewActive) {
-        if (hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_BACKSPACE)) {
+        if (hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_LEFT)) {
             detailViewActive = false;
             return;
         }
@@ -513,21 +512,13 @@ void CapturesMenu::handleInput() {
         }
     }
     
-    // S key triggers WPA-SEC sync
-    if (hal_input_wasPressed('s') || hal_input_wasPressed('S')) {
+    // RIGHT triggers WPA-SEC sync
+    if (hal_input_wasPressed(KEY_RIGHT)) {
         startSync();
     }
     
-    // Nuke all loot with D key
-    if (hal_input_wasPressed('d') || hal_input_wasPressed('D')) {
-        if (!captures.empty()) {
-            nukeConfirmActive = true;
-            Display::setBottomOverlay("PERMANENT | NO UNDO");
-        }
-    }
-    
-    // Backspace - go back
-    if (hal_input_wasPressed(KEY_BACKSPACE)) {
+    // LEFT - go back
+    if (hal_input_wasPressed(KEY_LEFT)) {
         hide();
     }
 }
@@ -725,7 +716,7 @@ void CapturesMenu::drawNukeConfirm(DisplayCanvas& canvas) {
     snprintf(cmd, sizeof(cmd), "rm -rf %s/*", SDLayout::handshakesDir());
     canvas.drawString(cmd, centerX, boxY + 22);
     canvas.drawString("THIS KILLS THE LOOT.", centerX, boxY + 36);
-    canvas.drawString("[Y] DO IT  [N] ABORT", centerX, boxY + 54);
+    canvas.drawString("[ENTER] DO IT  [LEFT] ABORT", centerX, boxY + 54);
 }
 
 void CapturesMenu::nukeLoot() {
@@ -978,13 +969,13 @@ void CapturesMenu::drawDetailView(DisplayCanvas& canvas) {
         // Fallback if no .22000 parseable
         if (cap.status == CaptureStatus::UPLOADED) {
             canvas.drawString("UPLOADED - PENDING CRACK", centerX, boxY + 34);
-            canvas.drawString("PRESS [S] TO CHECK", centerX, boxY + 50);
+            canvas.drawString("PRESS [RIGHT] TO CHECK", centerX, boxY + 50);
         } else if (cap.isPMKID) {
             canvas.drawString("PMKID - LOCAL CRACK ONLY", centerX, boxY + 34);
             canvas.drawString("hashcat -m 22000", centerX, boxY + 50);
         } else {
             canvas.drawString("NOT UPLOADED YET", centerX, boxY + 34);
-            canvas.drawString("PRESS [S] TO SYNC", centerX, boxY + 50);
+            canvas.drawString("PRESS [RIGHT] TO SYNC", centerX, boxY + 50);
         }
     }
 }

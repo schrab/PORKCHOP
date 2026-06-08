@@ -223,8 +223,7 @@ void ChargingMode::handleInput() {
     keyWasPressed = true;
     
     // Any key exits
-    if (hal_input_wasPressed(KEY_BACKSPACE) ||
-        hal_input_wasPressed(KEY_ENTER) ||
+    if (hal_input_wasPressed(KEY_ENTER) ||
         hal_input_isPressed()) {
         exitRequested = true;
     }

@@ -121,7 +121,7 @@ void UnlockablesMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = hal_input_keysState();
+
     
     // Navigation with UP and DOWN
     if (hal_input_wasPressed(KEY_UP)) {
@@ -158,14 +158,14 @@ void UnlockablesMenu::handleInput() {
     }
     
     // Backspace - go back
-    if (hal_input_wasPressed(KEY_BACKSPACE)) {
+    if (hal_input_wasPressed(KEY_LEFT)) {
         exitRequested = true;
         hide();
     }
 }
 
 void UnlockablesMenu::handleTextInput() {
-    auto keys = hal_input_keysState();
+
     bool anyPressed = hal_input_isPressed();
     
     if (!anyPressed) {

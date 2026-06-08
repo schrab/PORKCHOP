@@ -183,27 +183,9 @@ void BaconMode::update() {
 }
 
 void BaconMode::handleInput() {
-    InputEvent state = hal_input_keysState();
-    if (state.pressed) {
-        switch (state.key) {
-            case KEY_UP:
-                // Increase tier
-                break;
-            case KEY_DOWN:
-                // Decrease tier
-                break;
-            case KEY_LEFT:
-                // Decrease interval
-                break;
-            case KEY_RIGHT:
-                // Increase interval
-                break;
-            case KEY_ENTER:
-                // Toggle bacon mode
-                if (BaconMode::isRunning()) BaconMode::stop();
-                else BaconMode::start();
-                break;
-        }
+    if (hal_input_wasPressed(KEY_ENTER)) {
+        if (BaconMode::isRunning()) BaconMode::stop();
+        else BaconMode::start();
     }
 }
 

@@ -339,7 +339,7 @@ void CrashViewer::drawNukeConfirm(DisplayCanvas& canvas) {
     snprintf(cmd, sizeof(cmd), "rm -rf %s/*", SDLayout::crashDir());
     canvas.drawString(cmd, centerX, boxY + 22);
     canvas.drawString("THIS KILLS THE DUMPS.", centerX, boxY + 36);
-    canvas.drawString("[Y] DO IT  [N] ABORT", centerX, boxY + 54);
+    canvas.drawString("[ENTER] DO IT  [LEFT] ABORT", centerX, boxY + 54);
 }
 
 void CrashViewer::update() {
@@ -356,15 +356,15 @@ void CrashViewer::update() {
     // Keyboard_Class::KeysState replaced
 
     if (nukeConfirmActive) {
-        if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
+        if (hal_input_wasPressed(KEY_ENTER)) {
             nukeCrashFiles();
             nukeConfirmActive = false;
             Display::clearBottomOverlay();
             fileViewActive = false;
             fileLines.clear();
             scanCrashFiles();
-        } else if (hal_input_wasPressed('n') || hal_input_wasPressed('N') ||
-                   hal_input_wasPressed(KEY_BACKSPACE) || hal_input_wasPressed(KEY_ENTER)) {
+        } else if (hal_input_wasPressed(KEY_LEFT) ||
+                   hal_input_wasPressed(KEY_ESC)) {
             nukeConfirmActive = false;
             Display::clearBottomOverlay();
         }
@@ -380,7 +380,7 @@ void CrashViewer::update() {
             if (totalLines > VISIBLE_LINES && fileScroll < totalLines - VISIBLE_LINES) {
                 fileScroll++;
             }
-        } else if (hal_input_wasPressed(KEY_BACKSPACE) || hal_input_wasPressed(KEY_ENTER)) {
+        } else if (hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_ENTER)) {
             fileViewActive = false;
             fileLines.clear();
             totalLines = 0;
@@ -403,12 +403,12 @@ void CrashViewer::update() {
                 listScroll = selectedIndex - VISIBLE_LINES + 1;
             }
         }
-    } else if (hal_input_wasPressed('d') || hal_input_wasPressed('D')) {
+    } else if (hal_input_wasPressed(KEY_RIGHT)) {
         if (!crashFiles.empty()) {
             nukeConfirmActive = true;
             Display::setBottomOverlay("PERMANENT | NO UNDO");
         }
-    } else if (hal_input_wasPressed(KEY_BACKSPACE)) {
+    } else if (hal_input_wasPressed(KEY_LEFT)) {
         hide();
     } else if (hal_input_wasPressed(KEY_ENTER)) {
         if (!crashFiles.empty() && selectedIndex < crashFiles.size()) {

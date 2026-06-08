@@ -321,18 +321,6 @@ static bool boredStateReset = true;  // Flag to reset on start()
 static char lastPwnedSSID[33] = "";
 
 void OinkMode::init() {
-    // #region agent log
-    // [DEBUG] H1: Log static pool size to confirm ~13KB allocation
-    Serial.printf("[DBG-OINK] pendingHsPool size: %u bytes (%u slots x %u each)\n",
-                  (unsigned)(sizeof(pendingHsPool)), 
-                  (unsigned)PENDING_HS_SLOTS,
-                  (unsigned)sizeof(PendingHandshakeFrame));
-    Serial.printf("[DBG-OINK] EAPOLFrame size: %u bytes\n", (unsigned)sizeof(EAPOLFrame));
-    Serial.printf("[DBG-OINK] Heap before init: free=%u largest=%u\n",
-                  (unsigned)ESP.getFreeHeap(),
-                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
-    // #endregion
-    
     // Reset busy flag in case of abnormal stop
     oinkBusy = false;
     
@@ -409,8 +397,7 @@ void OinkMode::init() {
 void OinkMode::start() {
     if (running) return;
     
-    Serial.printf("[OINK] Starting... free=%u largest=%u\n",
-                  ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    Serial.printf("[OINK] Starting... free=%u\n", ESP.getFreeHeap());
     
     // Ensure NetworkRecon is running (handles WiFi promiscuous mode)
     if (!NetworkRecon::isRunning()) {
@@ -515,27 +502,6 @@ void OinkMode::update() {
     if (!running) return;
     
     uint32_t now = millis();
-    
-    // #region agent log - HEAP INSTRUMENTATION
-    // Track heap every 500ms to catch the exact moment it improves
-    static uint32_t lastHeapLog = 0;
-    static size_t lastLargest = 0;
-    if (now - lastHeapLog > 500) {
-        size_t currentLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-        size_t currentFree = ESP.getFreeHeap();
-        
-        // Log if this is first call or if heap changed significantly (>5KB)
-        if (lastHeapLog == 0 || abs((int)currentLargest - (int)lastLargest) > 5000) {
-            Serial.printf("[OINK-UPDATE] t=%ums free=%u largest=%u delta=%+d pkts=%u nets=%u\n",
-                          now - stateStartTime,
-                          currentFree, currentLargest,
-                          (int)currentLargest - (int)lastLargest,
-                          packetCount.load(), networks().size());
-        }
-        lastLargest = currentLargest;
-        lastHeapLog = now;
-    }
-    // #endregion
     
     // Guard access to networks/handshakes vectors from promiscuous callback
     // NOTE: oinkBusy is secondary protection, spinlock is primary
@@ -1114,14 +1080,24 @@ void OinkMode::update() {
                             Serial.printf("[DBG-H6] DEAUTH clients=%d burst=%d total=%lu\n", clientCountLocal, burstCount, deauthCount);
                         }
                         // #endregion
-                        for (uint8_t c = 0; c < clientCountLocal; c++) {
+                        // CRITICAL FIX: Limit clients per cycle to prevent WDT reset
+                        // With 20 clients × burst delays, blocking time could exceed 1.5s
+                        // Process max 4 clients per cycle, rotate through on next cycles
+                        static uint8_t clientStartIdx = 0;
+                        uint8_t clientsThisCycle = (clientCountLocal > 4) ? 4 : clientCountLocal;
+                        for (uint8_t i = 0; i < clientsThisCycle; i++) {
+                            uint8_t c = (clientStartIdx + i) % clientCountLocal;
                             // Send buff-modified deauths
                             sendDeauthBurst(targetBssidLocal, clientMacs[c], burstCount);
                             deauthCount += burstCount;
                             
                             // Also disassoc targeted client
                             sendDisassocFrame(targetBssidLocal, clientMacs[c], 8);
+                            
+                            // Yield to watchdog after each client to prevent WDT reset
+                            yield();
                         }
+                        clientStartIdx = (clientStartIdx + clientsThisCycle) % clientCountLocal;
                     }
                     
                     // PRIORITY 2: Broadcast deauth (less effective, but catches unknown clients)
@@ -2079,8 +2055,7 @@ int OinkMode::findOrCreateHandshakeSafe(const uint8_t* bssid, const uint8_t* sta
         return -1;
     }
     if (handshakes.size() >= handshakes.capacity()) {
-        size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-        if (largest < HANDSHAKE_ALLOC_MIN_BLOCK) {
+        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForHandshakeAdd) {
             NetworkRecon::exitCritical();
             return -1;
         }
@@ -2102,13 +2077,10 @@ int OinkMode::findOrCreateHandshakeSafe(const uint8_t* bssid, const uint8_t* sta
     if (beaconCaptured && beaconFrame && beaconFrameLen > 0 && beaconFrameLen <= MAX_BEACON_SIZE) {
         const uint8_t* beaconBssid = beaconFrame + 16;
         if (memcmp(beaconBssid, bssid, 6) == 0) {
-            size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-            if (largest >= beaconFrameLen) {
-                hs.beaconData = (uint8_t*)malloc(beaconFrameLen);
-                if (hs.beaconData) {
-                    memcpy(hs.beaconData, beaconFrame, beaconFrameLen);
-                    hs.beaconLen = beaconFrameLen;
-                }
+            hs.beaconData = (uint8_t*)malloc(beaconFrameLen);
+            if (hs.beaconData) {
+                memcpy(hs.beaconData, beaconFrame, beaconFrameLen);
+                hs.beaconLen = beaconFrameLen;
             }
         }
     }
@@ -2155,8 +2127,7 @@ int OinkMode::findOrCreatePMKIDSafe(const uint8_t* bssid, const uint8_t* station
         return -1;
     }
     if (pmkids.size() >= pmkids.capacity()) {
-        size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-        if (largest < PMKID_ALLOC_MIN_BLOCK) {
+        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForOinkNetworkAdd) {
             NetworkRecon::exitCritical();
             return -1;
         }
@@ -2748,9 +2719,20 @@ void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uin
             esp_wifi_80211_tx(WIFI_IF_STA, reversePacket, sizeof(reversePacket), false);
             
             // Jitter between iterations (buff-modified)
-            if (i < count - 1) {
-                delay(random(1, jitterMax + 1));
+            // CRITICAL FIX: Use yield() on longer jitters to prevent WDT reset
+            uint32_t jitterMs = random(1, jitterMax + 1);
+            if (jitterMs > 3) {
+                delay(2);
+                yield();  // Feed watchdog on longer delays
+                delay(jitterMs - 2);
+            } else {
+                delay(jitterMs);
             }
+        }
+        
+        // Yield every 4 frames to feed watchdog during large bursts
+        if ((i & 0x03) == 0x03) {
+            yield();
         }
     }
 }

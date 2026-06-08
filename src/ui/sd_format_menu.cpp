@@ -167,18 +167,18 @@ void SdFormatMenu::handleInput() {
 
     bool up = hal_input_wasPressed(KEY_UP);
     bool down = hal_input_wasPressed(KEY_DOWN);
-    bool back = hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_BACKSPACE);
+    bool back = hal_input_wasPressed(KEY_LEFT);
 
     // ---- CONFIRM_ENTRY STATE ----
     // Entry warning dialog: Y to enter, N to bail
     if (state == State::CONFIRM_ENTRY) {
-        if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
+        if (hal_input_wasPressed(KEY_ENTER)) {
             // User confirmed entry - stop everything and proceed
             stopEverything();
             state = State::SELECT;
             return;
         }
-        if (hal_input_wasPressed('n') || hal_input_wasPressed('N') || back) {
+        if (hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_ESC) || back) {
             // User cancelled - return to menu (nothing stopped)
             active = false;
             barsHidden = false;
@@ -190,14 +190,14 @@ void SdFormatMenu::handleInput() {
 
     // ---- CONFIRM STATE (format confirmation) ----
     if (state == State::CONFIRM) {
-        if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
+        if (hal_input_wasPressed(KEY_ENTER)) {
             // SAFETY: Require external power to prevent data corruption from power loss
             if (!hal_battery_isCharging()) {
                 Display::notify(NoticeKind::WARNING, "PLUG IN POWER!", 2000);
                 return;
             }
             state = State::WORKING;
-        } else if (hal_input_wasPressed('n') || hal_input_wasPressed('N') || back) {
+        } else if (hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_ESC) || back) {
             state = State::SELECT;
         }
         return;
@@ -329,7 +329,7 @@ void SdFormatMenu::drawConfirmEntry(DisplayCanvas& canvas) {
     y += 12;
     
     // Controls - must fit within MAIN_H (107px), y should be <= 95
-    canvas.drawString("[Y] ENTER  [N] CANCEL", centerX, y);
+    canvas.drawString("[ENTER] GO  [LEFT] CANCEL", centerX, y);
 }
 
 void SdFormatMenu::drawSelect(DisplayCanvas& canvas) {
@@ -496,5 +496,5 @@ void SdFormatMenu::drawConfirm(DisplayCanvas& canvas) {
 
     // Controls
     canvas.setTextSize(1);
-    canvas.drawString("[Y] DO IT    [N] ABORT", centerX, boxY + 70);
+    canvas.drawString("[ENTER] DO IT    [LEFT] ABORT", centerX, boxY + 70);
 }

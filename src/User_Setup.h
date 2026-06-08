@@ -8,11 +8,13 @@
 
 #define USE_HSPI_PORT
 #define TFT_MOSI  14
+#define TFT_MISO  -1    // Display is write-only; -1 prevents HSPI default pin error on ESP32-S3
 #define TFT_SCLK  15
 #define TFT_CS    11
 #define TFT_DC    12
 #define TFT_RST   13
 #define TFT_BL    10
+#define TOUCH_CS  -1    // No touch panel; suppresses TFT_eSPI warning
 
 // 40MHz SPI — matches WiFiTool
 #define SPI_FREQUENCY  40000000

@@ -2671,7 +2671,7 @@ void Mood::draw(DisplayCanvas& canvas) {
     BubbleMode mode;
     
     bool atLeftEdge = (pigX < 35);
-    bool atRightEdge = (pigX > 90);  // 240 - 108 (pig width) - margin
+    bool atRightEdge = (pigX > 125);  // 320 - 108 (pig width) - margin
     
     // Arrow positioning constants
     const int ARROW_LENGTH = 8;
@@ -2705,7 +2705,7 @@ void Mood::draw(DisplayCanvas& canvas) {
     
     // Clamp bubble to screen edges (prevent overflow)
     if (bubbleX < 2) bubbleX = 2;
-    if (bubbleX + bubbleW > 238) bubbleX = 238 - bubbleW;
+    if (bubbleX + bubbleW > 318) bubbleX = 318 - bubbleW;
     
     // === DRAW BUBBLE ===
     // For CENTER_TOP mode with negative Y, draw to both topBar and mainCanvas

@@ -187,7 +187,7 @@ void Avatar::init() {
     // This ensures bubble can float beside pig from the start
     bool startRight = random(0, 2) == 0;
     onRightSide = startRight;
-    currentX = startRight ? 108 : 20;  // Start at proper edge position
+    currentX = startRight ? 144 : 27;  // Start at proper edge position (320px scaled)
     facingRight = !startRight;  // Face toward center (more interesting)
     lastFlipTime = millis();
     flipInterval = random(25000, 50000);  // First walk: 25-50s
@@ -287,7 +287,7 @@ void Avatar::draw(DisplayCanvas& canvas) {
             transitioning = false;
             currentX = transitionToX;
             facingRight = transitionToFacingRight;
-            onRightSide = (currentX > 60);  // Track which side we're on
+            onRightSide = (currentX > 85);  // Track which side we're on (midpoint of 27-144)
             
             // Start grass now if it was pending
             if (pendingGrassStart) {
@@ -401,8 +401,8 @@ void Avatar::draw(DisplayCanvas& canvas) {
             int targetX;
             
             // Define edge zones (bubble floats beside pig, not above)
-            const int LEFT_EDGE = 20;   // Left rest position
-            const int RIGHT_EDGE = 108; // Right rest position
+            const int LEFT_EDGE = 27;   // Left rest position (scaled for 320px)
+            const int RIGHT_EDGE = 144; // Right rest position (scaled for 320px)
             
             if (walkRoll < 50) {
                 // 50%: Walk to opposite edge (primary behavior)
@@ -413,9 +413,9 @@ void Avatar::draw(DisplayCanvas& canvas) {
             } else if (walkRoll < 95) {
                 // 10%: Short shuffle within current edge zone
                 if (onRightSide) {
-                    targetX = random(85, 108);  // Stay in right zone
+                    targetX = random(115, 144);  // Stay in right zone
                 } else {
-                    targetX = random(20, 45);   // Stay in left zone
+                    targetX = random(27, 60);   // Stay in left zone
                 }
             } else {
                 // 5%: Stay put, just turn around (fake walk)
@@ -634,15 +634,15 @@ void Avatar::setGrassMoving(bool moving, bool directionRight) {
         grassDirection = directionRight;
         
         // Calculate correct treadmill position based on direction
-        // Grass RIGHT: pig at X=108 (tail margin on right)
-        // Grass LEFT: pig at X=20 (tail margin on left: 20-18=2)
-        int targetX = directionRight ? 108 : 20;
+        // Grass RIGHT: pig at X=144 (tail margin on right)
+        // Grass LEFT: pig at X=27 (tail margin on left)
+        int targetX = directionRight ? 144 : 27;
         
         if (transitioning) {
             // Check if this is a coast-back transition (pig returning to rest at X=20)
             // Don't interrupt coast-back with grass start - let the pig chill first
             // This prevents the "macarena" bug where rapid state changes cause endless back-and-forth
-            if (transitionToX == 20) {
+            if (transitionToX == 27) {
                 return;  // Coast-back in progress - pig needs a break
             }
             // Already sliding to grass position - queue grass
@@ -673,8 +673,8 @@ void Avatar::setGrassMoving(bool moving, bool directionRight) {
         // Reset walk timer to prevent immediate post-coast walk trigger
         lastFlipTime = millis();
         
-        // Coast back to left resting position (X=20 for tail margin)
-        startWindupSlide(20, false);  // X=20, face left when done
+        // Coast back to left resting position (X=27 for tail margin)
+        startWindupSlide(27, false);  // X=27, face left when done
     }
 }
 
@@ -850,7 +850,7 @@ void Avatar::fillPigBoundingBox(DisplayCanvas& canvas) {
 
     // Clamp to screen
     if (boxX < 0) { boxW += boxX; boxX = 0; }
-    if (boxX + boxW > 240) boxW = 240 - boxX;
+    if (boxX + boxW > 320) boxW = 320 - boxX;
 
     canvas.fillRect(boxX, boxY, boxW, boxH, getBGColor());
 }

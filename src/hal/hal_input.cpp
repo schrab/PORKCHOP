@@ -24,6 +24,10 @@ static uint32_t leftPressStart = 0;
 static bool leftLongFired = false;
 static const uint32_t LONG_PRESS_MS = 800;
 
+// Long-press ENTER → action synthesis
+static uint32_t enterPressStart = 0;
+static bool enterLongFired = false;
+
 // Change flag
 static bool stateChanged = false;
 
@@ -89,6 +93,21 @@ void hal_input_update() {
     } else {
         leftPressStart = 0;
         leftLongFired = false;
+    }
+
+    // Long-press ENTER (index 4)
+    bool enterHeld = stableState[4];
+    if (enterHeld) {
+        if (enterPressStart == 0) {
+            enterPressStart = now;
+            enterLongFired = false;
+        } else if (!enterLongFired && (now - enterPressStart) >= LONG_PRESS_MS) {
+            enterLongFired = true;
+            stateChanged = true;
+        }
+    } else {
+        enterPressStart = 0;
+        enterLongFired = false;
     }
 }
 
@@ -156,8 +175,20 @@ bool hal_input_isKeyPressed(char key) {
     }
 }
 bool hal_input_shouldExit() {
-    return hal_input_wasPressed(KEY_ESC) || hal_input_wasPressed(KEY_BACKSPACE);
+    return hal_input_wasPressed(KEY_ESC);
 }
 bool hal_input_isPressed() {
     return hal_input_anyHeld();
+}
+
+bool hal_input_isLongEnter() {
+    if (enterLongFired) {
+        enterLongFired = false;
+        return true;
+    }
+    return false;
+}
+
+void hal_input_consumeLongEsc() {
+    leftLongFired = false;
 }

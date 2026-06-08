@@ -180,11 +180,11 @@ bool Display::snapping = false;
 // NOTE: .ext_ram.bss is the correct section name — it's what sections.ld routes to
 // PSRAM. The custom.ld/.psram_bss approach doesn't work because > ext_ram is not
 // defined in the framework MEMORY block available to secondary -T scripts.
-char Display::toastMessage[160]           __attribute__((section(".ext_ram.bss"))) = {0};
-char Display::topBarMessage[96]           __attribute__((section(".ext_ram.bss"))) = {0};
-char Display::bottomOverlay[96]           __attribute__((section(".ext_ram.bss"))) = {0};
-char Display::pendingTopBarMessageBuf[96] __attribute__((section(".ext_ram.bss"))) = {0};
-char Display::uploadStatus[64]            __attribute__((section(".ext_ram.bss"))) = {0};
+char Display::toastMessage[160]           __attribute__((section(".ext_ram.bss")));
+char Display::topBarMessage[96]           __attribute__((section(".ext_ram.bss")));
+char Display::bottomOverlay[96]           __attribute__((section(".ext_ram.bss")));
+char Display::pendingTopBarMessageBuf[96] __attribute__((section(".ext_ram.bss")));
+char Display::uploadStatus[64]            __attribute__((section(".ext_ram.bss")));
 
 uint32_t Display::toastStartTime = 0;
 uint32_t Display::toastDurationMs = 2000;
@@ -202,7 +202,7 @@ uint32_t Display::uploadStartTime = 0;
 
 
 // PWNED banner state, persists until reboot
-static char lootSSID[20] __attribute__((section(".psram_bss"))) = {0};
+static char lootSSID[20] __attribute__((section(".psram_bss")));
 
 void Display::showLoot(const String& ssid) {
     if (ssid.length() == 0) {
@@ -353,7 +353,7 @@ void Display::update() {
             break;
             
         case PorkchopMode::MENU:
-            // Draw menu
+            // Update + draw menu (update also called in porkchop.cpp for input timing)
             Menu::update();
             Menu::draw(mainCanvas);
             break;
@@ -771,7 +771,7 @@ void Display::drawTopBarMessageTwoLineDirect() {
     g_Display.setTextColor(bg, fg);
     g_Display.setTextSize(1);
     g_Display.setCursor(2, 3);
-    g_Display.textfont = NULL;
+    g_Display.textfont = 0;  // Default font (not a pointer)
     g_Display.print(line1Buf);
     g_Display.setCursor(2, TOP_BAR_H + 3);
     g_Display.print(line2Buf);
@@ -848,9 +848,9 @@ void Display::drawBottomBar() {
         statsStr = statsBuf;
     } else if (mode == PorkchopMode::DIAGNOSTICS) {
         // DIAGNOSTICS: show controls
-        statsStr = "[ENT]SAVE [R]WIFI [H]HEAP [G]GC";
+        statsStr = "[ENT]SNAP [UP]WIFI [RGT]HEAP [DWN]GC";
     } else if (mode == PorkchopMode::SD_FORMAT) {
-        statsStr = "ENTER=SELECT  BKSP=EXIT";
+        statsStr = "ENTER=SELECT  LEFT=EXIT";
     } else if (mode == PorkchopMode::OINK_MODE) {
         // OINK: show Networks, Handshakes, Deauths, Channel, and optionally BRO count
         // PWNED banner is shown in top bar
@@ -936,7 +936,7 @@ void Display::drawBottomBar() {
         statsStr = statsBuf;
     } else if (mode == PorkchopMode::BOAR_BROS) {
         // BOAR BROS: show delete hint
-        statsStr = "[D] DELETE";
+        statsStr = "[ENT] DELETE  [LFT] BACK";
     } else if (mode == PorkchopMode::BOUNTY_STATUS) {
         // BOUNTY STATUS: show selected info
         BountyStatusMenu::getSelectedInfo(statsBuf, sizeof(statsBuf));
@@ -1059,16 +1059,14 @@ void Display::showInfoBox(const String& title, const String& line1,
         uint32_t startTime = millis();
         while ((millis() - startTime) < 60000) {  // 60s timeout
             hal_input_update();
-    hal_input_update();
             if (hal_input_wasPressed(KEY_ENTER)) {
                 while (hal_input_isPressed()) {
                     hal_input_update();
-    hal_input_update();
-                    delay(20);  // TCA8418 I2C throttle
+                    delay(20);
                 }
                 break;
             }
-            delay(20);  // TCA8418 I2C throttle
+            delay(20);
         }
     }
 }
@@ -1085,20 +1083,19 @@ bool Display::showConfirmBox(const String& title, const String& message) {
     
     mainCanvas.setTextSize(1);
     mainCanvas.drawString(message.c_str(), DISPLAY_W / 2, 45);
-    mainCanvas.drawString("[Y]ES / [N]O", DISPLAY_W / 2, MAIN_H - 20);
+    mainCanvas.drawString("[ENTER] YES  [LEFT] NO", DISPLAY_W / 2, MAIN_H - 20);
     
     pushAll();
     
     uint32_t startTime = millis();
     while ((millis() - startTime) < 30000) {  // 30s timeout, default No
         hal_input_update();
-    hal_input_update();
         
         if (hal_input_isChange()) {
-            if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) return true;
-            if (hal_input_wasPressed('n') || hal_input_wasPressed('N')) return false;
+            if (hal_input_wasPressed(KEY_ENTER)) return true;
+            if (hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_ESC)) return false;
         }
-        delay(20);  // TCA8418 I2C throttle
+        delay(20);
         yield();  // Feed watchdog during blocking wait
     }
     return false;  // Timeout = No
@@ -1210,21 +1207,18 @@ void Display::showChallenges() {
     uint32_t startTime = millis();
     while ((millis() - startTime) < 30000) {  // 30s timeout
         hal_input_update();
-    hal_input_update();
         
-        if (hal_input_wasPressed(KEY_BACKSPACE) || 
-            hal_input_wasPressed(KEY_ENTER)) {
+        if (hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_LEFT)) {
             // Wait for key release
             while (hal_input_isPressed()) {
                 hal_input_update();
-    hal_input_update();
                 delay(20);
-                yield();  // Feed watchdog
+                yield();
             }
             break;
         }
-        delay(20);  // TCA8418 I2C throttle
-        yield();  // Feed watchdog during blocking wait
+        delay(20);
+        yield();
     }
 }
 
@@ -1232,7 +1226,6 @@ static void bootSplashDelay(uint32_t ms) {
     uint32_t start = millis();
     while ((millis() - start) < ms) {
         hal_input_update();
-    hal_input_update();
         SFX::update();
         delay(20);
         yield();
@@ -2622,7 +2615,7 @@ void Display::drawSettingsScreen(DisplayCanvas& canvas) {
     
     canvas.setTextDatum(top_center);
     canvas.setTextColor(COLOR_ACCENT);
-    canvas.drawString("[BKSP] TO GO BACK", DISPLAY_W / 2, MAIN_H - 12);
+    canvas.drawString("[LEFT] TO GO BACK", DISPLAY_W / 2, MAIN_H - 12);
 }
 
 // Hacker quotes for About screen

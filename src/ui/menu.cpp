@@ -192,8 +192,8 @@ const uint8_t Menu::GROUP_COMMS_SIZE = sizeof(GROUP_COMMS) / sizeof(GROUP_COMMS[
 
 // Group: RANK - progression and street cred
 const MenuItem Menu::GROUP_RANK[] = {
-    {"^#", "FLEXES",    11, H_FLEX,   (uint8_t)(sizeof(H_FLEX)/sizeof(H_FLEX[0]))},
-    {"*#", "BADGES",   9, H_BADGES, (uint8_t)(sizeof(H_BADGES)/sizeof(H_BADGES[0]))},
+    {"^#", "FLEXES",    9, H_FLEX,   (uint8_t)(sizeof(H_FLEX)/sizeof(H_FLEX[0]))},
+    {"*#", "BADGES",   11, H_BADGES, (uint8_t)(sizeof(H_BADGES)/sizeof(H_BADGES[0]))},
     {"?*", "UNLOCK",  15, H_SNOUTS, (uint8_t)(sizeof(H_SNOUTS)/sizeof(H_SNOUTS[0]))}
 };
 const uint8_t Menu::GROUP_RANK_SIZE = sizeof(GROUP_RANK) / sizeof(GROUP_RANK[0]);
@@ -373,7 +373,7 @@ void Menu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = hal_input_keysState();
+ 
     
     if (activeGroup != GroupId::NONE) {
         // === MODAL INPUT ===
@@ -408,7 +408,7 @@ void Menu::handleInput() {
             closeModal();
         }
 
-        if (hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_BACKSPACE)) {
+        if (hal_input_wasPressed(KEY_LEFT)) {
             closeModal();
         }
         
@@ -494,6 +494,11 @@ void Menu::handleInput() {
                     callback(item.actionId);
                 }
             }
+        }
+        
+        // LEFT closes root menu back to IDLE
+        if (hal_input_wasPressed(KEY_LEFT)) {
+            active = false;
         }
     }
 }
@@ -651,12 +656,12 @@ void Menu::drawModal(DisplayCanvas& canvas) {
         bool isSelected = (idx == modalIdx);
         
         if (isSelected) {
-            canvas.fillRect(boxX + itemPadX, y, boxW - (itemPadX * 2), itemHeight - 1, bg);
-            canvas.setTextColor(fg);
+            canvas.fillRect(boxX + itemPadX, y, boxW - (itemPadX * 2), itemHeight - 1, fg);
+            canvas.setTextColor(bg);
             canvas.setCursor(boxX + textIndent, y);
             canvas.print("> ");
         } else {
-            canvas.setTextColor(bg);
+            canvas.setTextColor(fg);
             canvas.setCursor(boxX + textIndent, y);
             canvas.print("  ");
         }

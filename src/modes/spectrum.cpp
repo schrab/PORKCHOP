@@ -690,7 +690,6 @@ void SpectrumMode::handleInput() {
     
     Display::resetDimTimer();
     
-    auto keys = hal_input_keysState();
     
     // Pan spectrum with LEFT and RIGHT joystick
     if (hal_input_wasPressed(KEY_LEFT)) {
@@ -700,25 +699,7 @@ void SpectrumMode::handleInput() {
         viewCenterMHz = fmin(MAX_CENTER_MHZ, viewCenterMHz + PAN_STEP_MHZ);
     }
     
-    // F key: cycle filter mode
-    if (hal_input_wasPressed('f') || hal_input_wasPressed('F')) {
-        filter = static_cast<SpectrumFilter>((static_cast<int>(filter) + 1) % 4);
-        // If selected network no longer matches filter, find first matching
-        if (selectedIndex >= 0 && selectedIndex < (int)networks.size()) {
-            if (!matchesFilter(networks[selectedIndex])) {
-                selectedIndex = -1;
-                for (size_t i = 0; i < networks.size(); i++) {
-                    if (matchesFilter(networks[i])) {
-                        selectedIndex = (int)i;
-                        viewCenterMHz = channelToFreq(networks[i].channel);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-    
-    // Cycle through matching networks with UP and DOWN joystick
+    // Cycle through networks with UP and DOWN joystick
     if (hal_input_wasPressed(KEY_UP) && !networks.empty()) {
         int startIdx = selectedIndex;
         int count = 0;
@@ -754,12 +735,6 @@ void SpectrumMode::handleInput() {
             enterClientMonitor();
         }
     }
-    
-    // Space: toggle dial lock when in dial mode
-    if (hal_input_wasPressed(' ') && dialMode) {
-        dialLocked = !dialLocked;
-        SFX::play(SFX::CLICK);
-    }
 }
 
 // Handle input when in client monitor overlay [P11] [P13] [P14]
@@ -776,35 +751,33 @@ void SpectrumMode::handleClientMonitorInput() {
     
     Display::resetDimTimer();
     
-    // If detail popup is active, any key closes it
+    // If detail popup is active, ENTER deauths client, any other key closes popup
     if (clientDetailActive) {
         clientDetailActive = false;
+        if (hal_input_wasPressed(KEY_ENTER)) {
+            deauthClient(selectedClientIndex);
+        }
         return;
     }
     
-    // If revealing, any key exits reveal mode
+    // If revealing, LEFT exits reveal mode (press LEFT again to exit client monitor)
     if (revealingClients) {
-        exitRevealMode();
+        if (hal_input_wasPressed(KEY_LEFT)) {
+            exitRevealMode();
+        }
         return;
     }
     
-    // W key: enter reveal mode (broadcast deauth to discover clients)
-    if (hal_input_wasPressed('w') || hal_input_wasPressed('W')) {
-        enterRevealMode();
-        return;
-    }
-    
-    // Backspace - go back
-    if (hal_input_wasPressed(KEY_BACKSPACE)) {
+    // LEFT: exit client monitor back to spectrum main view
+    if (hal_input_wasPressed(KEY_LEFT)) {
         exitClientMonitor();
         return;
     }
     
-    // B key: add to BOAR BROS and exit [P13]
-    if (hal_input_wasPressed('b') || hal_input_wasPressed('B')) {
+    // RIGHT: add to BOAR BROS and exit
+    if (hal_input_wasPressed(KEY_RIGHT)) {
         if (monitoredNetworkIndex >= 0 && 
             monitoredNetworkIndex < (int)networks.size()) {
-            // Add to BOAR BROS via OinkMode
             OinkMode::excludeNetworkByBSSID(networks[monitoredNetworkIndex].bssid,
                                              networks[monitoredNetworkIndex].ssid);
             Display::showToast("EXCLUDED - RETURNING");
@@ -814,18 +787,24 @@ void SpectrumMode::handleClientMonitorInput() {
         return;
     }
     
-    // Get client count safely [P14]
+    // Long-press ENTER: trigger reveal mode (broadcast deauth to discover hidden clients)
+    // Available even when clientCount == 0 — that's when you need it most!
+    if (hal_input_isLongEnter()) {
+        enterRevealMode();
+        return;
+    }
+
+    // Get client count safely
     int clientCount = 0;
     if (monitoredNetworkIndex >= 0 && 
         monitoredNetworkIndex < (int)networks.size()) {
         clientCount = networks[monitoredNetworkIndex].clientCount;
     }
     
-    // Navigation only if clients exist [P14]
+    // Navigation + detail popup only if clients exist
     if (clientCount > 0) {
         if (hal_input_wasPressed(KEY_UP)) {
             selectedClientIndex = max(0, selectedClientIndex - 1);
-            // Adjust scroll if needed
             if (selectedClientIndex < clientScrollOffset) {
                 clientScrollOffset = selectedClientIndex;
             }
@@ -833,25 +812,18 @@ void SpectrumMode::handleClientMonitorInput() {
 
         if (hal_input_wasPressed(KEY_DOWN)) {
             selectedClientIndex = min(clientCount - 1, selectedClientIndex + 1);
-            // Adjust scroll if needed
             if (selectedClientIndex >= clientScrollOffset + VISIBLE_CLIENTS) {
                 clientScrollOffset = selectedClientIndex - VISIBLE_CLIENTS + 1;
             }
         }
         
-        // D key: show client detail popup
-        if (hal_input_wasPressed('d') || hal_input_wasPressed('D')) {
+        // ENTER: show client detail popup (press again to deauth)
+        if (hal_input_wasPressed(KEY_ENTER)) {
             if (selectedClientIndex >= 0 && selectedClientIndex < clientCount) {
-                // Store MAC of client we're viewing - close popup if this client disappears
                 memcpy(detailClientMAC, networks[monitoredNetworkIndex].clients[selectedClientIndex].mac, 6);
                 clientDetailActive = true;
             }
             return;
-        }
-        
-        // Enter: deauth selected client [P14]
-        if (hal_input_wasPressed(KEY_ENTER)) {
-            deauthClient(selectedClientIndex);
         }
     }
 }
@@ -1250,8 +1222,13 @@ void SpectrumMode::drawClientOverlay(DisplayCanvas& canvas) {
     // Empty list message [P14]
     if (net.clientCount == 0) {
         canvas.setTextDatum(middle_center);
-        canvas.drawString("NEGATIVE CONTACT", 120, 40);
-        canvas.drawString("RECON IN PROGRESS...", 120, 55);
+        if (OinkMode::isExcluded(net.bssid)) {
+            canvas.drawString("BOAR BRO - EXCLUDED", 160, 40);
+            canvas.drawString("NO RECON ON BROS", 160, 55);
+        } else {
+            canvas.drawString("NEGATIVE CONTACT", 160, 40);
+            canvas.drawString("HOLD ENTER TO REVEAL...", 160, 55);
+        }
         return;
     }
     
@@ -1272,7 +1249,7 @@ void SpectrumMode::drawClientOverlay(DisplayCanvas& canvas) {
         
         // Highlight selected row
         if (selected) {
-            canvas.fillRect(0, y, 240, LINE_HEIGHT, COLOR_FG);
+            canvas.fillRect(0, y, 320, LINE_HEIGHT, COLOR_FG);
             canvas.setTextColor(COLOR_BG, COLOR_FG);
         } else {
             canvas.setTextColor(COLOR_FG, COLOR_BG);
@@ -1333,7 +1310,7 @@ void SpectrumMode::drawClientOverlay(DisplayCanvas& canvas) {
     if (revealingClients) {
         int boxW = 160;
         int boxH = 40;
-        int boxX = (240 - boxW) / 2;
+        int boxX = (320 - boxW) / 2;
         int boxY = (90 - boxH) / 2;
         
         // Black border then inverted fill
@@ -1343,12 +1320,13 @@ void SpectrumMode::drawClientOverlay(DisplayCanvas& canvas) {
         // Black text on inverted background
         canvas.setTextColor(COLOR_BG, COLOR_FG);
         canvas.setTextDatum(middle_center);
-        canvas.drawString("WAKIE WAKIE", 120, boxY + 12);
+        canvas.drawString("WAKIE WAKIE", 120, boxY + 10);
         
         // Show live client count
         char countStr[24];
         snprintf(countStr, sizeof(countStr), "FOUND: %d", net.clientCount);
-        canvas.drawString(countStr, 120, boxY + 28);
+        canvas.drawString(countStr, 120, boxY + 24);
+        canvas.drawString("[LEFT] STOP", 120, boxY + 36);
     }
 }
 
@@ -1423,8 +1401,8 @@ void SpectrumMode::drawClientDetail(DisplayCanvas& canvas) {
     else position = "SAME DISTANCE AS AP";
     canvas.drawString(position, centerX, boxY + 52);
     
-    // Line 5: Dismiss hint
-    canvas.drawString("[ANY KEY] CLOSE", centerX, boxY + 64);
+    // Line 5: Action hint
+    canvas.drawString("[ENTER] DEAUTH  [OTHER] CLOSE", centerX, boxY + 64);
     
     // Reset datum
     canvas.setTextDatum(top_left);
@@ -2318,6 +2296,13 @@ void SpectrumMode::enterClientMonitor() {
     }
     
     SpectrumNetwork& net = networks[selectedIndex];
+    
+    // BOAR BRO check - don't monitor excluded networks
+    if (OinkMode::isExcluded(net.bssid)) {
+        Display::showToast("BOAR BRO - NO RECON");
+        busy = false;
+        return;
+    }
     
     // Store BSSID separately [P2]
     memcpy(monitoredBSSID, net.bssid, 6);

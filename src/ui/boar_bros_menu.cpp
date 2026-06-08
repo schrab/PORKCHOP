@@ -158,15 +158,14 @@ void BoarBrosMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = hal_input_keysState();
+
     
     // Handle delete confirmation modal
     if (deleteConfirmActive) {
-        if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
+        if (hal_input_wasPressed(KEY_ENTER)) {
             deleteSelected();
             deleteConfirmActive = false;
-        } else if (hal_input_wasPressed('n') || hal_input_wasPressed('N') ||
-                   hal_input_wasPressed(KEY_BACKSPACE) || hal_input_wasPressed(KEY_ENTER)) {
+        } else if (hal_input_wasPressed(KEY_LEFT)) {
             deleteConfirmActive = false;  // Cancel
         }
         return;
@@ -191,13 +190,13 @@ void BoarBrosMenu::handleInput() {
         }
     }
     
-    // D key - delete selected
-    if ((hal_input_wasPressed('d') || hal_input_wasPressed('D')) && !bros.empty()) {
+    // CENTER (SELECT) key - delete selected
+    if (hal_input_wasPressed(KEY_ENTER) && !bros.empty()) {
         deleteConfirmActive = true;
     }
     
-    // Backspace - go back
-    if (hal_input_wasPressed(KEY_BACKSPACE)) {
+    // LEFT key - go back to menu
+    if (hal_input_wasPressed(KEY_LEFT)) {
         hide();
         // Return to menu handled by porkchop.cpp
     }
@@ -260,21 +259,21 @@ void BoarBrosMenu::draw(DisplayCanvas& canvas) {
         // SSID or "NONAME BRO" for hidden networks
         canvas.setCursor(4, y);
         const char* nameSrc = bro.ssid[0] != '\0' ? bro.ssid : "NONAME BRO";
-        char displayName[20];
+        char displayName[30];
         size_t pos = 0;
         while (*nameSrc && pos + 1 < sizeof(displayName)) {
             displayName[pos++] = (char)toupper((unsigned char)*nameSrc++);
         }
         displayName[pos] = '\0';
-        if (pos > 14 && sizeof(displayName) > 14) {
-            displayName[12] = '.';
-            displayName[13] = '.';
-            displayName[14] = '\0';
+        if (pos > 24 && sizeof(displayName) > 24) {
+            displayName[22] = '.';
+            displayName[23] = '.';
+            displayName[24] = '\0';
         }
         canvas.print(displayName);
         
-        // Full BSSID (fits at x=80, 17 chars * 6px = 102px, ends at 182px)
-        canvas.setCursor(80, y);
+        // Full BSSID (at x=160 on 320px display, 17 chars * 6px = 102px, ends at 262px)
+        canvas.setCursor(160, y);
         canvas.print(bro.bssidStr);
         
         y += lineHeight;
@@ -299,8 +298,8 @@ void BoarBrosMenu::draw(DisplayCanvas& canvas) {
 }
 
 void BoarBrosMenu::drawDeleteConfirm(DisplayCanvas& canvas) {
-    // Modal box dimensions - matches other confirmation dialogs
-    const int boxW = 180;
+    // Modal box dimensions - wider for 320px display
+    const int boxW = 220;
     const int boxH = 55;
     const int boxX = (canvas.width() - boxW) / 2;
     const int boxY = (canvas.height() - boxH) / 2 - 5;
@@ -330,7 +329,7 @@ void BoarBrosMenu::drawDeleteConfirm(DisplayCanvas& canvas) {
     }
     canvas.drawString(broName, boxX + boxW / 2, boxY + 24);
     
-    canvas.drawString("[Y]ES  [N]O", boxX + boxW / 2, boxY + 40);
+    canvas.drawString("[ENTER] YES  [LEFT] NO", boxX + boxW / 2, boxY + 40);
     
     canvas.setTextDatum(top_left);
 }

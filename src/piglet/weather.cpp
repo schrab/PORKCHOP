@@ -200,7 +200,7 @@ void setRaining(bool active) {
     if (active && !rainActive) {
         // Spawn raindrops staggered across entire screen height for immediate rain
         for (int i = 0; i < RAIN_DROP_COUNT; i++) {
-            rainDrops[i].x = (float)random(0, 240);
+            rainDrops[i].x = (float)random(0, 320);
             // Distribute drops across visible area (stop above grass at Y=88)
             rainDrops[i].y = (float)random(16, 85);
             // Fast rain (5-8 pixels per update)
@@ -277,7 +277,7 @@ static void updateRain(uint32_t now) {
     if (Avatar::isGrassMoving()) {
         uint16_t grassSpeedMs = Avatar::getGrassSpeed();
         if (grassSpeedMs == 0) grassSpeedMs = 1;
-        const float grassShiftPixels = 240.0f / 26.0f;  // screen width / grass pattern chars
+        const float grassShiftPixels = 320.0f / 26.0f;  // screen width / grass pattern chars
         float grassPixelsPerMs = grassShiftPixels / (float)grassSpeedMs;
         float grassPixelsPerUpdate = grassPixelsPerMs * (float)RAIN_SPEED_MS;
         horizontalDrift = grassPixelsPerUpdate * 0.4f;  // 40% of grass speed
@@ -291,14 +291,14 @@ static void updateRain(uint32_t now) {
         rainDrops[i].x += horizontalDrift;
         
         // Wrap horizontally if drifted off screen
-        if (rainDrops[i].x < 0.0f) rainDrops[i].x += 240.0f;
-        if (rainDrops[i].x >= 240.0f) rainDrops[i].x -= 240.0f;
+        if (rainDrops[i].x < 0.0f) rainDrops[i].x += 320.0f;
+        if (rainDrops[i].x >= 320.0f) rainDrops[i].x -= 320.0f;
         
         // Respawn just below clouds when reaching bottom
         // Grass starts at Y=91, stop rain 3px above it
         if (rainDrops[i].y >= 88.0f) {
             rainDrops[i].y = (float)random(16, 23);  // Just below cloud layer
-            rainDrops[i].x = (float)random(0, 240);
+            rainDrops[i].x = (float)random(0, 320);
             rainDrops[i].speed = random(5, 9);  // Fast rain
         }
     }
@@ -384,7 +384,7 @@ static void updateWind(uint32_t now) {
                         windParticles[i].y += (random(0, 3) - 1) * 0.5f;
                         
                         // Deactivate when off-screen right
-                        if (windParticles[i].x > 250.0f) {
+                        if (windParticles[i].x > 330.0f) {
                             windParticles[i].active = false;
                         }
                     }
@@ -434,7 +434,7 @@ void draw(DisplayCanvas& canvas, uint16_t colorFG, uint16_t colorBG) {
             for (int dy = 0; dy < 6; dy++) {
                 if (y + dy < 88) {  // Clip 3px above grass (grass starts at Y=91)
                     canvas.drawPixel(x, y + dy, drawColor);
-                    if (x + 1 < 240) canvas.drawPixel(x + 1, y + dy, drawColor);
+                    if (x + 1 < 320) canvas.drawPixel(x + 1, y + dy, drawColor);
                 }
             }
         }
@@ -448,7 +448,7 @@ void draw(DisplayCanvas& canvas, uint16_t colorFG, uint16_t colorBG) {
             if (windParticles[i].active) {
                 int x = (int)windParticles[i].x;
                 int y = (int)windParticles[i].y;
-                if (x >= 0 && x < 240) {
+                if (x >= 0 && x < 320) {
                     // Draw as ASCII dot for consistency
                     canvas.drawChar('.', x, y);
                 }

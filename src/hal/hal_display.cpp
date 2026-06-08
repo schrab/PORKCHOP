@@ -73,6 +73,7 @@ void hal_display_init() {
     delay(10);
     digitalWrite(PIN_DISPLAY_RST, HIGH);
     delay(120);
+
     g_Display.init();
     g_Display.setAttribute(PSRAM_ENABLE, 1);
     g_Display.setRotation(3);

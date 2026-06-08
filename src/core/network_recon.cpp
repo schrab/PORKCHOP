@@ -34,7 +34,6 @@ static uint32_t startTime = 0;
 static std::atomic<uint32_t> packetCount{0};
 static std::atomic<bool> busy{false};  // [BUG3 FIX] Atomic for cross-core visibility
 static std::atomic<uint32_t> hopIntervalOverrideMs{0};
-static size_t heapLargestAtStart = 0;
 static bool heapStabilized = false;
 // shrinkDeferCount removed — shrink_to_fit no longer runs during operation
 
@@ -777,10 +776,9 @@ void start() {
         return;
     }
 
-    Serial.printf("[RECON] Starting background scan... free=%u largest=%u\n",
-                  ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+    Serial.printf("[RECON] Starting background scan... free=%u\n",
+                  ESP.getFreeHeap());
     
-    heapLargestAtStart = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
     heapStabilized = false;
     startTime = millis();
     pendingNetWrite = 0;
@@ -811,8 +809,8 @@ void start() {
         yield();  // Let deferred FreeRTOS cleanup tasks coalesce freed BLE memory
         delay(50);
 
-        Serial.printf("[RECON] After BLE deinit: free=%u largest=%u\n",
-                      ESP.getFreeHeap(), heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        Serial.printf("[RECON] After BLE deinit: free=%u\n",
+                      ESP.getFreeHeap());
     }
 
     // Initialize WiFi
@@ -951,11 +949,11 @@ void update() {
     
     // Check heap stabilization
     if (!heapStabilized) {
-        size_t currentLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-        if (currentLargest > HeapPolicy::kHeapStableThreshold) {
+        size_t currentFree = ESP.getFreeHeap();
+        if (currentFree > HeapPolicy::kHeapStableThreshold) {
             heapStabilized = true;
-            Serial.printf("[RECON] Heap stabilized in %ums: largest=%u (was %u)\n",
-                          now - startTime, currentLargest, heapLargestAtStart);
+            Serial.printf("[RECON] Heap stabilized in %ums: free=%u\n",
+                          now - startTime, currentFree);
         }
     }
 }
@@ -1074,13 +1072,28 @@ int findNetworkIndex(const uint8_t* bssid) {
     return idx;
 }
 
+// Helper: Check if WiFi driver is initialized and in a valid mode
+// Guards against esp_wifi_set_channel() crash when WiFi internal state is NULL
+static bool isWiFiDriverReady() {
+    wifi_mode_t mode;
+    if (esp_wifi_get_mode(&mode) != ESP_OK) return false;
+    return (mode == WIFI_MODE_STA || mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA);
+}
+
 void lockChannel(uint8_t channel) {
     if (channel < 1 || channel > 14) return;
+    if (!isWiFiDriverReady()) {
+        Serial.println("[RECON] lockChannel: WiFi not ready, skipping");
+        return;
+    }
 
     lockedChannel = channel;
     currentChannel = channel;
     channelLocked.store(true, std::memory_order_release);
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        Serial.printf("[RECON] esp_wifi_set_channel(%d) failed: %d\n", channel, err);
+    }
     
     Serial.printf("[RECON] Channel locked to %d\n", channel);
 }
@@ -1096,8 +1109,15 @@ bool isChannelLocked() {
 
 void setChannel(uint8_t channel) {
     if (channel < 1 || channel > 14) return;
+    if (!isWiFiDriverReady()) {
+        Serial.println("[RECON] setChannel: WiFi not ready, skipping");
+        return;
+    }
     currentChannel = channel;
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        Serial.printf("[RECON] esp_wifi_set_channel(%d) failed: %d\n", channel, err);
+    }
 }
 
 void setPacketCallback(PacketCallback callback) {

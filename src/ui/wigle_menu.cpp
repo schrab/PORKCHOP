@@ -234,20 +234,20 @@ void WigleMenu::handleInput() {
     if (keyWasPressed) return;
     keyWasPressed = true;
     
-    auto keys = hal_input_keysState();
+
     
     // Handle sync modal
     if (syncModalActive) {
         if (syncState == WigleSyncState::ERROR || syncState == WigleSyncState::COMPLETE) {
             // Enter closes the modal after completion/error
-            if (hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed(KEY_BACKSPACE)) {
+            if (hal_input_wasPressed(KEY_ENTER)) {
                 syncModalActive = false;
                 syncState = WigleSyncState::IDLE;
                 scanFiles();  // Rescan files after sync
             }
         } else {
             // ESC cancels during sync
-            if (hal_input_wasPressed(KEY_BACKSPACE)) {
+            if (hal_input_wasPressed(KEY_LEFT)) {
                 cancelSync();
             }
         }
@@ -262,14 +262,13 @@ void WigleMenu::handleInput() {
     
     // Handle nuke confirmation modal
     if (nukeConfirmActive) {
-        if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
+        if (hal_input_wasPressed(KEY_ENTER)) {
             nukeTrack();
             nukeConfirmActive = false;
             Display::clearBottomOverlay();
             return;
         }
-        if (hal_input_wasPressed('n') || hal_input_wasPressed('N') ||
-            hal_input_wasPressed(KEY_BACKSPACE)) {
+        if (hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_ESC)) {
             nukeConfirmActive = false;  // Cancel
             Display::clearBottomOverlay();
             return;
@@ -277,8 +276,8 @@ void WigleMenu::handleInput() {
         return;  // Ignore other keys when modal active
     }
     
-    // Backspace - go back
-    if (hal_input_wasPressed(KEY_BACKSPACE)) {
+    // BACKSPACE/LEFT - go back
+    if (hal_input_wasPressed(KEY_LEFT)) {
         hide();
         return;
     }
@@ -307,17 +306,9 @@ void WigleMenu::handleInput() {
         detailViewActive = true;
     }
     
-    // S key triggers WiGLE sync
-    if (hal_input_wasPressed('s') || hal_input_wasPressed('S')) {
+    // RIGHT triggers WiGLE sync
+    if (hal_input_wasPressed(KEY_RIGHT)) {
         startSync();
-    }
-    
-    // D key - nuke selected track
-    if ((hal_input_wasPressed('d') || hal_input_wasPressed('D')) && !files.empty()) {
-        if (selectedIndex < files.size()) {
-            nukeConfirmActive = true;
-            Display::setBottomOverlay("PERMANENT | NO UNDO");
-        }
     }
 }
 
@@ -515,7 +506,7 @@ void WigleMenu::drawDetailView(DisplayCanvas& canvas) {
     canvas.drawString(statusText, boxX + boxW / 2, boxY + 40);
     
     // Action hint
-    canvas.drawString("PRESS [S] TO SYNC", boxX + boxW / 2, boxY + 56);
+    canvas.drawString("PRESS [RIGHT] TO SYNC", boxX + boxW / 2, boxY + 56);
     
     canvas.setTextDatum(top_left);
 }
@@ -548,7 +539,7 @@ void WigleMenu::drawNukeConfirm(DisplayCanvas& canvas) {
     formatDisplayName(file.filename, displayName, sizeof(displayName), 22, "...", false);
     canvas.drawString(displayName, centerX, boxY + 24);
     canvas.drawString("THIS KILLS THE FILE.", centerX, boxY + 38);
-    canvas.drawString("[Y] DO IT  [N] ABORT", centerX, boxY + 54);
+    canvas.drawString("[ENTER] DO IT  [LEFT] ABORT", centerX, boxY + 54);
     
     canvas.setTextDatum(top_left);
 }

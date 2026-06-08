@@ -54,31 +54,30 @@ void DiagnosticsMenu::update() {
     if (keyWasPressed) return;
     keyWasPressed = true;
 
-    auto keys = hal_input_keysState();
 
-    // Enter/S - save snapshot
-    if (hal_input_wasPressed(KEY_ENTER) || hal_input_wasPressed('s') || hal_input_wasPressed('S')) {
+    // Enter - save snapshot
+    if (hal_input_wasPressed(KEY_ENTER)) {
         saveSnapshot();
         Display::setTopBarMessage("DIAG SNAPSHOT SAVED", 3000);
         return;
     }
 
-    // R key - reset WiFi stack
-    if (hal_input_wasPressed('r') || hal_input_wasPressed('R')) {
+    // UP - reset WiFi stack
+    if (hal_input_wasPressed(KEY_UP)) {
         resetWiFi();
         Display::setTopBarMessage("WIFI RESET", 3000);
         return;
     }
 
-    // H key - append quick heap log
-    if (hal_input_wasPressed('h') || hal_input_wasPressed('H')) {
+    // RIGHT - append quick heap log
+    if (hal_input_wasPressed(KEY_RIGHT)) {
         logHeapSnapshot();
         Display::setTopBarMessage("HEAP LOGGED", 3000);
         return;
     }
 
-    // G key - free caches / pseudo GC
-    if (hal_input_wasPressed('g') || hal_input_wasPressed('G')) {
+    // DOWN - free caches / pseudo GC
+    if (hal_input_wasPressed(KEY_DOWN)) {
         collectGarbage();
         Display::setTopBarMessage("CACHE CLEARED", 3000);
         return;
@@ -89,8 +88,8 @@ void DiagnosticsMenu::update() {
         refreshStats();
     }
 
-    // Backspace - go back to previous menu
-    if (hal_input_wasPressed(KEY_BACKSPACE)) {
+    // LEFT - go back to previous menu
+    if (hal_input_wasPressed(KEY_LEFT)) {
         hide();
     }
 }
@@ -362,7 +361,7 @@ void DiagnosticsMenu::draw(DisplayCanvas& canvas) {
     y += lineH + 6;
 
     // Controls (compressed)
-    canvas.drawString("[ENT]SAVE [R]WIFI", 4, y);
+    canvas.drawString("[ENT]SNAP [UP]WIFI", 4, y);
     y += lineH;
-    canvas.drawString("[H]HEAP [G]GC [BKSPC]BACK", 4, y);
+    canvas.drawString("[RGT]HEAP [DWN]GC [LFT]BACK", 4, y);
 }

@@ -305,10 +305,9 @@ void Porkchop::setMode(PorkchopMode mode) {
     // Store the mode we're leaving for cleanup
     PorkchopMode oldMode = currentMode;
 
-    Serial.printf("[MODE] EXIT %s free=%u largest=%u\n",
+    Serial.printf("[MODE] EXIT %s free=%u\n",
         modeToString(oldMode),
-        (unsigned)esp_get_free_heap_size(),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        (unsigned)esp_get_free_heap_size());
     
     // Save "real" modes as previous (not modal menus)
     // Exception: CAPTURES and WIGLE_MENU ARE saved as previousMode so OINK recovery returns to them
@@ -334,10 +333,9 @@ void Porkchop::setMode(PorkchopMode mode) {
     }
     currentMode = mode;
 
-    Serial.printf("[MODE] ENTER %s free=%u largest=%u\n",
+    Serial.printf("[MODE] ENTER %s free=%u\n",
         modeToString(currentMode),
-        (unsigned)esp_get_free_heap_size(),
-        (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+        (unsigned)esp_get_free_heap_size());
     
     // Cleanup the mode we're actually leaving (oldMode), not previousMode
     switch (oldMode) {
@@ -589,9 +587,8 @@ void Porkchop::handleInput() {
     
     InputEvent keys = hal_input_keysState();
     (void)keys;  // joystick build: all navigation via wasPressed(), not raw keysState
-    // ESC = SELECT held (handled by hal_input_shouldExit) or BACKSPACE button
-    bool escPressed = hal_input_wasPressed(KEY_ESC) || hal_input_wasPressed(KEY_BACKSPACE)
-                      || hal_input_shouldExit();
+    // ESC = long-press LEFT (800ms) → KEY_ESC
+    bool escPressed = hal_input_wasPressed(KEY_ESC) || hal_input_shouldExit();
 
     // ESC to return to IDLE from any active mode
     if (escPressed && currentMode != PorkchopMode::IDLE) {
@@ -602,6 +599,11 @@ void Porkchop::handleInput() {
     // In MENU mode, let Menu::handleInput() process navigation keys
     if (currentMode == PorkchopMode::MENU) {
         Menu::update();
+        // Only go to IDLE if user closed menu (LEFT) without selecting an item.
+        // If a callback already changed mode, currentMode != MENU — don't override.
+        if (currentMode == PorkchopMode::MENU && !Menu::isActive()) {
+            setMode(PorkchopMode::IDLE);
+        }
         yield();
         return;
     }
@@ -665,13 +667,10 @@ void Porkchop::handleInput() {
         return;
     }
     
-    // Screenshot: LEFT+RIGHT held simultaneously is too complex for 5-way; skip on joystick build
     // ENTER in About mode - easter egg
-    if (hal_input_wasPressed(KEY_ENTER)) {
-        if (currentMode == PorkchopMode::ABOUT) {
-            Display::onAboutEnterPressed();
-            return;
-        }
+    if (currentMode == PorkchopMode::ABOUT && hal_input_wasPressed(KEY_ENTER)) {
+        Display::onAboutEnterPressed();
+        return;
     }
     
     // Joystick navigation in IDLE:
@@ -693,9 +692,9 @@ void Porkchop::handleInput() {
         yield();
     }
     
-    // OINK mode - LEFT to exclude current network (BOAR BRO), RIGHT to switch to DNH
+    // OINK mode - long-press ENTER to exclude current network (BOAR BRO), LEFT to switch to DNH
     if (currentMode == PorkchopMode::OINK_MODE) {
-        if (hal_input_wasPressed(KEY_LEFT)) {
+        if (hal_input_isLongEnter()) {
             int idx = OinkMode::getSelectionIndex();
             if (OinkMode::excludeNetwork(idx)) {
                 Display::showToast("BOAR BRO ADDED!");
@@ -706,7 +705,7 @@ void Porkchop::handleInput() {
                 delay(500);
             }
         }
-        if (hal_input_wasPressed(KEY_RIGHT)) {
+        if (hal_input_wasPressed(KEY_LEFT)) {
             SessionStats& sess = const_cast<SessionStats&>(XP::getSession());
             sess.passiveTimeStart = millis();
             Display::notify(NoticeKind::STATUS, "IRIE VIBES ONLY NOW", 0, NoticeChannel::TOP_BAR);

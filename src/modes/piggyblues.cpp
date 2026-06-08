@@ -549,20 +549,20 @@ bool PiggyBluesMode::showWarningDialog() {
         canvas.drawString("BLE NOTIFICATION SPAM", centerX, boxY + 22);
         canvas.drawString("EDUCATIONAL USE ONLY!", centerX, boxY + 36);
         
-        char buf[24];
-        snprintf(buf, sizeof(buf), "[Y] YES  [N] NO (%lu)", remaining);
+        char buf[32];
+        snprintf(buf, sizeof(buf), "[ENTER] YES  [LEFT] NO (%lu)", remaining);
         canvas.drawString(buf, centerX, boxY + 54);
         
         Display::pushAll();
         
         if (hal_input_isChange()) {
-            if (hal_input_wasPressed(KEY_ESC)) {
-                Display::clearBottomOverlay();
-                return false;
-            }
-            if (hal_input_wasPressed('y') || hal_input_wasPressed('Y')) {
+            if (hal_input_wasPressed(KEY_ENTER)) {
                 Display::clearBottomOverlay();
                 return true;
+            }
+            if (hal_input_wasPressed(KEY_LEFT) || hal_input_wasPressed(KEY_ESC)) {
+                Display::clearBottomOverlay();
+                return false;
             }
         }
         

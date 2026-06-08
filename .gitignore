@@ -16,3 +16,4 @@ compile_commands.json
 scripts/heap_analyzer.py
 *.ski*
 !./docs/images/*
+temp/

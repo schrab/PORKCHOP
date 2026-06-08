@@ -105,10 +105,10 @@ static void onNewNetworkDiscovered(wifi_auth_mode_t authmode, bool isHidden,
                                    const char* ssid, int8_t rssi, uint8_t channel) {
     (void)authmode;
     (void)isHidden;
-    (void)ssid;
-    (void)channel;
     if (rssi < Config::wifi().attackMinRssi) return;  // Skip weak networks
     XP::addXP(XPEvent::DNH_NETWORK_PASSIVE);
+    // Show SSID name in pig messages
+    Mood::onNewNetwork(ssid, rssi, channel);
 }
 
 struct PendingHandshakeFrame {
