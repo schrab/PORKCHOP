@@ -7,8 +7,8 @@
 #include <string.h>
 
 namespace {
-static constexpr const char* kNewRoot = "/m5porkchop";
-static constexpr const char* kMarker = "/m5porkchop/meta/.migrated_v1";
+static constexpr const char* kNewRoot = "/porkchop";
+static constexpr const char* kMarker = "/porkchop/meta/.migrated_v1";
 
 static constexpr const char* kLegacyHandshakes = "/handshakes";
 static constexpr const char* kLegacyWardriving = "/wardriving";
@@ -17,19 +17,19 @@ static constexpr const char* kLegacyLogs = "/logs";
 static constexpr const char* kLegacyCrash = "/crash";
 static constexpr const char* kLegacyScreenshots = "/screenshots";
 
-static constexpr const char* kNewHandshakes = "/m5porkchop/handshakes";
-static constexpr const char* kNewWardriving = "/m5porkchop/wardriving";
-static constexpr const char* kNewModels = "/m5porkchop/models";
-static constexpr const char* kNewLogs = "/m5porkchop/logs";
-static constexpr const char* kNewCrash = "/m5porkchop/crash";
-static constexpr const char* kNewScreenshots = "/m5porkchop/screenshots";
-static constexpr const char* kNewDiagnostics = "/m5porkchop/diagnostics";
-static constexpr const char* kNewWpaSec = "/m5porkchop/wpa-sec";
-static constexpr const char* kNewWigle = "/m5porkchop/wigle";
-static constexpr const char* kNewXp = "/m5porkchop/xp";
-static constexpr const char* kNewMisc = "/m5porkchop/misc";
-static constexpr const char* kNewConfig = "/m5porkchop/config";
-static constexpr const char* kNewMeta = "/m5porkchop/meta";
+static constexpr const char* kNewHandshakes = "/porkchop/handshakes";
+static constexpr const char* kNewWardriving = "/porkchop/wardriving";
+static constexpr const char* kNewModels = "/porkchop/models";
+static constexpr const char* kNewLogs = "/porkchop/logs";
+static constexpr const char* kNewCrash = "/porkchop/crash";
+static constexpr const char* kNewScreenshots = "/porkchop/screenshots";
+static constexpr const char* kNewDiagnostics = "/porkchop/diagnostics";
+static constexpr const char* kNewWpaSec = "/porkchop/wpa-sec";
+static constexpr const char* kNewWigle = "/porkchop/wigle";
+static constexpr const char* kNewXp = "/porkchop/xp";
+static constexpr const char* kNewMisc = "/porkchop/misc";
+static constexpr const char* kNewConfig = "/porkchop/config";
+static constexpr const char* kNewMeta = "/porkchop/meta";
 
 static constexpr const char* kLegacyConfig = "/porkchop.conf";
 static constexpr const char* kLegacyPersonality = "/personality.json";
@@ -48,22 +48,22 @@ static constexpr const char* kLegacyWpasecKey = "/wpasec_key.txt";
 static constexpr const char* kLegacyWigleKey = "/wigle_key.txt";
 static constexpr const char* kLegacyConfigBin = "/porkchop.dat";
 
-static constexpr const char* kNewConfigPath = "/m5porkchop/config/porkchop.conf";
-static constexpr const char* kNewPersonalityPath = "/m5porkchop/config/personality.json";
-static constexpr const char* kNewWpasecResults = "/m5porkchop/wpa-sec/wpasec_results.txt";
-static constexpr const char* kNewWpasecUploaded = "/m5porkchop/wpa-sec/wpasec_uploaded.txt";
-static constexpr const char* kNewWpasecSent = "/m5porkchop/wpa-sec/wpasec_sent.txt";
-static constexpr const char* kNewWigleUploaded = "/m5porkchop/wigle/wigle_uploaded.txt";
-static constexpr const char* kNewWigleStats = "/m5porkchop/wigle/wigle_stats.json";
-static constexpr const char* kNewXpBackup = "/m5porkchop/xp/xp_backup.bin";
-static constexpr const char* kNewXpAwardedWpa = "/m5porkchop/xp/xp_awarded_wpa.txt";
-static constexpr const char* kNewXpAwardedWigle = "/m5porkchop/xp/xp_awarded_wigle.txt";
-static constexpr const char* kNewBoarBros = "/m5porkchop/misc/boar_bros.txt";
-static constexpr const char* kNewHeapLog = "/m5porkchop/diagnostics/heap_log.txt";
-static constexpr const char* kNewHeapWatermarks = "/m5porkchop/diagnostics/heap_wm.bin";
-static constexpr const char* kNewWpasecKey = "/m5porkchop/wpa-sec/wpasec_key.txt";
-static constexpr const char* kNewWigleKey = "/m5porkchop/wigle/wigle_key.txt";
-static constexpr const char* kNewConfigBin = "/m5porkchop/config/porkchop.dat";
+static constexpr const char* kNewConfigPath = "/porkchop/config/porkchop.conf";
+static constexpr const char* kNewPersonalityPath = "/porkchop/config/personality.json";
+static constexpr const char* kNewWpasecResults = "/porkchop/wpa-sec/wpasec_results.txt";
+static constexpr const char* kNewWpasecUploaded = "/porkchop/wpa-sec/wpasec_uploaded.txt";
+static constexpr const char* kNewWpasecSent = "/porkchop/wpa-sec/wpasec_sent.txt";
+static constexpr const char* kNewWigleUploaded = "/porkchop/wigle/wigle_uploaded.txt";
+static constexpr const char* kNewWigleStats = "/porkchop/wigle/wigle_stats.json";
+static constexpr const char* kNewXpBackup = "/porkchop/xp/xp_backup.bin";
+static constexpr const char* kNewXpAwardedWpa = "/porkchop/xp/xp_awarded_wpa.txt";
+static constexpr const char* kNewXpAwardedWigle = "/porkchop/xp/xp_awarded_wigle.txt";
+static constexpr const char* kNewBoarBros = "/porkchop/misc/boar_bros.txt";
+static constexpr const char* kNewHeapLog = "/porkchop/diagnostics/heap_log.txt";
+static constexpr const char* kNewHeapWatermarks = "/porkchop/diagnostics/heap_wm.bin";
+static constexpr const char* kNewWpasecKey = "/porkchop/wpa-sec/wpasec_key.txt";
+static constexpr const char* kNewWigleKey = "/porkchop/wigle/wigle_key.txt";
+static constexpr const char* kNewConfigBin = "/porkchop/config/porkchop.dat";
 
 // Use mutex to protect shared state
 static portMUX_TYPE layoutMutex = portMUX_INITIALIZER_UNLOCKED;
@@ -328,7 +328,7 @@ static bool backupLegacy(const char* backupRoot) {
         if (!SD.exists(dir)) continue;
         String dst = String(backupRoot) + String(dir);
         if (!copyPathRecursive(dir, dst.c_str())) {
-            Serial.printf("[MIGRATE] Backup failed for dir: %s (continuing)\n", dir);
+            Serial.printf("[MIGRATE] Backup failed for dir: %s (continuing)\r\n", dir);
             failures++;
         }
         yield();
@@ -339,7 +339,7 @@ static bool backupLegacy(const char* backupRoot) {
         if (!SD.exists(file)) continue;
         String dst = String(backupRoot) + String(file);
         if (!copyFile(file, dst.c_str())) {
-            Serial.printf("[MIGRATE] Backup failed for file: %s (continuing)\n", file);
+            Serial.printf("[MIGRATE] Backup failed for file: %s (continuing)\r\n", file);
             failures++;
         }
         yield();
@@ -351,14 +351,14 @@ static bool backupLegacy(const char* backupRoot) {
     for (const String& path : diag) {
         String dst = String(backupRoot) + path;
         if (!copyFile(path.c_str(), dst.c_str())) {
-            Serial.printf("[MIGRATE] Backup failed for diag: %s (continuing)\n", path.c_str());
+            Serial.printf("[MIGRATE] Backup failed for diag: %s (continuing)\r\n", path.c_str());
             failures++;
         }
         yield();
     }
 
     if (failures > 0) {
-        Serial.printf("[MIGRATE] Backup completed with %d failures (non-fatal)\n", failures);
+        Serial.printf("[MIGRATE] Backup completed with %d failures (non-fatal)\r\n", failures);
     }
     return true;  // Best-effort backup — don't block migration over copy failures
 }
@@ -369,7 +369,7 @@ static bool movePath(const char* src, const char* dst, std::vector<MoveOp>& move
     if (SD.exists(dst)) {
         // Destination already exists — prior partial migration likely moved it.
         // Backup was already created, safe to skip this move.
-        Serial.printf("[MIGRATE] Dest exists, skipping: %s (src still at %s)\n", dst, src);
+        Serial.printf("[MIGRATE] Dest exists, skipping: %s (src still at %s)\r\n", dst, src);
         return true;
     }
 
@@ -382,7 +382,7 @@ static bool movePath(const char* src, const char* dst, std::vector<MoveOp>& move
 
     // Rename failed — FatFs cross-directory rename can be flaky.
     // Fallback: copy + delete for files. Directories use copyPathRecursive.
-    Serial.printf("[MIGRATE] Rename failed, trying copy fallback: %s -> %s\n", src, dst);
+    Serial.printf("[MIGRATE] Rename failed, trying copy fallback: %s -> %s\r\n", src, dst);
 
     File probe = SD.open(src);
     if (!probe) return false;
@@ -391,7 +391,7 @@ static bool movePath(const char* src, const char* dst, std::vector<MoveOp>& move
 
     bool ok = isDir ? copyPathRecursive(src, dst) : copyFile(src, dst);
     if (!ok) {
-        Serial.printf("[MIGRATE] Copy fallback also failed: %s -> %s\n", src, dst);
+        Serial.printf("[MIGRATE] Copy fallback also failed: %s -> %s\r\n", src, dst);
         return false;
     }
 
@@ -551,11 +551,11 @@ bool migrateIfNeeded() {
     }
 
     if (SD.exists(kNewRoot) && !isDirEmpty(kNewRoot)) {
-        // /m5porkchop exists with data but no marker. Most likely a previous
+        // /porkchop exists with data but no marker. Most likely a previous
         // migration completed but the marker file was lost/corrupted.
         // Check for config dir as evidence of completed migration.
         if (SD.exists(kNewConfig)) {
-            Serial.println("[MIGRATE] /m5porkchop/config exists without marker; re-creating marker");
+            Serial.println("[MIGRATE] /porkchop/config exists without marker; re-creating marker");
             ensureDir(kNewMeta);
             File marker = SD.open(kMarker, FILE_WRITE);
             if (marker) {
@@ -565,7 +565,7 @@ bool migrateIfNeeded() {
             setUseNewLayout(true);
             return true;
         }
-        Serial.println("[MIGRATE] /m5porkchop exists without marker or config; skipping migration");
+        Serial.println("[MIGRATE] /porkchop exists without marker or config; skipping migration");
         setUseNewLayout(false);
         return false;
     }
@@ -646,7 +646,7 @@ bool migrateIfNeeded() {
     uint64_t freeBytes = SD.totalBytes() - SD.usedBytes();
     const uint64_t headroom = 64ULL * 1024ULL;
     if (freeBytes < (totalSize + headroom)) {
-        Serial.printf("[MIGRATE] Not enough space for backup. Need %llu, free %llu\n",
+        Serial.printf("[MIGRATE] Not enough space for backup. Need %llu, free %llu\r\n",
                       (unsigned long long)(totalSize + headroom),
                       (unsigned long long)freeBytes);
         setUseNewLayout(false);
@@ -680,7 +680,7 @@ bool migrateIfNeeded() {
         return false;
     }
 
-    Serial.printf("[MIGRATE] Backup to %s (size %llu)\n", backupDir.c_str(), (unsigned long long)totalSize);
+    Serial.printf("[MIGRATE] Backup to %s (size %llu)\r\n", backupDir.c_str(), (unsigned long long)totalSize);
     backupLegacy(backupDir.c_str());
 
     ensureDir(kNewRoot);

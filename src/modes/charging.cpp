@@ -140,7 +140,7 @@ void ChargingMode::start() {
     // Initial battery read
     updateBattery();
     
-    Serial.printf("[CHARGING] Mode started. Battery: %d%% (%.2fV) Charging: %s\n",
+    Serial.printf("[CHARGING] Mode started. Battery: %d%% (%.2fV) Charging: %s\r\n",
                   batteryPercent, batteryVoltage, charging ? "YES" : "NO");
 }
 

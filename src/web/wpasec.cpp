@@ -234,7 +234,7 @@ void WPASec::freeCacheMemory() {
     uploadedCache.clear();
     uploadedCache.shrink_to_fit();
     cacheLoaded = false;
-    Serial.printf("[WPASEC] Freed cache: %u cracked, %u uploaded\n",
+    Serial.printf("[WPASEC] Freed cache: %u cracked, %u uploaded\r\n",
                   (unsigned int)crackedCount, (unsigned int)uploadedCount);
 }
 
@@ -310,7 +310,7 @@ bool WPASec::canSync() {
 
     HeapGates::TlsGateStatus tls = HeapGates::checkTlsGates();
 
-    Serial.printf("[WPASEC] canSync: %u free, %u contiguous (need %u/%u)\n",
+    Serial.printf("[WPASEC] canSync: %u free, %u contiguous (need %u/%u)\r\n",
                   (unsigned int)tls.freeHeap, (unsigned int)tls.largestBlock,
                   (unsigned int)HeapPolicy::kMinHeapForTls,
                   (unsigned int)HeapPolicy::kMinContigForTls);
@@ -321,18 +321,18 @@ bool WPASec::canSync() {
 bool WPASec::uploadSingleCapture(const char* filepath, const char* bssid) {
     if (!filepath || !bssid) return false;
     
-    Serial.printf("[WPASEC] Uploading: %s\n", filepath);
+    Serial.printf("[WPASEC] Uploading: %s\r\n", filepath);
     
     // Check file exists and get size
     File capFile = SD.open(filepath, FILE_READ);
     if (!capFile) {
-        Serial.printf("[WPASEC] Cannot open file: %s\n", filepath);
+        Serial.printf("[WPASEC] Cannot open file: %s\r\n", filepath);
         return false;
     }
     size_t fileSize = capFile.size();
     if (fileSize == 0 || fileSize > 100000) {  // Max 100KB
         capFile.close();
-        Serial.printf("[WPASEC] Invalid file size: %u\n", (unsigned int)fileSize);
+        Serial.printf("[WPASEC] Invalid file size: %u\r\n", (unsigned int)fileSize);
         return false;
     }
     
@@ -345,13 +345,13 @@ bool WPASec::uploadSingleCapture(const char* filepath, const char* bssid) {
     client.setInsecure();  // Skip cert validation - saves ~10KB heap
     
     // Connect with timeout
-    Serial.printf("[WPASEC] Connecting to %s:%d\n", WPASEC_HOST, WPASEC_PORT);
+    Serial.printf("[WPASEC] Connecting to %s:%d\r\n", WPASEC_HOST, WPASEC_PORT);
     if (!client.connect(WPASEC_HOST, WPASEC_PORT, 10000)) {
         capFile.close();
         char tlsErr[64] = {0};
         int errCode = client.lastError(tlsErr, sizeof(tlsErr) - 1);
         snprintf(lastError, sizeof(lastError), "TLS CONNECT: %d", errCode);
-        Serial.printf("[WPASEC] TLS connect failed: err=%d (%s)\n", errCode, tlsErr);
+        Serial.printf("[WPASEC] TLS connect failed: err=%d (%s)\r\n", errCode, tlsErr);
         return false;
     }
     
@@ -419,7 +419,7 @@ bool WPASec::uploadSingleCapture(const char* filepath, const char* bssid) {
         char response[64];
         size_t len = client.readBytesUntil('\n', response, sizeof(response) - 1);
         response[len] = '\0';
-        Serial.printf("[WPASEC] Response: %s\n", response);
+        Serial.printf("[WPASEC] Response: %s\r\n", response);
         
         // HTTP/1.1 200 OK or similar success
         if (strstr(response, "200") || strstr(response, "201")) {
@@ -436,7 +436,7 @@ bool WPASec::uploadSingleCapture(const char* filepath, const char* bssid) {
     if (success) {
         // NOTE: Don't mark uploaded here - caller handles marking after all TLS operations
         // This avoids reloading cache during TLS when heap is tight
-        Serial.printf("[WPASEC] Upload success: %s\n", bssid);
+        Serial.printf("[WPASEC] Upload success: %s\r\n", bssid);
     } else {
         strncpy(lastError, "UPLOAD REJECTED", sizeof(lastError) - 1);
     }
@@ -457,7 +457,7 @@ bool WPASec::downloadPotfile(uint16_t& newCracks) {
         char tlsErr[64] = {0};
         int errCode = client.lastError(tlsErr, sizeof(tlsErr) - 1);
         snprintf(lastError, sizeof(lastError), "POTFILE TLS: %d", errCode);
-        Serial.printf("[WPASEC] Potfile TLS failed: err=%d (%s)\n", errCode, tlsErr);
+        Serial.printf("[WPASEC] Potfile TLS failed: err=%d (%s)\r\n", errCode, tlsErr);
         return false;
     }
     
@@ -549,7 +549,7 @@ bool WPASec::downloadPotfile(uint16_t& newCracks) {
     cacheFile.close();
     client.stop();
     
-    Serial.printf("[WPASEC] Potfile downloaded: %u entries\n", (unsigned int)lineCount);
+    Serial.printf("[WPASEC] Potfile downloaded: %u entries\r\n", (unsigned int)lineCount);
     newCracks = lineCount;
     
     return true;
@@ -596,7 +596,7 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
         if (cb) {
             cb("OPTIMIZING HEAP", 0, 0);
         }
-        Serial.printf("[WPASEC] Proactive conditioning: %u < %u threshold\n",
+        Serial.printf("[WPASEC] Proactive conditioning: %u < %u threshold\r\n",
                       (unsigned int)tls.largestBlock,
                       (unsigned int)HeapPolicy::kProactiveTlsConditioning);
         WiFiUtils::conditionHeapForTLS();
@@ -624,7 +624,7 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
             return result;
         }
         
-        Serial.printf("[WPASEC] Conditioning successful: largest=%u\n", 
+        Serial.printf("[WPASEC] Conditioning successful: largest=%u\r\n", 
                       (unsigned int)largestAfter);
     }
     
@@ -733,7 +733,7 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
         dir.close();
     }
     
-    Serial.printf("[WPASEC] Found %u files to upload, %u skipped\n", 
+    Serial.printf("[WPASEC] Found %u files to upload, %u skipped\r\n", 
                   (unsigned int)pendingCount, (unsigned int)result.skipped);
     
     // Free cache before TLS operations - keeps heap clear for WiFiClientSecure
@@ -754,7 +754,7 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
             cb(status, i + 1, pendingCount);
         }
         
-        Serial.printf("[WPASEC] Heap before upload %u: %u\n", 
+        Serial.printf("[WPASEC] Heap before upload %u: %u\r\n", 
                       i, (unsigned int)ESP.getFreeHeap());
         
         if (uploadSingleCapture(pendingUploads[i].path, pendingUploads[i].bssid)) {
@@ -762,7 +762,7 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
             successMask[i] = 1;  // Track for deferred marking
         } else {
             result.failed++;
-            Serial.printf("[WPASEC] Failed: %s\n", pendingUploads[i].path);
+            Serial.printf("[WPASEC] Failed: %s\r\n", pendingUploads[i].path);
         }
         
         // Small delay between uploads to let heap settle
@@ -794,7 +794,7 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
             }
         }
         saveUploadedList();
-        Serial.printf("[WPASEC] Marked %u uploads after TLS complete\n", result.uploaded);
+        Serial.printf("[WPASEC] Marked %u uploads after TLS complete\r\n", result.uploaded);
     }
     
     // Download potfile
@@ -808,7 +808,7 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
     freeCacheMemory();
     delay(100);
     
-    Serial.printf("[WPASEC] Heap before potfile: %u largest=%u\n", 
+    Serial.printf("[WPASEC] Heap before potfile: %u largest=%u\r\n", 
                   (unsigned int)ESP.getFreeHeap(),
                   (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     
@@ -826,7 +826,7 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
             result.cracked = crackedCache.size();
         }
     } else {
-        Serial.printf("[WPASEC] Skipping potfile: insufficient heap (%u < %u)\n",
+        Serial.printf("[WPASEC] Skipping potfile: insufficient heap (%u < %u)\r\n",
                       (unsigned int)potGate.largestBlock,
                       (unsigned int)HeapPolicy::kMinContigForTls);
         snprintf(lastError, sizeof(lastError), "POTFILE SKIP: LOW HEAP");
@@ -851,7 +851,7 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
     }
     
     busy = false;
-    Serial.printf("[WPASEC] Sync complete: uploaded=%u failed=%u cracked=%u\n",
+    Serial.printf("[WPASEC] Sync complete: uploaded=%u failed=%u cracked=%u\r\n",
                   (unsigned int)result.uploaded, (unsigned int)result.failed,
                   (unsigned int)result.cracked);
     

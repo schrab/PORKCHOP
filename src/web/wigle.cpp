@@ -75,7 +75,7 @@ bool WiGLE::loadUploadedList() {
 
     f.close();
     listLoaded = true;
-    Serial.printf("[WIGLE] Loaded %d uploaded files from tracking\n", uploadedFiles.size());
+    Serial.printf("[WIGLE] Loaded %d uploaded files from tracking\r\n", uploadedFiles.size());
     return true;
 }
 
@@ -97,7 +97,7 @@ void WiGLE::freeUploadedListMemory() {
     uploadedFiles.clear();
     uploadedFiles.shrink_to_fit();
     listLoaded = false;
-    Serial.printf("[WIGLE] Freed uploaded list: %u entries\n", (unsigned int)count);
+    Serial.printf("[WIGLE] Freed uploaded list: %u entries\r\n", (unsigned int)count);
 }
 
 const char* WiGLE::getFilenameFromPath(const char* path) {
@@ -243,7 +243,7 @@ bool WiGLE::canSync() {
 
     HeapGates::TlsGateStatus tls = HeapGates::checkTlsGates();
 
-    Serial.printf("[WIGLE] canSync: %u free, %u contiguous (need %u/%u)\n",
+    Serial.printf("[WIGLE] canSync: %u free, %u contiguous (need %u/%u)\r\n",
                   (unsigned int)tls.freeHeap, (unsigned int)tls.largestBlock,
                   (unsigned int)HeapPolicy::kMinHeapForTls,
                   (unsigned int)HeapPolicy::kMinContigForTls);
@@ -254,19 +254,19 @@ bool WiGLE::canSync() {
 bool WiGLE::uploadSingleFile(const char* csvPath) {
     if (!csvPath) return false;
     
-    Serial.printf("[WIGLE] Uploading: %s\n", csvPath);
+    Serial.printf("[WIGLE] Uploading: %s\r\n", csvPath);
     
     // Check file exists and get size
     File csvFile = SD.open(csvPath, FILE_READ);
     if (!csvFile) {
-        Serial.printf("[WIGLE] Cannot open file: %s\n", csvPath);
+        Serial.printf("[WIGLE] Cannot open file: %s\r\n", csvPath);
         return false;
     }
     
     size_t fileSize = csvFile.size();
     if (fileSize == 0 || fileSize > 500000) {  // Max 500KB for ESP32 memory safety
         csvFile.close();
-        Serial.printf("[WIGLE] Invalid file size: %u\n", (unsigned int)fileSize);
+        Serial.printf("[WIGLE] Invalid file size: %u\r\n", (unsigned int)fileSize);
         strncpy(lastError, "FILE TOO LARGE", sizeof(lastError) - 1);
         return false;
     }
@@ -293,14 +293,14 @@ bool WiGLE::uploadSingleFile(const char* csvPath) {
     // Socket doesn't exist yet - those calls require an active socket
 
     // Connect with timeout (15s)
-    Serial.printf("[WIGLE] Connecting to %s:%d\n", API_HOST, API_PORT);
+    Serial.printf("[WIGLE] Connecting to %s:%d\r\n", API_HOST, API_PORT);
     if (!client.connect(API_HOST, API_PORT, 15000)) {
         csvFile.close();
         // Capture mbedTLS error for diagnostics
         char tlsErr[64] = {0};
         int errCode = client.lastError(tlsErr, sizeof(tlsErr) - 1);
         snprintf(lastError, sizeof(lastError), "TLS CONNECT: %d", errCode);
-        Serial.printf("[WIGLE] TLS connect failed: err=%d (%s)\n", errCode, tlsErr);
+        Serial.printf("[WIGLE] TLS connect failed: err=%d (%s)\r\n", errCode, tlsErr);
         return false;
     }
     
@@ -353,7 +353,7 @@ bool WiGLE::uploadSingleFile(const char* csvPath) {
             int errCode = client.lastError(tlsErr, sizeof(tlsErr) - 1);
             snprintf(lastError, sizeof(lastError), "CONN LOST @%uB: %d", 
                      (unsigned int)bytesSent, errCode);
-            Serial.printf("[WIGLE] Connection lost during upload: sent=%u/%u, err=%d (%s)\n",
+            Serial.printf("[WIGLE] Connection lost during upload: sent=%u/%u, err=%d (%s)\r\n",
                           (unsigned int)bytesSent, (unsigned int)fileSize, errCode, tlsErr);
             csvFile.close();
             client.stop();
@@ -364,7 +364,7 @@ bool WiGLE::uploadSingleFile(const char* csvPath) {
         size_t bytesRead = csvFile.read(chunk, toRead);
         if (bytesRead == 0) {
             snprintf(lastError, sizeof(lastError), "SD READ @%uB", (unsigned int)bytesSent);
-            Serial.printf("[WIGLE] SD read failed at offset %u/%u\n", 
+            Serial.printf("[WIGLE] SD read failed at offset %u/%u\r\n", 
                           (unsigned int)bytesSent, (unsigned int)fileSize);
             csvFile.close();
             client.stop();
@@ -377,7 +377,7 @@ bool WiGLE::uploadSingleFile(const char* csvPath) {
             int errCode = client.lastError(tlsErr, sizeof(tlsErr) - 1);
             snprintf(lastError, sizeof(lastError), "TLS WRITE: %d @%uB", 
                      errCode, (unsigned int)bytesSent);
-            Serial.printf("[WIGLE] TLS write failed: wrote=%u/%u, sent=%u/%u, err=%d (%s), conn=%d\n",
+            Serial.printf("[WIGLE] TLS write failed: wrote=%u/%u, sent=%u/%u, err=%d (%s), conn=%d\r\n",
                           (unsigned int)written, (unsigned int)bytesRead,
                           (unsigned int)bytesSent, (unsigned int)fileSize,
                           errCode, tlsErr, client.connected());
@@ -458,7 +458,7 @@ bool WiGLE::uploadSingleFile(const char* csvPath) {
     if (success) {
         // NOTE: Don't mark uploaded here - caller handles marking after all TLS operations
         // This avoids reloading list during TLS when heap is tight
-        Serial.printf("[WIGLE] Upload success: %s\n", csvPath);
+        Serial.printf("[WIGLE] Upload success: %s\r\n", csvPath);
         SDLog::log("WIGLE", "Upload OK: %s", filename);
         return true;
     }
@@ -470,7 +470,7 @@ bool WiGLE::uploadSingleFile(const char* csvPath) {
         strncpy(lastError, "NO RESPONSE", sizeof(lastError) - 1);
     }
     
-    Serial.printf("[WIGLE] Upload failed: %s - %s\n", csvPath, lastError);
+    Serial.printf("[WIGLE] Upload failed: %s - %s\r\n", csvPath, lastError);
     SDLog::log("WIGLE", "Upload failed: %s", filename);
     return false;
 }
@@ -638,7 +638,7 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
         if (cb) {
             cb("OPTIMIZING HEAP", 0, 0);
         }
-        Serial.printf("[WIGLE] Proactive conditioning: %u < %u threshold\n",
+        Serial.printf("[WIGLE] Proactive conditioning: %u < %u threshold\r\n",
                       (unsigned int)tls.largestBlock,
                       (unsigned int)HeapPolicy::kProactiveTlsConditioning);
         WiFiUtils::conditionHeapForTLS();
@@ -665,7 +665,7 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
             return result;
         }
         
-        Serial.printf("[WIGLE] Conditioning successful: largest=%u\n", 
+        Serial.printf("[WIGLE] Conditioning successful: largest=%u\r\n", 
                       (unsigned int)largestAfter);
     }
     
@@ -727,7 +727,7 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
         dir.close();
     }
     
-    Serial.printf("[WIGLE] Found %u files to upload, %u skipped\n", 
+    Serial.printf("[WIGLE] Found %u files to upload, %u skipped\r\n", 
                   (unsigned int)pendingCount, (unsigned int)result.skipped);
     
     // Free memory before TLS operations - keeps heap clear for WiFiClientSecure
@@ -748,7 +748,7 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
             cb(status, i + 1, pendingCount);
         }
         
-        Serial.printf("[WIGLE] Heap before upload %u: %u\n", 
+        Serial.printf("[WIGLE] Heap before upload %u: %u\r\n", 
                       i, (unsigned int)ESP.getFreeHeap());
         
         if (uploadSingleFile(pendingUploads[i].path)) {
@@ -756,7 +756,7 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
             successMask[i] = 1;  // Track for deferred marking
         } else {
             result.failed++;
-            Serial.printf("[WIGLE] Failed: %s\n", pendingUploads[i].path);
+            Serial.printf("[WIGLE] Failed: %s\r\n", pendingUploads[i].path);
         }
         
         // Small delay between uploads to let heap settle
@@ -788,7 +788,7 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
             }
         }
         saveUploadedList();
-        Serial.printf("[WIGLE] Marked %u uploads after TLS complete\n", result.uploaded);
+        Serial.printf("[WIGLE] Marked %u uploads after TLS complete\r\n", result.uploaded);
     }
     
     // Fetch stats after uploads
@@ -802,7 +802,7 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
     freeUploadedListMemory();
     delay(100);
     
-    Serial.printf("[WIGLE] Heap before stats: %u largest=%u\n", 
+    Serial.printf("[WIGLE] Heap before stats: %u largest=%u\r\n", 
                   (unsigned int)ESP.getFreeHeap(),
                   (unsigned int)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
     
@@ -811,7 +811,7 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
     if (statsGate.failure == HeapGates::TlsGateFailure::None) {
         result.statsFetched = fetchStats();
         if (!result.statsFetched) {
-            Serial.printf("[WIGLE] Stats fetch failed: %s\n", lastError);
+            Serial.printf("[WIGLE] Stats fetch failed: %s\r\n", lastError);
         }
     } else {
         Serial.println("[WIGLE] Skipping stats - heap too low");
@@ -835,7 +835,7 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
     
     busy = false;
     
-    Serial.printf("[WIGLE] Sync complete: up=%u fail=%u skip=%u stats=%s\n",
+    Serial.printf("[WIGLE] Sync complete: up=%u fail=%u skip=%u stats=%s\r\n",
                   (unsigned int)result.uploaded, (unsigned int)result.failed,
                   (unsigned int)result.skipped, result.statsFetched ? "yes" : "no");
     

@@ -23,10 +23,10 @@ static void setMAC(const uint8_t* mac) {
     esp_err_t err = esp_wifi_set_mac(WIFI_IF_STA, mac);
     if (err == ESP_OK) {
         memcpy(sCurrentMAC, mac, 6);
-        Serial.printf("[GHOST] MAC -> %02X:%02X:%02X:%02X:%02X:%02X\n",
+        Serial.printf("[GHOST] MAC -> %02X:%02X:%02X:%02X:%02X:%02X\r\n",
                       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     } else {
-        Serial.printf("[GHOST] set_mac failed: %d\n", (int)err);
+        Serial.printf("[GHOST] set_mac failed: %d\r\n", (int)err);
     }
 }
 

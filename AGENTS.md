@@ -1,5 +1,67 @@
 # PORKCHOP — ESP32-S3 Mini Port
 
+# Karpathy Guidelines
+
+Behavioral guidelines to reduce common LLM coding mistakes.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+## 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+## 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+## 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
 ## Overview
 
 PORKCHOP is a WiFi pentesting firmware for ESP32-S3 microcontrollers.  
@@ -167,8 +229,10 @@ promiscuous packet callback (one at a time). Thread-safe via mutex.
 ### Not Working
 - ❌ **180° rotation**: MX and MY bits in MADCTL register have **no effect** on this display module. Only MV bit works. The orientation is fixed at hardware level.
 - ❌ **Vertical shift**: CGRAM offset shifts content up 35px, leaving unwritten area at bottom.
-- ❌ **Sprite corruption**: mainCanvas sprite (320×142, 8-bit) buffer gets corrupted between init and first loop. `m_sprite` pointer becomes `0xA5A5A5A5` (freed heap fill).
-- ❌ **Dim wake**: After dimming, keys sometimes don't restore brightness.
+
+### Fixed
+- ✅ **Sprite corruption**: Fixed by embedding TFT_eSprite by value (not pointer) in DisplayCanvas + moving char buffers to `.ext_ram.bss` section.
+- ✅ **Dim wake**: Fixed by calling `Display::resetDimTimer()` on any key state change in `porkchop.cpp`.
 
 ### Key Display Config (User_Setup.h)
 ```cpp
@@ -216,7 +280,7 @@ class DisplayCanvas {
 ```cpp
 // Key codes
 KEY_UP 0xDA  KEY_DOWN 0xD9  KEY_LEFT 0xD8  KEY_RIGHT 0xD7
-KEY_ENTER 0x0D  KEY_ESC 0x1B  KEY_BACKSPACE 0x08
+KEY_ENTER 0x0D  KEY_ESC 0x1B  KEY_TAB 0x09
 
 void hal_input_init();         // Setup joystick GPIOs (INPUT_PULLUP)
 void hal_input_update();       // Poll + debounce — call once per loop()
@@ -228,7 +292,9 @@ void hal_input_waitRelease();  // Block until all keys released
 uint8_t hal_input_getch();     // Get next buffered key
 InputEvent hal_input_keysState();  // Single-shot poll {pressed, key}
 bool hal_input_isKeyPressed(char key);  // Raw read of specific key
-bool hal_input_shouldExit();   // ESC or BACKSPACE pressed?
+bool hal_input_shouldExit();   // ESC pressed?
+bool hal_input_isLongEnter();  // Long-press ENTER (800ms hold)
+void hal_input_consumeLongEsc();  // Consume long-press LEFT ESC flag
 ```
 
 ### Audio (`hal_audio.h`)
@@ -236,6 +302,8 @@ bool hal_input_shouldExit();   // ESC or BACKSPACE pressed?
 void hal_audio_init();         // Setup LEDC timer on piezo pin
 void hal_audio_play(uint16_t freq, uint32_t duration_ms);
 void hal_audio_stop();
+void hal_audio_beep();         // Short notification beep
+void hal_audio_click();        // UI click sound
 ```
 
 ### Battery (`hal_battery.h`)
@@ -249,6 +317,7 @@ bool hal_battery_isCharging();       // Charging detect (stub)
 ### RTC (`hal_rtc.h`)
 ```cpp
 struct hal_rtc_datetime_t { uint16_t year; uint8_t month, day, hour, minute, second; };
+void hal_rtc_init();
 void hal_rtc_getDateTime(hal_rtc_datetime_t* dt);
 uint32_t hal_rtc_getUnixTime();
 ```
@@ -257,6 +326,7 @@ uint32_t hal_rtc_getUnixTime();
 ```cpp
 bool hal_imu_init();                // Returns false (no IMU on Mini)
 bool hal_imu_getAccel(float* x, float* y, float* z);  // Stub: x=0, y=0, z=1.0
+bool hal_imu_isAvailable();         // Check if IMU hardware present
 ```
 
 ## Porting Notes (M5Cardputer → ESP32-S3 Mini)
@@ -283,7 +353,6 @@ bool hal_imu_getAccel(float* x, float* y, float* z);  // Stub: x=0, y=0, z=1.0
 | KBD `/` (RIGHT) | Joystick RIGHT (GPIO 42) |
 | KBD `ENTER` | Joystick SELECT (GPIO 38) |
 | KBD `` ` `` (ESC) | SELECT held 1s |
-| KBD `BACKSPACE` | Btn B (GPIO 34) |
 
 ### Display layout (320×170)
 ```
@@ -299,3 +368,100 @@ BOTTOM_BAR  = 14px   (bottom overlay)
 - **Style**: Arduino framework, C++17, snake_case for functions, PascalCase for classes
 - **Config**: New config fields append at end of `ConfigBlob` struct (packed, `CONFIG_VERSION=1`). Old blobs zero-initialize new fields via `memset`.
 - **SnOUT note**: `NetworkRecon::setPacketCallback()` supports only **one** callback at a time. SnOUT registers its deauth callback on start, clears on stop. Do not run SnOUT alongside modes that use packet callbacks.
+
+# DOX framework
+
+- DOX is highly performant AGENTS.md hierarchy installed here
+- Agent must follow DOX instructions across any edits
+
+## Core Contract
+
+- AGENTS.md files are binding work contracts for their subtrees
+- Work products, source materials, instructions, records, assets, and durable docs must stay understandable from the nearest applicable AGENTS.md plus every parent AGENTS.md above it
+
+## Read Before Editing
+
+1. Read the root AGENTS.md
+2. Identify every file or folder you expect to touch
+3. Walk from the repository root to each target path
+4. Read every AGENTS.md found along each route
+5. If a parent AGENTS.md lists a child AGENTS.md whose scope contains the path, read that child and continue from there
+6. Use the nearest AGENTS.md as the local contract and parent docs for repo-wide rules
+7. If docs conflict, the closer doc controls local work details, but no child doc may weaken DOX
+
+Do not rely on memory. Re-read the applicable DOX chain in the current session before editing.
+
+## Update After Editing
+
+Every meaningful change requires a DOX pass before the task is done.
+
+Update the closest owning AGENTS.md when a change affects:
+
+- purpose, scope, ownership, or responsibilities
+- durable structure, contracts, workflows, or operating rules
+- required inputs, outputs, permissions, constraints, side effects, or artifacts
+- user preferences about behavior, communication, process, organization, or quality
+- AGENTS.md creation, deletion, move, rename, or index contents
+
+Update parent docs when parent-level structure, ownership, workflow, or child index changes. Update child docs when parent changes alter local rules. Remove stale or contradictory text immediately. Small edits that do not change behavior or contracts may leave docs unchanged, but the DOX pass still must happen.
+
+## Hierarchy
+
+- Root AGENTS.md is the DOX rail: project-wide instructions, global preferences, durable workflow rules, and the top-level Child DOX Index
+- Child AGENTS.md files own domain-specific instructions and their own Child DOX Index
+- Each parent explains what its direct children cover and what stays owned by the parent
+- The closer a doc is to the work, the more specific and practical it must be
+
+## Child Doc Shape
+
+- Create a child AGENTS.md when a folder becomes a durable boundary with its own purpose, rules, responsibilities, workflow, materials, or quality standards
+- Work Guidance must reflect the current standards of the project or user instructions; if there are no specific standards or instructions yet, leave it empty
+- Verification must reflect an existing check; if no verification framework exists yet, leave it empty and update it when one exists
+
+Default section order:
+- Purpose
+- Ownership
+- Local Contracts
+- Work Guidance
+- Verification
+- Child DOX Index
+
+## Style
+
+- Keep docs concise, current, and operational
+- Document stable contracts, not diary entries
+- Put broad rules in parent docs and concrete details in child docs
+- Prefer direct bullets with explicit names
+- Do not duplicate rules across many files unless each scope needs a local version
+- Delete stale notes instead of explaining history
+- Trim obvious statements, repeated rules, misplaced detail, and warnings for risks that no longer exist
+
+## Closeout
+
+1. Re-check changed paths against the DOX chain
+2. Update nearest owning docs and any affected parents or children
+3. Refresh every affected Child DOX Index
+4. Remove stale or contradictory text
+5. Run existing verification when relevant
+6. Report any docs intentionally left unchanged and why
+
+## User Preferences
+
+When the user requests a durable behavior change, record it here or in the relevant child AGENTS.md
+
+## Child DOX Index
+
+| Child | Path | Scope |
+|---|---|---|
+| core | `src/core/AGENTS.md` | State machine, config, XP, network recon, SD I/O, heap mgmt |
+| hal | `src/hal/AGENTS.md` | Hardware abstraction (display, input, audio, battery, NeoPixel, RTC) |
+| ui | `src/ui/AGENTS.md` | Display drawing, 3-canvas system, 13 menus, themes, dimming |
+| modes | `src/modes/AGENTS.md` | 12 operating modes (attack, recon, comms, system) |
+| web | `src/web/AGENTS.md` | HTTP file server, WiGLE/WPA-SEC uploads, WebUI screen mirror |
+| piglet | `src/piglet/AGENTS.md` | Personality system (avatar, mood, weather) |
+
+**Not indexed** (no child AGENTS.md needed):
+- `src/audio/` — 2 files, simple LEDC wrapper
+- `src/gps/` — 2 files, single-purpose TinyGPSPlus wrapper
+- `test/` — covered by `test/README.md`
+- `docs/`, `boards/`, `scripts/` — static config/reference only

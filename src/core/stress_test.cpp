@@ -53,7 +53,7 @@ void StressTest::checkActivation() {
 
 void StressTest::setScenario(StressScenario s) {
     scenario = s;
-    Serial.printf("[STRESS] Scenario: %d\n", (int)s);
+    Serial.printf("[STRESS] Scenario: %d\r\n", (int)s);
 }
 
 void StressTest::nextScenario() {

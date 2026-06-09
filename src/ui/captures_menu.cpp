@@ -210,7 +210,7 @@ void CapturesMenu::processAsyncScan() {
                 lastWpasecUpdateTime = millis();
             }
 
-            Serial.printf("[CAPTURES] Async scan complete. Found %d captures\n", captures.size());
+            Serial.printf("[CAPTURES] Async scan complete. Found %d captures\r\n", captures.size());
             break;
         }
 
@@ -406,7 +406,7 @@ void CapturesMenu::processAsyncWPASecUpdate() {
     // Check if we're done with all captures
     if (wpasecUpdateProgress >= captures.size()) {
         wpasecUpdateInProgress = false;
-        Serial.printf("[CAPTURES] Async WPA-SEC update complete. Updated %d captures\n", captures.size());
+        Serial.printf("[CAPTURES] Async WPA-SEC update complete. Updated %d captures\r\n", captures.size());
     }
 }
 
@@ -765,7 +765,7 @@ void CapturesMenu::nukeLoot() {
         yield();
     }
     
-    Serial.printf("[CAPTURES] Nuked %d files\n", deleted);
+    Serial.printf("[CAPTURES] Nuked %d files\r\n", deleted);
     
     // Reset selection
     selectedIndex = 0;
@@ -1001,7 +1001,7 @@ bool CapturesMenu::connectToWiFi() {
         return false;
     }
     
-    Serial.printf("[CAPTURES] Connecting to WiFi: %s\n", ssid);
+    Serial.printf("[CAPTURES] Connecting to WiFi: %s\r\n", ssid);
     strncpy(syncStatusText, "CONNECTING WIFI...", sizeof(syncStatusText) - 1);
     
     WiFi.mode(WIFI_STA);
@@ -1022,7 +1022,7 @@ bool CapturesMenu::connectToWiFi() {
         return false;
     }
     
-    Serial.printf("[CAPTURES] WiFi connected, IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[CAPTURES] WiFi connected, IP: %s\r\n", WiFi.localIP().toString().c_str());
     return true;
 }
 
@@ -1059,7 +1059,7 @@ void CapturesMenu::startSync() {
     captures.shrink_to_fit();
     WPASec::freeCacheMemory();
     
-    Serial.printf("[CAPTURES] Heap after freeing: %u\n", (unsigned int)ESP.getFreeHeap());
+    Serial.printf("[CAPTURES] Heap after freeing: %u\r\n", (unsigned int)ESP.getFreeHeap());
 }
 
 void CapturesMenu::cancelSync() {

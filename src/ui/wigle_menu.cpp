@@ -175,7 +175,7 @@ void WigleMenu::processAsyncScan() {
                 return strcmp(a.filename, b.filename) > 0;
             });
             
-            Serial.printf("[WIGLE_MENU] Async scan complete. Found %d WiGLE files\n", files.size());
+            Serial.printf("[WIGLE_MENU] Async scan complete. Found %d WiGLE files\r\n", files.size());
             break;
         }
         
@@ -549,7 +549,7 @@ void WigleMenu::nukeTrack() {
     
     const WigleFileInfo& file = files[selectedIndex];
     
-    Serial.printf("[WIGLE_MENU] Nuking track: %s\n", file.fullPath);
+    Serial.printf("[WIGLE_MENU] Nuking track: %s\r\n", file.fullPath);
 
     // Delete the .wigle.csv file
     bool deleted = SD.remove(file.fullPath);
@@ -563,7 +563,7 @@ void WigleMenu::nukeTrack() {
         strcpy(wigleSuffix, ".csv");
         if (SD.exists(internalPath)) {
             SD.remove(internalPath);
-            Serial.printf("[WIGLE_MENU] Also nuked: %s\n", internalPath);
+            Serial.printf("[WIGLE_MENU] Also nuked: %s\r\n", internalPath);
         }
     }
 
@@ -612,7 +612,7 @@ bool WigleMenu::connectToWiFi() {
         return false;
     }
     
-    Serial.printf("[WIGLE_MENU] Connecting to WiFi: %s\n", ssid);
+    Serial.printf("[WIGLE_MENU] Connecting to WiFi: %s\r\n", ssid);
     strncpy(syncStatusText, "CONNECTING WIFI...", sizeof(syncStatusText) - 1);
     
     WiFi.mode(WIFI_STA);
@@ -633,7 +633,7 @@ bool WigleMenu::connectToWiFi() {
         return false;
     }
     
-    Serial.printf("[WIGLE_MENU] WiFi connected, IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[WIGLE_MENU] WiFi connected, IP: %s\r\n", WiFi.localIP().toString().c_str());
     return true;
 }
 
@@ -671,7 +671,7 @@ void WigleMenu::startSync() {
     files.shrink_to_fit();
     WiGLE::freeUploadedListMemory();
     
-    Serial.printf("[WIGLE_MENU] Heap after freeing: %u\n", (unsigned int)ESP.getFreeHeap());
+    Serial.printf("[WIGLE_MENU] Heap after freeing: %u\r\n", (unsigned int)ESP.getFreeHeap());
 }
 
 void WigleMenu::cancelSync() {

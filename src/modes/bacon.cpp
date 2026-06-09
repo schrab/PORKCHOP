@@ -153,7 +153,7 @@ void BaconMode::stop() {
     Mood::setStatusMessage("");
     Mood::setDialogueLock(false);
     
-    Serial.printf("[BACON] Stopped - Sent %lu beacons\n", beaconCount);
+    Serial.printf("[BACON] Stopped - Sent %lu beacons\r\n", beaconCount);
     SDLog::log("BACON", "Stopped - Total beacons: %lu", beaconCount);
 }
 
@@ -284,7 +284,7 @@ void BaconMode::updateAsyncScan() {
         return;
     }
 
-    Serial.printf("[BACON] Found %d APs\n", n);
+    Serial.printf("[BACON] Found %d APs\r\n", n);
 
     // Extract top 3 APs by RSSI
     for (int i = 0; i < n && apCount < BACON_MAX_APS; i++) {
@@ -319,7 +319,7 @@ void BaconMode::updateAsyncScan() {
             strncpy(apFingerprint[apCount].ssid, ssid.c_str(), 32);
             apFingerprint[apCount].ssid[32] = 0;
 
-            Serial.printf("[BACON] AP %d: %s  %ddB  CH:%d  %02X:%02X:%02X:%02X:%02X:%02X\n",
+            Serial.printf("[BACON] AP %d: %s  %ddB  CH:%d  %02X:%02X:%02X:%02X:%02X:%02X\r\n",
                          apCount + 1,
                          ssid.c_str(),
                          apFingerprint[apCount].rssi,
@@ -337,7 +337,7 @@ void BaconMode::updateAsyncScan() {
     WiFi.scanDelete();
     scanInProgress = false;
     scanCompleted = true;
-    Serial.printf("[BACON] Selected %d APs for fingerprint\n", apCount);
+    Serial.printf("[BACON] Selected %d APs for fingerprint\r\n", apCount);
 }
 
 void BaconMode::buildVendorIE(uint8_t* buffer, size_t* len, uint8_t apCountOverride) {
@@ -486,7 +486,7 @@ void BaconMode::sendBeacon() {
     esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, beaconFrame, frameLen, false);
     
     if (err != ESP_OK) {
-        Serial.printf("[BACON] Beacon TX failed: %d\n", err);
+        Serial.printf("[BACON] Beacon TX failed: %d\r\n", err);
     }
 }
 

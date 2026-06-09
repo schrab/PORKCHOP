@@ -4,13 +4,12 @@
 #define PORKCHOP_LOG_ENABLED 1
 #endif
 
-#if !PORKCHOP_LOG_ENABLED
 #ifdef __cplusplus
-// Ensure core Serial is declared before we override it.
 #ifdef ARDUINO
 #include <Arduino.h>
 #endif
 
+#if !PORKCHOP_LOG_ENABLED
 #if !defined(ARDUINO_CORE_BUILD)
 // Compile-time Serial sink to disable all logging with minimal overhead.
 struct PorkchopNullSerial {

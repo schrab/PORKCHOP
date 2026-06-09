@@ -45,7 +45,7 @@ static void _serveClient(int cfd) {
         if (n <= 0) break;
         _rbuf[n] = 0;
 
-        Serial.printf("[WEBUI] req%d(%d): %.50s\n", req, n, _rbuf);
+        Serial.printf("[WEBUI] req%d(%d): %.50s\r\n", req, n, _rbuf);
 
         if ((uint8_t)_rbuf[0] == 0x16) break;  // TLS probe
 
@@ -113,7 +113,7 @@ static void _serveClient(int cfd) {
                 int rv = send(cfd, (char*)_row, outW * 2, 0);
                 if (rv > 0) sent += rv;
             }
-            Serial.printf("[WEBUI] screen: %ux%u sent=%lu/%lu\n", outW, outH, sent, bodyLen);
+            Serial.printf("[WEBUI] screen: %ux%u sent=%lu/%lu\r\n", outW, outH, sent, bodyLen);
 
         } else if (isCmd) {
             memset(_cmdArg, 0, sizeof(_cmdArg));
@@ -167,7 +167,7 @@ void WebUI::start() {
     WiFi.softAP(WEBUI_AP_SSID);
     uint32_t t0 = millis();
     while (WiFi.softAPIP().toString() == "0.0.0.0" && millis() - t0 < 3000) delay(100);
-    Serial.printf("[WEBUI] AP IP: %s  heap=%u\n", WiFi.softAPIP().toString().c_str(), ESP.getFreeHeap());
+    Serial.printf("[WEBUI] AP IP: %s  heap=%u\r\n", WiFi.softAPIP().toString().c_str(), ESP.getFreeHeap());
 
     struct sockaddr_in sa = {};
     sa.sin_family = AF_INET;
@@ -180,7 +180,7 @@ void WebUI::start() {
     bind(_listenSock, (struct sockaddr*)&sa, sizeof(sa));
     listen(_listenSock, 1);
     _active = true;
-    Serial.printf("[WEBUI] listening on port %d  heap=%u\n", WEBUI_PORT, ESP.getFreeHeap());
+    Serial.printf("[WEBUI] listening on port %d  heap=%u\r\n", WEBUI_PORT, ESP.getFreeHeap());
     Display::showToast("WEBUI: 192.168.4.1", 4000);
 }
 
@@ -209,11 +209,11 @@ void WebUI::update() {
     struct sockaddr_in ca; socklen_t cl = sizeof(ca);
     int cfd = accept(_listenSock, (struct sockaddr*)&ca, &cl);
     if (cfd < 0) return;
-    Serial.printf("[WEBUI] client %s heap=%u\n", inet_ntoa(ca.sin_addr), ESP.getFreeHeap());
+    Serial.printf("[WEBUI] client %s heap=%u\r\n", inet_ntoa(ca.sin_addr), ESP.getFreeHeap());
     int sndbuf = 512; setsockopt(cfd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
     int nd = 1; setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &nd, sizeof(nd));
     _serveClient(cfd);
-    Serial.printf("[WEBUI] served heap=%u\n", ESP.getFreeHeap());
+    Serial.printf("[WEBUI] served heap=%u\r\n", ESP.getFreeHeap());
 }
 
 bool WebUI::isActive() { return _active; }

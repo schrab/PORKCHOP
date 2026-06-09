@@ -272,7 +272,7 @@ void DoNoHamMode::start() {
     Mood::onPassiveRecon(NetworkRecon::getNetworkCount(), currentChannel);
     Mood::setDialogueLock(true);
     
-    Serial.printf("[DNH] Started. Networks available: %d\n", NetworkRecon::getNetworkCount());
+    Serial.printf("[DNH] Started. Networks available: %d\r\n", NetworkRecon::getNetworkCount());
 }
 
 void DoNoHamMode::stop() {
@@ -1271,7 +1271,7 @@ int DoNoHamMode::findOrCreatePMKID(const uint8_t* bssid) {
         if (pmkids.size() >= pmkids.capacity()) {
             size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
             if (largest < DNH_PMKID_ALLOC_MIN_BLOCK) {
-                Serial.printf("[DNH] PMKID add blocked: fragmented heap (largest=%u)\n", largest);
+                Serial.printf("[DNH] PMKID add blocked: fragmented heap (largest=%u)\r\n", largest);
                 return -1;
             }
         }
@@ -1313,7 +1313,7 @@ int DoNoHamMode::findOrCreateHandshake(const uint8_t* bssid, const uint8_t* stat
         // Check free heap before attempting allocation
         size_t freeHeap = ESP.getFreeHeap();
         if (freeHeap < HeapPolicy::kMinHeapForHandshakeAdd) {
-            Serial.printf("[DNH] Handshake add blocked: low heap (%u)\n", freeHeap);
+            Serial.printf("[DNH] Handshake add blocked: low heap (%u)\r\n", freeHeap);
             return -1;
         }
         
@@ -1321,7 +1321,7 @@ int DoNoHamMode::findOrCreateHandshake(const uint8_t* bssid, const uint8_t* stat
         if (handshakes.size() >= handshakes.capacity()) {
             size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
             if (largest < DNH_HANDSHAKE_ALLOC_MIN_BLOCK) {
-                Serial.printf("[DNH] Handshake add blocked: fragmented heap (largest=%u)\n", largest);
+                Serial.printf("[DNH] Handshake add blocked: fragmented heap (largest=%u)\r\n", largest);
                 return -1;
             }
         }

@@ -342,6 +342,11 @@ void Porkchop::update() {
     // Check for session time XP bonuses
     XP::updateSessionTime();
     yield(); // Allow other tasks to run between operations
+    
+    // Periodic SD writes — ring buffer flush for SDLog, throttled XP backup
+    SDLog::periodicFlush();
+    XP::periodicBackup();
+    yield(); // Allow other tasks to run between operations
 }
 
 void Porkchop::setMode(PorkchopMode mode) {
@@ -350,7 +355,7 @@ void Porkchop::setMode(PorkchopMode mode) {
     // Store the mode we're leaving for cleanup
     PorkchopMode oldMode = currentMode;
 
-    Serial.printf("[MODE] EXIT %s free=%u\n",
+    Serial.printf("[MODE] EXIT %s free=%u\r\n",
         modeToString(oldMode),
         (unsigned)esp_get_free_heap_size());
     
@@ -378,7 +383,7 @@ void Porkchop::setMode(PorkchopMode mode) {
     }
     currentMode = mode;
 
-    Serial.printf("[MODE] ENTER %s free=%u\n",
+    Serial.printf("[MODE] ENTER %s free=%u\r\n",
         modeToString(currentMode),
         (unsigned)esp_get_free_heap_size());
     
@@ -468,6 +473,7 @@ void Porkchop::setMode(PorkchopMode mode) {
             Avatar::setState(AvatarState::NEUTRAL);
             Mood::onIdle();
             XP::save();  // Save XP when returning to idle
+            XP::backupToSD();  // Ensure backup on IDLE transition
             SDLog::log("PORK", "Mode: IDLE");
             break;
         case PorkchopMode::OINK_MODE:

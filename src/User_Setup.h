@@ -17,7 +17,7 @@
 #define TOUCH_CS  -1    // No touch panel; suppresses TFT_eSPI warning
 
 // 40MHz SPI — matches WiFiTool
-#define SPI_FREQUENCY  40000000
+#define SPI_FREQUENCY  60000000
 #define SPI_READ_FREQUENCY  20000000
 #define SPI_TOUCH_FREQUENCY  2500000
 

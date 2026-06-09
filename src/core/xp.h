@@ -299,7 +299,10 @@ private:
     static void checkAchievements();
     static uint8_t calculateLevel(uint32_t xp);
     
+public:
     // SD backup - immortal pig survives M5Burner
+    // Periodic: throttle to 120s intervals. Backup on IDLE transition too.
     static bool backupToSD();
     static bool restoreFromSD();
+    static void periodicBackup();
 };

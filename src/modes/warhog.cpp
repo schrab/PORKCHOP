@@ -113,6 +113,12 @@ uint32_t WarhogMode::savedCount = 0;      // Geotagged networks (CSV)
 char WarhogMode::currentFilename[128] = {0};
 char WarhogMode::currentWigleFilename[128] = {0};
 
+// PSRAM write buffer
+WarhogEntry* WarhogMode::ringBuf = nullptr;
+uint16_t WarhogMode::ringHead = 0;
+uint16_t WarhogMode::ringCount = 0;
+uint32_t WarhogMode::lastFlushTime = 0;
+
 // Scan state
 bool WarhogMode::scanInProgress = false;
 uint32_t WarhogMode::scanStartTime = 0;
@@ -218,6 +224,18 @@ void WarhogMode::start() {
     resetSeenTracking();
     seedCapturedFromOink();
 
+    // Allocate PSRAM ring buffer for batched SD writes
+    if (!ringBuf) {
+        ringBuf = (WarhogEntry*)ps_malloc(WARHOG_RING_SIZE);
+        if (ringBuf) {
+            Serial.printf("[WARHOG] Ring buffer: %u entries (%u bytes PSRAM)\r\n",
+                          (unsigned)WARHOG_RING_CAPACITY, (unsigned)WARHOG_RING_SIZE);
+        }
+    }
+    ringHead = 0;
+    ringCount = 0;
+    lastFlushTime = millis();
+
     // Reset distance tracking for XP
     lastGPSLat = 0;
     lastGPSLon = 0;
@@ -267,6 +285,15 @@ void WarhogMode::start() {
 
 void WarhogMode::stop() {
     if (!running) return;
+    
+    // Flush any buffered entries before stopping
+    flushBuffer();
+    
+    // Free PSRAM ring buffer
+    if (ringBuf) {
+        free(ringBuf);
+        ringBuf = nullptr;
+    }
     
     // Signal task to stop gracefully
     stopRequested = true;
@@ -352,7 +379,7 @@ void WarhogMode::scanTask(void* pvParameters) {
 
     // Log stack usage for sizing decisions
     UBaseType_t hwm = uxTaskGetStackHighWaterMark(NULL);
-    Serial.printf("[WARHOG] Scan task stack HWM: %u bytes unused of 4096\n",
+    Serial.printf("[WARHOG] Scan task stack HWM: %u bytes unused of 4096\r\n",
                   (unsigned)(hwm * sizeof(StackType_t)));
 
     // Signal clean exit, then self-delete
@@ -403,6 +430,15 @@ void WarhogMode::update() {
     if (now - lastPhraseTime >= 5000) {
         Mood::onWarhogUpdate();
         lastPhraseTime = now;
+    }
+    
+    // Flush ring buffer if >75% full or 10 seconds since last flush
+    if (ringBuf && ringCount > 0) {
+        bool full = ringCount >= (WARHOG_RING_CAPACITY * 3 / 4);
+        bool timeout = (now - lastFlushTime >= 10000);
+        if (full || timeout) {
+            flushBuffer();
+        }
     }
     
     // Check if background scan task is complete
@@ -666,6 +702,87 @@ void WarhogMode::appendWigleEntry(const uint8_t* bssid, const char* ssid,
     f.close();
 }
 
+// Push entry to PSRAM ring buffer
+void WarhogMode::pushEntry(const WarhogEntry& entry) {
+    if (!ringBuf) return;
+    if (ringCount >= WARHOG_RING_CAPACITY) {
+        // Buffer full — flush before pushing
+        flushBuffer();
+    }
+    ringBuf[ringHead] = entry;
+    ringHead = (ringHead + 1) % WARHOG_RING_CAPACITY;
+    ringCount++;
+}
+
+// Flush ring buffer to SD (single open/write/close per file)
+void WarhogMode::flushBuffer() {
+    if (!ringBuf || ringCount == 0) return;
+
+    // CSV write: one open, bulk write all entries, one close
+    if (ensureCSVFileReady()) {
+        File f = openFileWithRetry(currentFilename, FILE_APPEND);
+        if (f) {
+            for (uint16_t i = 0; i < ringCount; i++) {
+                uint16_t idx = ((ringHead - ringCount + i) % WARHOG_RING_CAPACITY);
+                const WarhogEntry& e = ringBuf[idx];
+                f.printf("%02X:%02X:%02X:%02X:%02X:%02X,",
+                        e.bssid[0], e.bssid[1], e.bssid[2], e.bssid[3], e.bssid[4], e.bssid[5]);
+                writeCSVField(f, e.ssid);
+                f.printf(",%d,%d,%s,%.6f,%.6f,%.1f,%lu\n",
+                        e.rssi, e.channel, authModeToString((wifi_auth_mode_t)e.auth),
+                        e.lat, e.lon, e.alt, e.timestamp);
+            }
+            f.close();
+        }
+    }
+
+    // WiGLE write: one open, bulk write all entries, one close
+    if (ensureWigleFileReady()) {
+        File f = openFileWithRetry(currentWigleFilename, FILE_APPEND);
+        if (f) {
+            for (uint16_t i = 0; i < ringCount; i++) {
+                uint16_t idx = ((ringHead - ringCount + i) % WARHOG_RING_CAPACITY);
+                const WarhogEntry& e = ringBuf[idx];
+                f.printf("%02X:%02X:%02X:%02X:%02X:%02X,",
+                        e.bssid[0], e.bssid[1], e.bssid[2], e.bssid[3], e.bssid[4], e.bssid[5]);
+                writeCSVField(f, e.ssid);
+                f.print(",");
+                f.print(authModeToWigleString((wifi_auth_mode_t)e.auth));
+                f.print(",");
+                if (e.timestamp > 0) {
+                    // Format millis() as approximate time
+                    uint32_t sec = e.timestamp / 1000;
+                    uint8_t h = (sec / 3600) % 24;
+                    uint8_t m = (sec / 60) % 60;
+                    uint8_t s = sec % 60;
+                    f.printf("1970-01-01 %02d:%02d:%02d,", h, m, s);
+                } else {
+                    f.print("1970-01-01 00:00:00,");
+                }
+                int freq = channelToFrequency(e.channel);
+                f.printf("%d,%d,%.6f,%.6f,%.1f,%.1f,,,WIFI\n",
+                        e.channel, freq, e.rssi, e.lat, e.lon, e.alt,
+                        e.accuracy > 0 ? e.accuracy : 10.0);
+            }
+            f.close();
+        }
+    }
+
+    ringCount = 0;
+    ringHead = 0;
+    lastFlushTime = millis();
+}
+
+// Batch append to CSV from ring buffer entry
+void WarhogMode::appendCSVEntryBatch(const WarhogEntry& e) {
+    // Handled by flushBuffer()
+}
+
+// Batch append to WiGLE from ring buffer entry
+void WarhogMode::appendWigleEntryBatch(const WarhogEntry& e) {
+    // Handled by flushBuffer()
+}
+
 void WarhogMode::processScanResults() {
     int n = scanResult;
     
@@ -750,22 +867,25 @@ void WarhogMode::processScanResults() {
                 break;
         }
         
-        // Write to files based on GPS status
-        if (Config::isSDAvailable()) {
-            if (hasGPS) {
-                // Full wardriving: both CSV, WiGLE, and ML
-                appendCSVEntry(bssidPtr, ssid, rssi, channel, authmode,
-                              gpsData.latitude, gpsData.longitude, gpsData.altitude);
-                
-                // WiGLE format export (HDOP * 5 as rough accuracy estimate in meters)
-                double accuracy = gpsData.hdop > 0 ? gpsData.hdop * 5.0 : 10.0;
-                appendWigleEntry(bssidPtr, ssid, rssi, channel, authmode,
-                                gpsData.latitude, gpsData.longitude, gpsData.altitude, accuracy);
-                
-                savedCount++;
-                geotaggedThisScan++;
-                XP::addXP(XPEvent::WARHOG_LOGGED);  // +2 XP for geotagged network
-            }
+        // Buffer for batched SD write
+        if (Config::isSDAvailable() && hasGPS) {
+            WarhogEntry entry = {};
+            memcpy(entry.bssid, bssidPtr, 6);
+            strncpy(entry.ssid, ssid, 32);
+            entry.ssid[32] = '\0';
+            entry.rssi = rssi;
+            entry.channel = channel;
+            entry.auth = (uint8_t)authmode;
+            entry.lat = gpsData.latitude;
+            entry.lon = gpsData.longitude;
+            entry.alt = gpsData.altitude;
+            entry.accuracy = gpsData.hdop > 0 ? gpsData.hdop * 5.0 : 10.0;
+            entry.timestamp = millis();
+            pushEntry(entry);
+
+            savedCount++;
+            geotaggedThisScan++;
+            XP::addXP(XPEvent::WARHOG_LOGGED);  // +2 XP for geotagged network
         }
     }
     

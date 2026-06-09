@@ -776,7 +776,7 @@ void start() {
         return;
     }
 
-    Serial.printf("[RECON] Starting background scan... free=%u\n",
+    Serial.printf("[RECON] Starting background scan... free=%u\r\n",
                   ESP.getFreeHeap());
     
     heapStabilized = false;
@@ -809,7 +809,7 @@ void start() {
         yield();  // Let deferred FreeRTOS cleanup tasks coalesce freed BLE memory
         delay(50);
 
-        Serial.printf("[RECON] After BLE deinit: free=%u\n",
+        Serial.printf("[RECON] After BLE deinit: free=%u\r\n",
                       ESP.getFreeHeap());
     }
 
@@ -841,7 +841,7 @@ void start() {
     lastHopTime = millis();
     lastCleanupTime = millis();
     
-    Serial.printf("[RECON] Started on channel %d\n", currentChannel);
+    Serial.printf("[RECON] Started on channel %d\r\n", currentChannel);
 }
 
 void stop() {
@@ -856,7 +856,7 @@ void stop() {
     
     // Don't clear networks - they persist for mode reuse
     
-    Serial.printf("[RECON] Stopped. Networks cached: %d\n", networks.size());
+    Serial.printf("[RECON] Stopped. Networks cached: %d\r\n", networks.size());
 }
 
 void freeNetworks() {
@@ -914,11 +914,11 @@ void resume() {
     // (If modeCallback is null, no mode owns the lock anymore)
     if (channelLockedBeforePause && modeCallback.load(std::memory_order_acquire) != nullptr) {
         channelLocked.store(true, std::memory_order_release);
-        Serial.printf("[RECON] Channel lock restored to %d\n", lockedChannel);
+        Serial.printf("[RECON] Channel lock restored to %d\r\n", lockedChannel);
     }
     channelLockedBeforePause = false;
     
-    Serial.printf("[RECON] Resumed on channel %d\n", currentChannel);
+    Serial.printf("[RECON] Resumed on channel %d\r\n", currentChannel);
 }
 
 void update() {
@@ -952,7 +952,7 @@ void update() {
         size_t currentFree = ESP.getFreeHeap();
         if (currentFree > HeapPolicy::kHeapStableThreshold) {
             heapStabilized = true;
-            Serial.printf("[RECON] Heap stabilized in %ums: free=%u\n",
+            Serial.printf("[RECON] Heap stabilized in %ums: free=%u\r\n",
                           now - startTime, currentFree);
         }
     }
@@ -1092,10 +1092,10 @@ void lockChannel(uint8_t channel) {
     channelLocked.store(true, std::memory_order_release);
     esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) {
-        Serial.printf("[RECON] esp_wifi_set_channel(%d) failed: %d\n", channel, err);
+        Serial.printf("[RECON] esp_wifi_set_channel(%d) failed: %d\r\n", channel, err);
     }
     
-    Serial.printf("[RECON] Channel locked to %d\n", channel);
+    Serial.printf("[RECON] Channel locked to %d\r\n", channel);
 }
 
 void unlockChannel() {
@@ -1116,7 +1116,7 @@ void setChannel(uint8_t channel) {
     currentChannel = channel;
     esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) {
-        Serial.printf("[RECON] esp_wifi_set_channel(%d) failed: %d\n", channel, err);
+        Serial.printf("[RECON] esp_wifi_set_channel(%d) failed: %d\r\n", channel, err);
     }
 }
 

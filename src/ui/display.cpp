@@ -3007,7 +3007,7 @@ bool Display::takeScreenshot() {
     char path[48];
     snprintf(path, sizeof(path), "%s/screenshot%03d.bmp", shotsDir, num);
     
-    Serial.printf("[DISPLAY] Taking screenshot: %s\n", path);
+    Serial.printf("[DISPLAY] Taking screenshot: %s\r\n", path);
     
     // Open file with retry
     File file;
@@ -3085,7 +3085,7 @@ bool Display::takeScreenshot() {
     
     file.close();
     
-    Serial.printf("[DISPLAY] Screenshot saved: %s (%lu bytes)\n", path, filesize);
+    Serial.printf("[DISPLAY] Screenshot saved: %s (%lu bytes)\r\n", path, filesize);
     
     // Show success in top bar (not centered toast — that ruins the screenshot)
     char msg[32];

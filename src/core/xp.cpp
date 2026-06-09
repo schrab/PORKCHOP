@@ -36,6 +36,7 @@ void (*XP::levelUpCallback)(uint8_t, uint8_t) = nullptr;
 static bool pendingSaveFlag = false;
 
 static uint32_t lastSavedCRC = 0;
+static bool sdDirtyFlag = false;  // Set when XP data changes; cleared by backupToSD()
 
 static uint32_t computeDataCRC(const PorkXPData* d) {
     uint32_t crc = 0xFFFFFFFF;
@@ -367,6 +368,7 @@ static uint32_t calculateDeviceBoundCRC(const PorkXPData* xpData, size_t dataSiz
 }
 
 bool XP::backupToSD() {
+    if (!sdDirtyFlag) return true;
     if (!Config::isSDAvailable()) {
         // SD not available, silent fail - NVS still has the data
         return false;
@@ -389,11 +391,12 @@ bool XP::backupToSD() {
     
     size_t expectedSize = sizeof(PorkXPData) + sizeof(uint32_t);
     if (written == expectedSize) {
-        Serial.printf("[XP] SD backup: saved %d bytes (sig: %08X)\n", written, signature);
+        sdDirtyFlag = false;
+        Serial.printf("[XP] SD backup: saved %d bytes (sig: %08X)\r\n", written, signature);
         return true;
     }
     
-    Serial.printf("[XP] SD backup: write failed (%d/%d bytes)\n", written, expectedSize);
+    Serial.printf("[XP] SD backup: write failed (%d/%d bytes)\r\n", written, expectedSize);
     return false;
 }
 
@@ -418,7 +421,7 @@ bool XP::restoreFromSD() {
     size_t fileSize = f.size();
     
     if (fileSize <= signatureSize) {
-        Serial.printf("[XP] SD restore: size too small (%d bytes)\n", fileSize);
+        Serial.printf("[XP] SD restore: size too small (%d bytes)\r\n", fileSize);
         f.close();
         return false;
     }
@@ -439,7 +442,7 @@ bool XP::restoreFromSD() {
     
     if (!signatureValid) {
         if (fileSize > sizeof(PorkXPData)) {
-            Serial.printf("[XP] SD restore: size mismatch (%d bytes)\n", fileSize);
+            Serial.printf("[XP] SD restore: size mismatch (%d bytes)\r\n", fileSize);
             f.close();
             return false;
         }
@@ -464,7 +467,7 @@ bool XP::restoreFromSD() {
         // Accept legacy backup and immediately re-save with signature
         memcpy(&data, &backup, sizeof(PorkXPData));
         data.cachedLevel = calculateLevel(data.totalXP);
-        Serial.printf("[XP] SD restore: migrated legacy LV%d (%lu XP)\n",
+        Serial.printf("[XP] SD restore: migrated legacy LV%d (%lu XP)\r\n",
                       data.cachedLevel, data.totalXP);
         f.close();
         save();  // This will write the new signed format
@@ -483,7 +486,7 @@ bool XP::restoreFromSD() {
     memcpy(&data, &backup, sizeof(PorkXPData));
     data.cachedLevel = calculateLevel(data.totalXP);
     
-    Serial.printf("[XP] SD restore: recovered LV%d (%lu XP, %lu networks) [sig OK]\n",
+    Serial.printf("[XP] SD restore: recovered LV%d (%lu XP, %lu networks) [sig OK]\r\n",
                   data.cachedLevel, data.totalXP, data.lifetimeNetworks);
     
     // Save restored data back to NVS so future boots don't need SD
@@ -524,7 +527,7 @@ void XP::init() {
     startSession();
     initialized = true;
     
-    Serial.printf("[XP] Initialized - LV%d %s (%lu XP)\n", 
+    Serial.printf("[XP] Initialized - LV%d %s (%lu XP)\r\n", 
                   getLevel(), getTitle(), data.totalXP);
 }
 
@@ -571,6 +574,7 @@ void XP::load() {
 void XP::save() {
     uint32_t currentCRC = computeDataCRC(&data);
     if (currentCRC == lastSavedCRC) return;
+    sdDirtyFlag = true;
 
     if (prefs.begin("porkxp", false)) {  // Read-write
     
@@ -607,10 +611,7 @@ void XP::save() {
     }
     lastSavedCRC = currentCRC;
 
-    Serial.printf("[XP] Saved - LV%d (%lu XP)\n", getLevel(), data.totalXP);
-    
-    // Backup to SD - pig survives M5Burner / NVS wipes
-    backupToSD();
+    Serial.printf("[XP] Saved - LV%d (%lu XP)\r\n", getLevel(), data.totalXP);
 }
 
 void XP::processPendingSave() {
@@ -630,6 +631,18 @@ void XP::processPendingSave() {
     if (needsSave) {
         save();
         Serial.println("[XP] Deferred save completed");
+    }
+}
+
+// Periodic SD backup — throttle to 120s intervals
+static uint32_t lastBackupMs = 0;
+static const uint32_t BACKUP_INTERVAL_MS = 120000;
+
+void XP::periodicBackup() {
+    uint32_t now = millis();
+    if (now - lastBackupMs >= BACKUP_INTERVAL_MS) {
+        lastBackupMs = now;
+        backupToSD();
     }
 }
 
@@ -685,7 +698,7 @@ void XP::startSession() {
 
 void XP::endSession() {
     save();
-    Serial.printf("[XP] Session ended - +%lu XP this session\n", session.xp);
+    Serial.printf("[XP] Session ended - +%lu XP this session\r\n", session.xp);
 }
 
 void XP::addXP(XPEvent event) {
@@ -1037,7 +1050,7 @@ void XP::addXP(uint16_t amount) {
     
     if (newLevel > oldLevel) {
         data.cachedLevel = newLevel;
-        Serial.printf("[XP] LEVEL UP! %d -> %d (%s)\n", 
+        Serial.printf("[XP] LEVEL UP! %d -> %d (%s)\r\n", 
                       oldLevel, newLevel, getTitleForLevel(newLevel));
         SDLog::log("XP", "LEVEL UP: %d -> %d (%s)", oldLevel, newLevel, getTitleForLevel(newLevel));
         
@@ -1085,7 +1098,7 @@ void XP::addXPSilent(uint16_t amount) {
     
     if (newLevel > oldLevel) {
         data.cachedLevel = newLevel;
-        Serial.printf("[XP] LEVEL UP! %d -> %d (%s)\n", 
+        Serial.printf("[XP] LEVEL UP! %d -> %d (%s)\r\n", 
                       oldLevel, newLevel, getTitleForLevel(newLevel));
         SDLog::log("XP", "LEVEL UP: %d -> %d (%s)", oldLevel, newLevel, getTitleForLevel(newLevel));
         
@@ -1310,7 +1323,7 @@ void XP::unlockAchievement(PorkAchievement ach) {
         idx++;
     }
     
-    Serial.printf("[XP] Achievement unlocked: %s\n", ACHIEVEMENT_NAMES[idx]);
+    Serial.printf("[XP] Achievement unlocked: %s\r\n", ACHIEVEMENT_NAMES[idx]);
     SDLog::log("XP", "Achievement: %s", ACHIEVEMENT_NAMES[idx]);
     
     // Queue achievement for celebration (prevents cascade of sounds)

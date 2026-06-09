@@ -250,18 +250,18 @@ void Challenges::printToSerial() {
         // Fixed width: 42 chars inside box
         char line[64];
         snprintf(line, sizeof(line), " %s %s %-20s +%3d XP", status, diffStr, ch.name, ch.xpReward);
-        Serial.printf("|%-42s|\n", line);
+        Serial.printf("|%-42s|\r\n", line);
         
         if (!ch.completed && !ch.failed) {
             snprintf(line, sizeof(line), "       progress: %d / %d", ch.progress, ch.target);
-            Serial.printf("|%-42s|\n", line);
+            Serial.printf("|%-42s|\r\n", line);
         }
     }
     
     Serial.println("+------------------------------------------+");
     char summary[64];
     snprintf(summary, sizeof(summary), "           completed: %d / %d", getCompletedCount(), localActive);
-    Serial.printf("|%-42s|\n", summary);
+    Serial.printf("|%-42s|\r\n", summary);
     Serial.println("+------------------------------------------+");
     Serial.println();
 }
@@ -336,7 +336,7 @@ void Challenges::updateProgress(ChallengeType type, uint16_t delta) {
         // Rising tones for challenge complete - non-blocking
         SFX::play(SFX::CHALLENGE_COMPLETE);
 
-        Serial.printf("[CHALLENGES] pig pleased. '%s' complete. +%d XP.\\n",
+        Serial.printf("[CHALLENGES] pig pleased. '%s' complete. +%d XP.\\r\n",
                       notices[i].name, notices[i].xpReward);
     }
 
@@ -351,7 +351,7 @@ void Challenges::updateProgress(ChallengeType type, uint16_t delta) {
         // Victory fanfare - non-blocking (priority sound, interrupts CHALLENGE_COMPLETE)
         SFX::play(SFX::CHALLENGE_SWEEP);
 
-        Serial.printf("[CHALLENGES] *** FULL SWEEP! +%d BONUS XP ***\n", BONUS_XP);
+        Serial.printf("[CHALLENGES] *** FULL SWEEP! +%d BONUS XP ***\r\n", BONUS_XP);
     }
 }
 
@@ -375,7 +375,7 @@ void Challenges::failConditional(ChallengeType type) {
     portEXIT_CRITICAL(&challengesMux);
 
     if (failedLogged) {
-        Serial.printf("[CHALLENGES] '%s' failed. violence detected.\n", failedName);
+        Serial.printf("[CHALLENGES] '%s' failed. violence detected.\r\n", failedName);
     }
 }
 

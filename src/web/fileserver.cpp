@@ -1491,10 +1491,10 @@ input[type="text"]:focus{
 static const char HTML_SCRIPT[] PROGMEM = R"rawliteral(
 
 // Pane state
-const DEFAULT_LEFT = '/m5porkchop/handshakes';
-const DEFAULT_RIGHT = '/m5porkchop/wardriving';
-const HANDSHAKES_DIR = '/m5porkchop/handshakes';
-const WIGLE_DIR = '/m5porkchop/wardriving';
+const DEFAULT_LEFT = '/porkchop/handshakes';
+const DEFAULT_RIGHT = '/porkchop/wardriving';
+const HANDSHAKES_DIR = '/porkchop/handshakes';
+const WIGLE_DIR = '/porkchop/wardriving';
 const panes = {
     L: { path: '/', items: [], selected: new Set(), focusIdx: 0, loading: false },
     R: { path: '/', items: [], selected: new Set(), focusIdx: 0, loading: false }
@@ -2080,8 +2080,8 @@ function decodeHexSSID(hex) {
 async function buildWpaQueue() {
     const [items, uploadedText, resultsText] = await Promise.all([
         listDir(HANDSHAKES_DIR),
-        fetchDeviceText('/m5porkchop/wpa-sec/wpasec_uploaded.txt'),
-        fetchDeviceText('/m5porkchop/wpa-sec/wpasec_results.txt')
+        fetchDeviceText('/porkchop/wpa-sec/wpasec_uploaded.txt'),
+        fetchDeviceText('/porkchop/wpa-sec/wpasec_results.txt')
     ]);
     const uploadedSet = parseUploadedBssids(uploadedText);
     const resultsMap = parseWpasecResultsMap(resultsText);
@@ -2114,7 +2114,7 @@ async function buildWpaQueue() {
 async function buildWigleQueue() {
     const [items, uploadedText] = await Promise.all([
         listDir(WIGLE_DIR),
-        fetchDeviceText('/m5porkchop/wigle/wigle_uploaded.txt')
+        fetchDeviceText('/porkchop/wigle/wigle_uploaded.txt')
     ]);
     const uploadedSet = parseUploadedPaths(uploadedText);
     const queue = [];
@@ -2924,7 +2924,7 @@ function describeError(e) {
 }
 
 async function updateWpasecUploadedList(newBssid) {
-    const path = '/m5porkchop/wpa-sec/wpasec_uploaded.txt';
+    const path = '/porkchop/wpa-sec/wpasec_uploaded.txt';
     const bssid = normalizeBssid(newBssid || '');
     if (!bssid || bssid.length < 12) return;
     const existing = await fetchDeviceText(path);
@@ -2937,7 +2937,7 @@ async function updateWpasecUploadedList(newBssid) {
 }
 
 async function updateWpasecSentList(newBssid) {
-    const path = '/m5porkchop/wpa-sec/wpasec_sent.txt';
+    const path = '/porkchop/wpa-sec/wpasec_sent.txt';
     const bssid = normalizeBssid(newBssid || '');
     if (!bssid || bssid.length < 12) return;
     const existing = await fetchDeviceText(path);
@@ -2950,14 +2950,14 @@ async function updateWpasecSentList(newBssid) {
 }
 
 async function updateWpasecFromResults(text) {
-    const resultsPath = '/m5porkchop/wpa-sec/wpasec_results.txt';
+    const resultsPath = '/porkchop/wpa-sec/wpasec_results.txt';
     await uploadTextToDevice(resultsPath, text, 'text/plain');
     const resultsMap = parseWpasecResultsMap(text);
     return resultsMap.size;
 }
 
 async function updateWigleUploadedList(fullPath) {
-    const path = '/m5porkchop/wigle/wigle_uploaded.txt';
+    const path = '/porkchop/wigle/wigle_uploaded.txt';
     const trimmed = (fullPath || '').trim();
     if (!trimmed) return;
     const existing = await fetchDeviceText(path);
@@ -3167,7 +3167,7 @@ async function wigleFetchStats() {
         stats.wifi = s.discoveredWiFi || s.wifiCount || 0;
         stats.cell = s.discoveredCell || s.cellCount || 0;
         stats.bt = s.discoveredBt || s.btCount || 0;
-        await uploadTextToDevice('/m5porkchop/wigle/wigle_stats.json', JSON.stringify(stats), 'application/json');
+        await uploadTextToDevice('/porkchop/wigle/wigle_stats.json', JSON.stringify(stats), 'application/json');
         addWigleLog('STATS SAVED');
         return true;
     } catch (e) {
@@ -3933,7 +3933,7 @@ void FileServer::handleCredsSave() {
     cfg.wigleApiToken[sizeof(cfg.wigleApiToken) - 1] = '\0';
     Config::setWiFi(cfg);
 
-    Serial.printf("[FILESERVER] Creds saved: wpa=%s wigle=%s/%s\n",
+    Serial.printf("[FILESERVER] Creds saved: wpa=%s wigle=%s/%s\r\n",
                   wpaKeyBuf[0] ? "(SET)" : "(EMPTY)",
                   apiNameBuf[0] ? "(SET)" : "(EMPTY)",
                   apiTokenBuf[0] ? "(SET)" : "(EMPTY)");

@@ -4,6 +4,7 @@
 #include "sd_layout.h"
 #include <Arduino.h>
 #include <SD.h>
+#include <Preferences.h>
 #include <esp_heap_caps.h>
 
 namespace HeapHealth {
@@ -299,6 +300,24 @@ static uint8_t sessionMinHealthPct = 100;
 static uint8_t sessionMaxPressure = 0;
 
 void loadPreviousSession() {
+    // Try NVS first (primary storage)
+    Preferences prefs;
+    if (prefs.begin("porkheap", true)) {  // Read-only
+        uint32_t magic = prefs.getUInt("magic", 0);
+        if (magic == kWatermarkMagic) {
+            prevSessionMinFree = prefs.getUInt("minfree", 0);
+            prevSessionMinLargest = prefs.getUInt("minlarg", 0);
+            uint32_t uptimeSec = prefs.getUInt("uptime", 0);
+            uint8_t maxPressure = prefs.getUChar("maxpres", 0);
+            Serial.printf("[HEAP] NVS previous session: minFree=%u minLargest=%u uptime=%us pressure=%u\r\n",
+                          prevSessionMinFree, prevSessionMinLargest, uptimeSec, maxPressure);
+            prefs.end();
+            return;
+        }
+        prefs.end();
+    }
+
+    // NVS empty — try SD fallback (migration from old format)
     if (!Config::isSDAvailable()) return;
     const char* path = SDLayout::heapWatermarksPath();
     File f = SD.open(path, FILE_READ);
@@ -308,8 +327,20 @@ void loadPreviousSession() {
         if (rec.magic == kWatermarkMagic) {
             prevSessionMinFree = rec.minFreeVal;
             prevSessionMinLargest = rec.minLargestVal;
-            Serial.printf("[HEAP] Previous session: minFree=%u minLargest=%u uptime=%us pressure=%u\n",
+            Serial.printf("[HEAP] SD migrated previous session: minFree=%u minLargest=%u uptime=%us pressure=%u\r\n",
                           rec.minFreeVal, rec.minLargestVal, rec.uptimeSec, rec.maxPressureSeen);
+            // Migrate to NVS and delete SD file
+            prefs.begin("porkheap", false);
+            prefs.putUInt("magic", rec.magic);
+            prefs.putUInt("minfree", rec.minFreeVal);
+            prefs.putUInt("minlarg", rec.minLargestVal);
+            prefs.putUInt("uptime", rec.uptimeSec);
+            prefs.putUChar("maxpres", rec.maxPressureSeen);
+            prefs.end();
+            f.close();
+            SD.remove(path);
+            Serial.println("[HEAP] Migrated watermarks from SD to NVS, removed SD file");
+            return;
         }
     }
     f.close();
@@ -319,32 +350,23 @@ void persistWatermarks() {
     uint32_t now = millis();
     if (now - lastWatermarkSaveMs < HeapPolicy::kWatermarkSaveIntervalMs) return;
     lastWatermarkSaveMs = now;
-    // Block SD writes at Warning+ pressure — file ops allocate FAT/handle buffers
+    // Block writes at Warning+ pressure — NVS writes still allocate small buffers
     if (static_cast<uint8_t>(pressureLevel) > HeapPolicy::kMaxPressureLevelForSDWrite) return;
-    if (!Config::isSDAvailable()) return;
 
     // Track session extremes
     if (heapHealthPct < sessionMinHealthPct) sessionMinHealthPct = heapHealthPct;
     uint8_t pl = static_cast<uint8_t>(pressureLevel);
     if (pl > sessionMaxPressure) sessionMaxPressure = pl;
 
-    const char* path = SDLayout::heapWatermarksPath();
-    const char* diagDir = SDLayout::diagnosticsDir();
-    if (strcmp(diagDir, "/") != 0 && !SD.exists(diagDir)) {
-        SD.mkdir(diagDir);
-    }
-    File f = SD.open(path, FILE_WRITE);
-    if (!f) return;
-    WatermarkRecord rec;
-    rec.magic = kWatermarkMagic;
-    rec.uptimeSec = now / 1000;
-    rec.minFreeVal = (uint32_t)minFree;
-    rec.minLargestVal = (uint32_t)minLargest;
-    rec.minHealthPct = sessionMinHealthPct;
-    rec.maxPressureSeen = sessionMaxPressure;
-    rec.reserved = 0;
-    f.write(reinterpret_cast<const uint8_t*>(&rec), sizeof(rec));
-    f.close();
+    Preferences prefs;
+    if (!prefs.begin("porkheap", false)) return;  // Read-write
+    prefs.putUInt("magic", kWatermarkMagic);
+    prefs.putUInt("minfree", (uint32_t)minFree);
+    prefs.putUInt("minlarg", (uint32_t)minLargest);
+    prefs.putUInt("uptime", now / 1000);
+    prefs.putUChar("minhpct", sessionMinHealthPct);
+    prefs.putUChar("maxpres", sessionMaxPressure);
+    prefs.end();
 }
 
 uint32_t getPrevMinFree() {

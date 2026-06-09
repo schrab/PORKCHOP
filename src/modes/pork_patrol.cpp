@@ -92,11 +92,11 @@ static void _addHit(const char* ssid, const uint8_t* bssid, int8_t rssi, uint8_t
     const char* label = (type==1) ? "BODYCAM" : "FLOCK CAM";
     char msg[24]; snprintf(msg,sizeof(msg),"%s SPOTTED",label);
     Mood::setStatusMessage(msg);
-    Serial.printf("[PATROL] %s: %s [%02X:%02X:%02X:%02X:%02X:%02X] rssi=%d\n",
+    Serial.printf("[PATROL] %s: %s [%02X:%02X:%02X:%02X:%02X:%02X] rssi=%d\r\n",
         label, ssid, bssid[0],bssid[1],bssid[2],bssid[3],bssid[4],bssid[5], rssi);
     auto gd = GPS::getData();
     if (gd.fix && gd.valid)
-        Serial.printf("[PATROL] GPS: %.6f,%.6f\n", gd.latitude, gd.longitude);
+        Serial.printf("[PATROL] GPS: %.6f,%.6f\r\n", gd.latitude, gd.longitude);
     Wartales::logDetection(label, ssid[0] ? ssid : "hidden");
 }
 
@@ -132,7 +132,7 @@ void PorkPatrolMode::stop() {
     Avatar::setGrassMoving(false);
     Avatar::setState(AvatarState::NEUTRAL);
     Display::showToast("PATROL ENDED", 1500);
-    Serial.printf("[PATROL] stopped. %lu flock cams detected\n", _totalDetected);
+    Serial.printf("[PATROL] stopped. %lu flock cams detected\r\n", _totalDetected);
 }
 
 void PorkPatrolMode::update() {

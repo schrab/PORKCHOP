@@ -201,8 +201,8 @@ void setRaining(bool active) {
         // Spawn raindrops staggered across entire screen height for immediate rain
         for (int i = 0; i < RAIN_DROP_COUNT; i++) {
             rainDrops[i].x = (float)random(0, 320);
-            // Distribute drops across visible area (stop above grass at Y=88)
-            rainDrops[i].y = (float)random(16, 85);
+            // Distribute drops across visible area (stop above grass at Y=123)
+            rainDrops[i].y = (float)random(16, 121);
             // Fast rain (5-8 pixels per update)
             rainDrops[i].speed = random(5, 9);
         }
@@ -295,8 +295,8 @@ static void updateRain(uint32_t now) {
         if (rainDrops[i].x >= 320.0f) rainDrops[i].x -= 320.0f;
         
         // Respawn just below clouds when reaching bottom
-        // Grass starts at Y=91, stop rain 3px above it
-        if (rainDrops[i].y >= 88.0f) {
+        // Grass starts at Y=126, stop rain 3px above it
+        if (rainDrops[i].y >= 123.0f) {
             rainDrops[i].y = (float)random(16, 23);  // Just below cloud layer
             rainDrops[i].x = (float)random(0, 320);
             rainDrops[i].speed = random(5, 9);  // Fast rain
@@ -353,7 +353,7 @@ static void updateWind(uint32_t now) {
             // Spawn wind particles
             for (int i = 0; i < 6; i++) {
                 windParticles[i].x = -10.0f - random(0, 50);  // Off-screen left
-                windParticles[i].y = (float)random(20, 90);
+                windParticles[i].y = (float)random(20, 125);
                 windParticles[i].speed = (float)random(3, 6);
                 windParticles[i].active = true;
             }
@@ -432,7 +432,7 @@ void draw(DisplayCanvas& canvas, uint16_t colorFG, uint16_t colorBG) {
             
             // Draw 6-pixel tall × 2-pixel wide raindrop (slightly taller for visibility)
             for (int dy = 0; dy < 6; dy++) {
-                if (y + dy < 88) {  // Clip 3px above grass (grass starts at Y=91)
+                if (y + dy < 123) {  // Clip 3px above grass (grass starts at Y=126)
                     canvas.drawPixel(x, y + dy, drawColor);
                     if (x + 1 < 320) canvas.drawPixel(x + 1, y + dy, drawColor);
                 }

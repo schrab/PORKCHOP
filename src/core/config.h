@@ -35,7 +35,7 @@ struct GPSConfig {
     GPSSource source = GPSSource::GROVE;  // GPS module source (auto-selects pins)
     uint8_t rxPin = 1;              // G1 for Grove GPS, G15 for Cap LoRa868 (auto-set from source)
     uint8_t txPin = 2;              // G2 for Grove GPS, G13 for Cap LoRa868 (auto-set from source)
-    uint32_t baudRate = 115200;     // 115200 for most modern GPS modules
+    uint32_t baudRate = 9600;        // 9600 for ATGM336H (native baud rate)
     uint16_t updateInterval = 5;        // Seconds between GPS updates
     uint16_t sleepTimeMs = 5000;        // Sleep duration when stationary
     bool powerSave = true;
@@ -74,7 +74,7 @@ static constexpr uint8_t BOOT_MODE_COUNT = 4;
 struct MLConfig {
     bool enabled = true;
     MLCollectionMode collectionMode = MLCollectionMode::ENHANCED;  // Data collection mode
-    char modelPath[64] = "/m5porkchop/models/porkchop_model.bin";
+    char modelPath[64] = "/porkchop/models/porkchop_model.bin";
     float confidenceThreshold = 0.7f;
     float rogueApThreshold = 0.8f;
     float vulnScorerThreshold = 0.6f;
@@ -137,8 +137,8 @@ public:
     static bool loadPersonality();
     static bool isSDAvailable();
     static bool reinitSD();  // Try to (re)initialize SD card at runtime
-    static bool loadWpaSecKeyFromFile();  // Load key from /m5porkchop/wpa-sec/wpasec_key.txt (legacy /wpasec_key.txt)
-    static bool loadWigleKeyFromFile();   // Load keys from /m5porkchop/wigle/wigle_key.txt (legacy /wigle_key.txt)
+    static bool loadWpaSecKeyFromFile();  // Load key from /porkchop/wpa-sec/wpasec_key.txt (legacy /wpasec_key.txt)
+    static bool loadWigleKeyFromFile();   // Load keys from /porkchop/wigle/wigle_key.txt (legacy /wigle_key.txt)
     static void prepareSDBus();           // Prepare SPI bus for raw SD access
     static void prepareCapLoraGpio();     // Quiesce SX1262 and clear G13 IOMUX before GPS UART
     static SPIClass& sdSpi();             // Access SD SPI bus

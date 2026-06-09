@@ -14,6 +14,7 @@
 #include "../core/heap_health.h"
 #include "../core/heap_policy.h"
 #include "../core/wifi_utils.h"
+#include "../gps/gps.h"
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_wifi.h>
@@ -25,11 +26,13 @@ uint16_t DiagnosticsMenu::cachedWpaCracked = 0;
 uint16_t DiagnosticsMenu::cachedWigleUploaded = 0;
 uint32_t DiagnosticsMenu::lastStatRefreshMs = 0;
 uint32_t DiagnosticsMenu::statRefreshIntervalMs = 2000;  // tighter refresh interval
+uint8_t DiagnosticsMenu::page = 0;
 
 void DiagnosticsMenu::show() {
     active = true;
     keyWasPressed = true;  // Ignore the Enter that brought us here
     lastStatRefreshMs = 0; // force immediate refresh
+    page = 0;
     HeapHealth::setKnuthEnabled(true);
 }
 
@@ -62,10 +65,14 @@ void DiagnosticsMenu::update() {
         return;
     }
 
-    // UP - reset WiFi stack
+    // UP - page 0 actions OR switch to page 0
     if (hal_input_wasPressed(KEY_UP)) {
-        resetWiFi();
-        Display::setTopBarMessage("WIFI RESET", 3000);
+        if (page > 0) {
+            page--;
+        } else {
+            resetWiFi();
+            Display::setTopBarMessage("WIFI RESET", 3000);
+        }
         return;
     }
 
@@ -76,10 +83,14 @@ void DiagnosticsMenu::update() {
         return;
     }
 
-    // DOWN - free caches / pseudo GC
+    // DOWN - switch to next page or clear caches
     if (hal_input_wasPressed(KEY_DOWN)) {
-        collectGarbage();
-        Display::setTopBarMessage("CACHE CLEARED", 3000);
+        if (page < 1) {
+            page++;
+        } else {
+            collectGarbage();
+            Display::setTopBarMessage("CACHE CLEARED", 3000);
+        }
         return;
     }
 
@@ -230,7 +241,11 @@ void DiagnosticsMenu::refreshStats() {
 
 void DiagnosticsMenu::draw(DisplayCanvas& canvas) {
     if (!active) return;
+    if (page == 0) drawSystemPage(canvas);
+    else           drawNmeaPage(canvas);
+}
 
+void DiagnosticsMenu::drawSystemPage(DisplayCanvas& canvas) {
     canvas.fillSprite(COLOR_BG);
     canvas.setTextColor(COLOR_FG);
     canvas.setTextSize(1);
@@ -363,5 +378,78 @@ void DiagnosticsMenu::draw(DisplayCanvas& canvas) {
     // Controls (compressed)
     canvas.drawString("[ENT]SNAP [UP]WIFI", 4, y);
     y += lineH;
-    canvas.drawString("[RGT]HEAP [DWN]GC [LFT]BACK", 4, y);
+    canvas.drawString("[RGT]HEAP [DWN]NMEA [LFT]BACK", 4, y);
+}
+
+void DiagnosticsMenu::drawNmeaPage(DisplayCanvas& canvas) {
+    canvas.fillSprite(COLOR_BG);
+    canvas.setTextColor(COLOR_FG);
+    canvas.setTextSize(1);
+
+    int y = 2;
+    int lineH = 14;
+
+    // GPS module status header
+    canvas.drawString("GPS NMEA MONITOR", 4, y);
+    y += lineH;
+
+    // GPS info line 1: status + baud
+    GPSData gpsData = GPS::getData();
+    char buf[48];
+    snprintf(buf, sizeof(buf), "SATS:%d  FIX:%s",
+             gpsData.satellites, GPS::hasFix() ? "Y" : "N");
+    canvas.drawString(buf, 4, y);
+    y += lineH;
+
+    // GPS info line 2: bytes + baud
+    snprintf(buf, sizeof(buf), "BYTES:%lu  BAUD:%lu",
+             GPS::getTotalBytesProcessed(), Config::gps().baudRate);
+    canvas.drawString(buf, 4, y);
+    y += lineH;
+
+    // GPS info line 3: lat/lon or status
+    if (GPS::hasFix()) {
+        snprintf(buf, sizeof(buf), "LAT:%.4f LON:%.4f",
+                 gpsData.latitude, gpsData.longitude);
+    } else if (gpsData.satellites > 0) {
+        snprintf(buf, sizeof(buf), "HDOP:%d  SEARCHING...",
+                 gpsData.hdop);
+    } else {
+        snprintf(buf, sizeof(buf), "NO DATA - CHECK WIRING");
+    }
+    canvas.drawString(buf, 4, y);
+    y += lineH + 2;
+
+    // NMEA sentences header
+    canvas.drawString("--- RAW NMEA ---", 4, y);
+    y += lineH;
+
+    // Scrollable NMEA lines
+    uint8_t lineCount = GPS::getNmeaLineCount();
+    int maxLines = (170 - y) / lineH;  // fit remaining screen
+    if (maxLines > 7) maxLines = 7;
+
+    if (lineCount == 0) {
+        canvas.drawString("(no sentences captured)", 4, y);
+        y += lineH;
+    } else {
+        // Show newest first
+        uint8_t start = (lineCount > maxLines) ? lineCount - maxLines : 0;
+        for (uint8_t i = start; i < lineCount; i++) {
+            const char* line = GPS::getNmeaLine(i);
+            if (line[0] == '\0') continue;
+            // Truncate to ~37 chars for 320px font1
+            char trunc[38];
+            strncpy(trunc, line, 37);
+            trunc[37] = '\0';
+            canvas.drawString(trunc, 4, y);
+            y += lineH;
+        }
+    }
+
+    // Controls
+    y = 170 - lineH * 2;
+    canvas.drawString("[UP]SYS [LFT]BACK", 4, y);
+    y += lineH;
+    canvas.drawString("[DWN]GC", 4, y);
 }

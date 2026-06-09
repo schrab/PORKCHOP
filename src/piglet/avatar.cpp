@@ -529,7 +529,7 @@ void Avatar::drawFrame(DisplayCanvas& canvas, const char** frame, uint8_t lines,
     
     // Use animated currentX position (set during transition or at rest)
     int startX = currentX;
-    int startY = 23 + shakeY;  // Apply shake offset (shifted down for XP bar at top)
+    int startY = 58 + shakeY;  // Apply shake offset (+35px from original for 142px canvas)
     int lineHeight = 22;
     
     for (uint8_t i = 0; i < lines; i++) {
@@ -736,7 +736,7 @@ void Avatar::drawGrass(DisplayCanvas& canvas) {
     canvas.setTextDatum(top_left);
     
     // Draw at bottom of avatar area, full screen width
-    int grassY = 91;  // Below the pig face (at edge of main canvas)
+    int grassY = 126;  // Anchored at bottom of 142px canvas (bottom at ~142)
     canvas.drawString(grassPattern, 0, grassY);
 }
 
@@ -777,11 +777,11 @@ bool Avatar::areStarsActive() {
 void Avatar::initStarPositions() {
     // Pre-gen star positions, hide until spawn
     for (uint8_t i = 0; i < MAX_STARS; i++) {
-        // y 20-100 sky/backdrop, bubble still wins
-        // x 5-235 near full width
-        stars[i].x = random(5, 235);
-        // Match rain clip: keep stars above grass (rain clips at y < 88)
-        stars[i].y = random(20, 88);
+        // y 20-123 sky/backdrop, bubble still wins
+        // x 5-315 near full width
+        stars[i].x = random(5, 315);
+        // Match rain clip: keep stars above grass (rain clips at y < 123)
+        stars[i].y = random(20, 123);
         stars[i].size = 1;
         stars[i].brightness = 0;
         stars[i].fadeInStart = 0;
@@ -866,7 +866,7 @@ void Avatar::drawStars(DisplayCanvas& canvas) {
 
     for (uint8_t i = 0; i < starCount; i++) {
         if (stars[i].brightness < 128) continue;
-        if (stars[i].y >= 88) continue;  // Match rain clip above grass
+        if (stars[i].y >= 123) continue;  // Match rain clip above grass
 
         char starChar = '.';
         if (stars[i].isBlinking) {

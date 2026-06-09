@@ -21,6 +21,10 @@ struct GPSData {
     uint32_t age;  // Age of last fix in ms
 };
 
+// NMEA ring buffer for diagnostic display
+#define NMEA_RING_LINES 8
+#define NMEA_LINE_MAX 96
+
 class GPS {
 public:
     static void init(uint8_t rxPin, uint8_t txPin, uint32_t baud = 9600);
@@ -43,6 +47,11 @@ public:
     static uint32_t getFixCount();
     static uint32_t getLastFixTime();
     
+    // NMEA diagnostic accessors
+    static uint8_t getNmeaLineCount();
+    static const char* getNmeaLine(uint8_t index);  // 0=oldest, count-1=newest
+    static uint32_t getTotalBytesProcessed();
+    
 private:
     static TinyGPSPlus gps;
     static HardwareSerial* serial;
@@ -53,6 +62,15 @@ private:
     static uint32_t lastUpdateTime;
     static SemaphoreHandle_t mutex;
     
+    // NMEA ring buffer
+    static char nmeaRing[NMEA_RING_LINES][NMEA_LINE_MAX];
+    static uint8_t nmeaHead;  // next write position
+    static uint8_t nmeaCount; // number of valid lines (0..NMEA_RING_LINES)
+    static char nmeaLineBuf[NMEA_LINE_MAX];  // partial line accumulator
+    static uint8_t nmeaLinePos;
+    static uint32_t totalBytesProcessed;
+    
     static void processSerial();
     static void updateData();
+    static void pushNmeaLine();
 };

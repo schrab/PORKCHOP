@@ -16,6 +16,23 @@ inline uint64_t bssidToKey(const uint8_t* bssid) {
            ((uint64_t)bssid[4] << 8) | bssid[5];
 }
 
+// PSRAM ring buffer entry (compact binary, ~76 bytes)
+struct WarhogEntry {
+    uint8_t bssid[6];
+    char ssid[33];
+    int8_t rssi;
+    uint8_t channel;
+    uint8_t auth;        // wifi_auth_mode_t cast to uint8
+    double lat;
+    double lon;
+    double alt;
+    float accuracy;
+    uint32_t timestamp;  // millis() at capture
+};
+
+static constexpr size_t WARHOG_RING_SIZE = 4096;
+static constexpr size_t WARHOG_RING_CAPACITY = WARHOG_RING_SIZE / sizeof(WarhogEntry);
+
 class WarhogMode {
 public:
     static constexpr uint8_t MAX_BOUNTIES = 15;  // Max bounty targets to send per payload
@@ -69,6 +86,14 @@ private:
     static TaskHandle_t scanTaskHandle;
     static volatile int scanResult;
     
+    // PSRAM write buffer
+    static WarhogEntry* ringBuf;
+    static uint16_t ringHead;
+    static uint16_t ringCount;
+    static uint32_t lastFlushTime;
+    static void flushBuffer();
+    static void pushEntry(const WarhogEntry& entry);
+    
     static void performScan();
     static void scanTask(void* pvParameters);
     static void processScanResults();
@@ -83,6 +108,8 @@ private:
     static void appendWigleEntry(const uint8_t* bssid, const char* ssid,
                                  int8_t rssi, uint8_t channel, wifi_auth_mode_t auth,
                                  double lat, double lon, double alt, double accuracy);
+    static void appendCSVEntryBatch(const WarhogEntry& e);
+    static void appendWigleEntryBatch(const WarhogEntry& e);
     
     static const char* authModeToString(wifi_auth_mode_t mode);
     static const char* authModeToWigleString(wifi_auth_mode_t mode);

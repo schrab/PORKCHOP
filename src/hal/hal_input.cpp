@@ -28,6 +28,16 @@ static const uint32_t LONG_PRESS_MS = 800;
 static uint32_t enterPressStart = 0;
 static bool enterLongFired = false;
 
+// Long-press RIGHT → filter cycle (SPECTRUM)
+static uint32_t rightPressStart = 0;
+static bool rightLongFired = false;
+static bool rightLongConsumed = false;  // stays true until release, prevents re-arm
+
+// Long-press UP → attack mode (SPECTRUM)
+static uint32_t upPressStart = 0;
+static bool upLongFired = false;
+static bool upLongConsumed = false;
+
 // Change flag
 static bool stateChanged = false;
 
@@ -109,6 +119,42 @@ void hal_input_update() {
         enterPressStart = 0;
         enterLongFired = false;
     }
+
+    // Long-press RIGHT (index 3) → filter cycle
+    bool rightHeld = stableState[3];
+    if (rightHeld) {
+        if (rightPressStart == 0) {
+            rightPressStart = now;
+            rightLongFired = false;
+            rightLongConsumed = false;
+        } else if (!rightLongFired && !rightLongConsumed && (now - rightPressStart) >= LONG_PRESS_MS) {
+            rightLongFired = true;
+            rightLongConsumed = true;
+            stateChanged = true;
+        }
+    } else {
+        rightPressStart = 0;
+        rightLongFired = false;
+        rightLongConsumed = false;
+    }
+
+    // Long-press UP (index 0) → attack mode (SPECTRUM)
+    bool upHeld = stableState[0];
+    if (upHeld) {
+        if (upPressStart == 0) {
+            upPressStart = now;
+            upLongFired = false;
+            upLongConsumed = false;
+        } else if (!upLongFired && !upLongConsumed && (now - upPressStart) >= LONG_PRESS_MS) {
+            upLongFired = true;
+            upLongConsumed = true;
+            stateChanged = true;
+        }
+    } else {
+        upPressStart = 0;
+        upLongFired = false;
+        upLongConsumed = false;
+    }
 }
 
 uint8_t hal_input_getch() {
@@ -184,6 +230,22 @@ bool hal_input_isPressed() {
 bool hal_input_isLongEnter() {
     if (enterLongFired) {
         enterLongFired = false;
+        return true;
+    }
+    return false;
+}
+
+bool hal_input_isLongRight() {
+    if (rightLongFired) {
+        rightLongFired = false;
+        return true;
+    }
+    return false;
+}
+
+bool hal_input_isLongUp() {
+    if (upLongFired) {
+        upLongFired = false;
         return true;
     }
     return false;

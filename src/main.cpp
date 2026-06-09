@@ -63,14 +63,14 @@ static void preInitWiFiDriverEarly() {
 static void setupHeapLayout() {
     size_t beforeFree = ESP.getFreeHeap();
     size_t beforeLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    Serial.printf("[BOOT] Pre-fence heap: free=%u largest=%u\n",
+    Serial.printf("[BOOT] Pre-fence heap: free=%u largest=%u\r\n",
                   (unsigned)beforeFree, (unsigned)beforeLargest);
 
     // Allocate fence to push WiFi driver allocations high in the heap
     static constexpr size_t kFenceSize = 80000;
     void* fence = heap_caps_malloc(kFenceSize, MALLOC_CAP_8BIT);
     if (fence) {
-        Serial.printf("[BOOT] Fence allocated: %u bytes at %p\n",
+        Serial.printf("[BOOT] Fence allocated: %u bytes at %p\r\n",
                       (unsigned)kFenceSize, fence);
     } else {
         Serial.println("[BOOT] WARNING: Fence allocation failed, falling back to direct init");
@@ -86,7 +86,7 @@ static void setupHeapLayout() {
 
     size_t afterFree = ESP.getFreeHeap();
     size_t afterLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
-    Serial.printf("[BOOT] Post-fence heap: free=%u largest=%u\n",
+    Serial.printf("[BOOT] Post-fence heap: free=%u largest=%u\r\n",
                   (unsigned)afterFree, (unsigned)afterLargest);
 }
 
@@ -100,11 +100,11 @@ void setup() {
     {
         esp_err_t nvsErr = nvs_flash_init();
         if (nvsErr == ESP_ERR_NVS_NO_FREE_PAGES || nvsErr == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-            Serial.printf("[BOOT] NVS corrupt (0x%x), erasing and reinitializing...\n", nvsErr);
+            Serial.printf("[BOOT] NVS corrupt (0x%x), erasing and reinitializing...\r\n", nvsErr);
             nvs_flash_erase();
             nvsErr = nvs_flash_init();
         }
-        Serial.printf("[BOOT] NVS init: %s\n", nvsErr == ESP_OK ? "OK" : esp_err_to_name(nvsErr));
+        Serial.printf("[BOOT] NVS init: %s\r\n", nvsErr == ESP_OK ? "OK" : esp_err_to_name(nvsErr));
     }
 
     // Init hal_gpio_setup — configure pins (display, input, audio, etc.)
@@ -158,7 +158,6 @@ void setup() {
 
     // Initialize GPS (if enabled)
     if (Config::gps().enabled) {
-        // Use fixed pins from board configuration (GPIO TX=1, RX=2)
         GPS::init(PIN_GPS_TX, PIN_GPS_RX, Config::gps().baudRate);
     }
 
@@ -168,8 +167,8 @@ void setup() {
     porkchop.init();
 
     Serial.println("=== PORKCHOP READY ===");
-    Serial.printf("Piglet: %s\n", Config::personality().name);
-    Serial.printf("[BOOT] After init: free=%u\n", (unsigned)ESP.getFreeHeap());
+    Serial.printf("Piglet: %s\r\n", Config::personality().name);
+    Serial.printf("[BOOT] After init: free=%u\r\n", (unsigned)ESP.getFreeHeap());
     
     // Start background network reconnaissance service
     // This stabilizes heap by running WiFi promiscuous mode early

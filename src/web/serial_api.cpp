@@ -20,20 +20,20 @@ static void _processLine() {
     if (_field == 1) {
         strncpy(wifi.wigleApiName, _buf, sizeof(wifi.wigleApiName) - 1);
         Config::setWiFi(wifi);
-        Serial.printf("[SETTINGS] WiGLE name set: %s\n", wifi.wigleApiName);
+        Serial.printf("[SETTINGS] WiGLE name set: %s\r\n", wifi.wigleApiName);
         Display::showToast("WIGLE NAME SET", 2000);
         _field = 2;
         Serial.println("[SETTINGS] Now enter WiGLE API token:");
     } else if (_field == 2) {
         strncpy(wifi.wigleApiToken, _buf, sizeof(wifi.wigleApiToken) - 1);
         Config::setWiFi(wifi);
-        Serial.printf("[SETTINGS] WiGLE token set.\n");
+        Serial.printf("[SETTINGS] WiGLE token set.\r\n");
         Display::showToast("WIGLE TOKEN SET", 2000);
         _field = 0;
     } else if (_field == 3) {
         strncpy(wifi.wpaSecKey, _buf, sizeof(wifi.wpaSecKey) - 1);
         Config::setWiFi(wifi);
-        Serial.printf("[SETTINGS] WPA-SEC key set.\n");
+        Serial.printf("[SETTINGS] WPA-SEC key set.\r\n");
         Display::showToast("WPASEC KEY SET", 2000);
         _field = 0;
     } else {

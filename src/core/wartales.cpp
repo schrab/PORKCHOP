@@ -71,7 +71,7 @@ void Wartales::sessionStart() {
     snprintf(fname, sizeof(fname), "%s/tale_%06lu.txt", logsDir, idx);
     sLogFile = SD.open(fname, FILE_WRITE);
     if (!sLogFile) {
-        Serial.printf("[WARTALES] Failed to create %s\n", fname);
+        Serial.printf("[WARTALES] Failed to create %s\r\n", fname);
         return;
     }
     sOpen = true;
@@ -82,7 +82,7 @@ void Wartales::sessionStart() {
     snprintf(hdr, sizeof(hdr), "Session start | LVL:%d XP:%lu",
              XP::getLevel(), (unsigned long)XP::getTotalXP());
     writeLine(hdr);
-    Serial.printf("[WARTALES] %s\n", fname);
+    Serial.printf("[WARTALES] %s\r\n", fname);
 }
 
 void Wartales::sessionEnd() {
@@ -94,7 +94,7 @@ void Wartales::sessionEnd() {
     sLogFile.write((const uint8_t*)footer_sep, strlen(footer_sep));
     sLogFile.close();
     sOpen = false;
-    Serial.printf("[WARTALES] session closed (%u events)\n", sEventCount);
+    Serial.printf("[WARTALES] session closed (%u events)\r\n", sEventCount);
 }
 
 void Wartales::update() {

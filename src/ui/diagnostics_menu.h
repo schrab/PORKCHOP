@@ -21,9 +21,12 @@ private:
     static uint16_t cachedWigleUploaded;
     static uint32_t lastStatRefreshMs;
     static uint32_t statRefreshIntervalMs;
+    static uint8_t page;  // 0=system stats, 1=NMEA monitor
     static void saveSnapshot();
     static void resetWiFi();
     static void logHeapSnapshot();
     static void collectGarbage();
     static void refreshStats();
+    static void drawSystemPage(DisplayCanvas& canvas);
+    static void drawNmeaPage(DisplayCanvas& canvas);
 };

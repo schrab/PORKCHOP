@@ -106,7 +106,7 @@ static void IRAM_ATTR _radarCallback(const wifi_promiscuous_pkt_t* pkt, wifi_pro
                 h.rssi=pkt->rx_ctrl.rssi;
                 h.firstSeen=h.lastSeen=millis();
                 h.seenCount=1;
-                Serial.printf("[RADAR] PWNAGOTCHI: %s rssi=%d\n", h.detail, h.rssi);
+                Serial.printf("[RADAR] PWNAGOTCHI: %s rssi=%d\r\n", h.detail, h.rssi);
                 Wartales::logDetection("PWNAGOTCHI", h.detail);
             }
         }
@@ -172,7 +172,7 @@ static void _scanThreats() {
                 memcpy(t.mac, n.bssid, 6);
                 strncpy(t.vendor, TRACKER_VENDOR_NAMES[tidx], 15);
                 t.rssi = n.rssi; t.firstSeen = t.lastSeen = millis(); t.seenCount = 1;
-                Serial.printf("[RADAR] TRACKER: %s [%02X:%02X:%02X]\n",
+                Serial.printf("[RADAR] TRACKER: %s [%02X:%02X:%02X]\r\n",
                     t.vendor, n.bssid[3],n.bssid[4],n.bssid[5]);
                 Wartales::logDetection("TRACKER", t.vendor);
             }
@@ -195,7 +195,7 @@ static void _scanThreats() {
                 memcpy(s.bssid, n.bssid, 6);
                 strncpy(s.reason, reason, 31);
                 s.rssi = n.rssi; s.firstSeen = s.lastSeen = millis(); s.disappearCount = 0;
-                Serial.printf("[RADAR] SUSPECT AP: [%02X:%02X:%02X] %s rssi=%d\n",
+                Serial.printf("[RADAR] SUSPECT AP: [%02X:%02X:%02X] %s rssi=%d\r\n",
                     n.bssid[3],n.bssid[4],n.bssid[5], reason, n.rssi);
                 Wartales::logDetection("SUSPECT AP", reason);
             }
@@ -233,7 +233,7 @@ static void _scanThreats() {
             memcpy(s.mac, n.bssid, 6);
             strncpy(s.name, n.ssid[0]?n.ssid:"HC-??", 23);
             s.rssi=n.rssi; s.firstSeen=s.lastSeen=millis(); s.seenCount=1;
-            Serial.printf("[RADAR] SKIMMER?: %s [%02X:%02X:%02X] %ddBm\n",
+            Serial.printf("[RADAR] SKIMMER?: %s [%02X:%02X:%02X] %ddBm\r\n",
                 s.name, n.bssid[3],n.bssid[4],n.bssid[5], n.rssi);
             SFX::play(SFX::DEAUTH);
             Mood::setStatusMessage("SKIMMER ALERT!");
@@ -268,7 +268,7 @@ static void _scanThreats() {
             strncpy(h.type, "FLIPPER", 15);
             snprintf(h.detail, sizeof(h.detail), "%.32s", n.ssid[0]?n.ssid:"(no ssid)");
             h.rssi=n.rssi; h.firstSeen=h.lastSeen=millis(); h.seenCount=1;
-            Serial.printf("[RADAR] FLIPPER ZERO: %s [%02X:%02X:%02X] %ddBm\n",
+            Serial.printf("[RADAR] FLIPPER ZERO: %s [%02X:%02X:%02X] %ddBm\r\n",
                 h.detail, n.bssid[3],n.bssid[4],n.bssid[5], n.rssi);
             SFX::play(SFX::DEAUTH);
             Mood::setStatusMessage("FLIPPER DETECTED!");
@@ -309,7 +309,7 @@ void SwineRadarMode::stop() {
     esp_wifi_set_promiscuous_filter(&filt);
     Avatar::setState(AvatarState::NEUTRAL);
     Display::showToast("RADAR OFF", 1200);
-    Serial.printf("[RADAR] stopped. drones=%u tags=%u suspects=%u skimmers=%u hostiles=%u\n",
+    Serial.printf("[RADAR] stopped. drones=%u tags=%u suspects=%u skimmers=%u hostiles=%u\r\n",
         _droneCount, _tagCount, _suspectCount, _skimmerCount, _hostileCount);
 }
 

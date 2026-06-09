@@ -397,7 +397,7 @@ void OinkMode::init() {
 void OinkMode::start() {
     if (running) return;
     
-    Serial.printf("[OINK] Starting... free=%u\n", ESP.getFreeHeap());
+    Serial.printf("[OINK] Starting... free=%u\r\n", ESP.getFreeHeap());
     
     // Ensure NetworkRecon is running (handles WiFi promiscuous mode)
     if (!NetworkRecon::isRunning()) {
@@ -433,7 +433,7 @@ void OinkMode::start() {
     Mood::setDialogueLock(true);
     Display::setWiFiStatus(true);
     
-    Serial.printf("[OINK] Started. Networks available: %d\n", NetworkRecon::getNetworkCount());
+    Serial.printf("[OINK] Started. Networks available: %d\r\n", NetworkRecon::getNetworkCount());
 }
 
 void OinkMode::stop() {
@@ -494,7 +494,7 @@ void OinkMode::stop() {
     Mood::setDialogueLock(false);
     Display::setWiFiStatus(false);
     
-    Serial.printf("[OINK] Stopped. Networks: %d, Handshakes: %d\n", 
+    Serial.printf("[OINK] Stopped. Networks: %d, Handshakes: %d\r\n", 
                   NetworkRecon::getNetworkCount(), handshakes.size());
 }
 
@@ -914,7 +914,7 @@ void OinkMode::update() {
                 channelHopping = false;  // Ensure channel stays locked during capture phase
                 
                 // #region agent log - H1/H2 state transition to LOCKING
-                Serial.printf("[DBG-H1H2] ->LOCKING target=%s ch=%d PMF=%d reconLocked=%d\n", networks()[selectionIndex].ssid, networks()[selectionIndex].channel, networks()[selectionIndex].hasPMF ? 1 : 0, NetworkRecon::isChannelLocked() ? 1 : 0);
+                Serial.printf("[DBG-H1H2] ->LOCKING target=%s ch=%d PMF=%d reconLocked=%d\r\n", networks()[selectionIndex].ssid, networks()[selectionIndex].channel, networks()[selectionIndex].hasPMF ? 1 : 0, NetworkRecon::isChannelLocked() ? 1 : 0);
                 // #endregion
                 
                 Mood::setStatusMessage("sniffin clients");
@@ -929,7 +929,7 @@ void OinkMode::update() {
                 static uint32_t lastLockLog = 0;
                 if (now - lastLockLog > 500) {
                     lastLockLog = now;
-                    Serial.printf("[DBG-H1H2] LOCKING oinkCh=%d reconCh=%d locked=%d tgtIdx=%d\n", currentChannel, NetworkRecon::getCurrentChannel(), NetworkRecon::isChannelLocked() ? 1 : 0, targetIndex);
+                    Serial.printf("[DBG-H1H2] LOCKING oinkCh=%d reconCh=%d locked=%d tgtIdx=%d\r\n", currentChannel, NetworkRecon::getCurrentChannel(), NetworkRecon::isChannelLocked() ? 1 : 0, targetIndex);
                 }
             }
             // #endregion
@@ -1001,7 +1001,7 @@ void OinkMode::update() {
                     deauthCount = 0;
                     deauthing = true;
                     // #region agent log - H6 state to ATTACKING
-                    Serial.printf("[DBG-H6] ->ATTACKING after lock timeout\n");
+                    Serial.printf("[DBG-H6] ->ATTACKING after lock timeout\r\n");
                     // #endregion
                 }
             }
@@ -1077,7 +1077,7 @@ void OinkMode::update() {
                         static uint32_t lastDeauthLog = 0;
                         if (now - lastDeauthLog > 1000) {
                             lastDeauthLog = now;
-                            Serial.printf("[DBG-H6] DEAUTH clients=%d burst=%d total=%lu\n", clientCountLocal, burstCount, deauthCount);
+                            Serial.printf("[DBG-H6] DEAUTH clients=%d burst=%d total=%lu\r\n", clientCountLocal, burstCount, deauthCount);
                         }
                         // #endregion
                         // CRITICAL FIX: Limit clients per cycle to prevent WDT reset
@@ -1464,7 +1464,7 @@ void OinkMode::setChannel(uint8_t ch) {
     if (ch < 1 || ch > 14) return;
     currentChannel = ch;
     // #region agent log - H1/H2 channel conflict
-    Serial.printf("[DBG-H1H2] OINK setCh=%d reconCh=%d reconLocked=%d\n", ch, NetworkRecon::getCurrentChannel(), NetworkRecon::isChannelLocked() ? 1 : 0);
+    Serial.printf("[DBG-H1H2] OINK setCh=%d reconCh=%d reconLocked=%d\r\n", ch, NetworkRecon::getCurrentChannel(), NetworkRecon::isChannelLocked() ? 1 : 0);
     // #endregion
     // Use NetworkRecon's channel lock to prevent hopping during target lock
     NetworkRecon::lockChannel(ch);
@@ -1511,7 +1511,7 @@ void OinkMode::promiscuousCallback(const wifi_promiscuous_pkt_t* pkt, wifi_promi
         uint32_t now = millis();
         if (now - lastCbLog > 3000) {
             lastCbLog = now;
-            Serial.printf("[DBG-H5] OINK callback count=%lu type=%d\n", cbCount, (int)type);
+            Serial.printf("[DBG-H5] OINK callback count=%lu type=%d\r\n", cbCount, (int)type);
         }
     }
     // #endregion
@@ -3148,7 +3148,7 @@ int OinkMode::getNextTarget() {
                 if (networks()[i].hasPMF) pmfCount++;
                 if (!networks()[i].hasPMF && !networks()[i].hasHandshake && networks()[i].authmode != WIFI_AUTH_OPEN && networks()[i].ssid[0] != 0) validCount++;
             }
-            Serial.printf("[DBG-H3] getNextTarget total=%d pmf=%d valid=%d\n", totalCount, pmfCount, validCount);
+            Serial.printf("[DBG-H3] getNextTarget total=%d pmf=%d valid=%d\r\n", totalCount, pmfCount, validCount);
         }
     }
     // #endregion

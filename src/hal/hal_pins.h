@@ -34,10 +34,10 @@
 #define PIN_JOY_SELECT        38
 
 // --- GPS: UART ---
-#define PIN_GPS_TX            2
-#define PIN_GPS_RX            1
+#define PIN_GPS_TX            1   // GPS module TX → ESP32 GPIO1
+#define PIN_GPS_RX            2   // GPS module RX → ESP32 GPIO2
 #define GPS_UART_NUM          1     // UART1
-#define GPS_BAUD_DEFAULT      9600
+#define GPS_BAUD_DEFAULT      9600    // ATGM336H native baud rate
 
 // --- NeoPixel ---
 #undef PIN_NEOPIXEL          // Override ESP32-S3 variant default (GPIO 48)

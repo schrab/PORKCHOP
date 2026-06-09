@@ -55,6 +55,14 @@ static void _mgmtCallback(const wifi_promiscuous_pkt_t* pkt, wifi_promiscuous_pk
 // ============================================================================
 
 static void _scanEvilTwins() {
+    struct TwinLog {
+        char    ssid[33];
+        uint8_t bssid1[6];
+        uint8_t bssid2[6];
+    };
+    TwinLog logs[8];
+    uint8_t logCount = 0;
+
     NetworkRecon::enterCritical();
     auto& nets = NetworkRecon::getNetworks();
     uint8_t count = nets.size();
@@ -69,7 +77,6 @@ static void _scanEvilTwins() {
             if (nets[j].ssid[0] == '\0') continue;
             if (strcmp(nets[i].ssid, nets[j].ssid) != 0) continue;
 
-            // Check if already recorded
             bool dup = false;
             for (uint8_t k = 0; k < _twinCount; k++) {
                 if (strcmp(_twins[k].ssid, nets[i].ssid) == 0) {
@@ -92,14 +99,24 @@ static void _scanEvilTwins() {
             t.seenAt = millis();
             _twinCount++;
 
-            SFX::play(SFX::DEAUTH);
-            Mood::setStatusMessage("EVIL TWIN!");
-            Serial.printf("[SNOUT] EVIL TWIN: '%s' [%02X:%02X:%02X] vs [%02X:%02X:%02X]\n",
-                t.ssid, t.bssid1[3], t.bssid1[4], t.bssid1[5],
-                t.bssid2[3], t.bssid2[4], t.bssid2[5]);
+            if (logCount < 8) {
+                strncpy(logs[logCount].ssid, nets[i].ssid, 32);
+                logs[logCount].ssid[32] = '\0';
+                memcpy(logs[logCount].bssid1, nets[i].bssid, 6);
+                memcpy(logs[logCount].bssid2, nets[j].bssid, 6);
+                logCount++;
+            }
         }
     }
     NetworkRecon::exitCritical();
+
+    for (uint8_t i = 0; i < logCount; i++) {
+        SFX::play(SFX::DEAUTH);
+        Mood::setStatusMessage("EVIL TWIN!");
+        Serial.printf("[SNOUT] EVIL TWIN: '%s' [%02X:%02X:%02X] vs [%02X:%02X:%02X]\r\n",
+            logs[i].ssid, logs[i].bssid1[3], logs[i].bssid1[4], logs[i].bssid1[5],
+            logs[i].bssid2[3], logs[i].bssid2[4], logs[i].bssid2[5]);
+    }
 }
 
 // ============================================================================
@@ -163,6 +180,13 @@ static void _refreshHiddenList() {
 }
 
 static void _checkRevealedHidden() {
+    struct RevealLog {
+        char    ssid[33];
+        uint8_t bssid[6];
+    };
+    RevealLog reveals[8];
+    uint8_t revealCount = 0;
+
     NetworkRecon::enterCritical();
     auto& nets = NetworkRecon::getNetworks();
     for (uint8_t i = 0; i < _hiddenCount; i++) {
@@ -172,16 +196,25 @@ static void _checkRevealedHidden() {
                 strncpy(_hidden[i].ssid, n.ssid, 32);
                 _hidden[i].ssid[32] = '\0';
                 _hidden[i].revealed = true;
-                SFX::play(SFX::PMKID);
-                Mood::setStatusMessage("HIDDEN REVEALED");
-                Serial.printf("[SNOUT] HIDDEN REVEALED: '%s' [%02X:%02X:%02X]\n",
-                    _hidden[i].ssid,
-                    _hidden[i].bssid[3], _hidden[i].bssid[4], _hidden[i].bssid[5]);
+                if (revealCount < 8) {
+                    strncpy(reveals[revealCount].ssid, _hidden[i].ssid, 32);
+                    reveals[revealCount].ssid[32] = '\0';
+                    memcpy(reveals[revealCount].bssid, _hidden[i].bssid, 6);
+                    revealCount++;
+                }
                 break;
             }
         }
     }
     NetworkRecon::exitCritical();
+
+    for (uint8_t i = 0; i < revealCount; i++) {
+        SFX::play(SFX::PMKID);
+        Mood::setStatusMessage("HIDDEN REVEALED");
+        Serial.printf("[SNOUT] HIDDEN REVEALED: '%s' [%02X:%02X:%02X]\r\n",
+            reveals[i].ssid,
+            reveals[i].bssid[3], reveals[i].bssid[4], reveals[i].bssid[5]);
+    }
 }
 
 // ============================================================================
@@ -228,7 +261,7 @@ void SnoutMode::stop() {
     Avatar::setGrassMoving(false);
     Avatar::setState(AvatarState::NEUTRAL);
     Display::showToast("SNOUT OFF", 1200);
-    Serial.printf("[SNOUT] stopped. twins=%u storm_peak=%u hidden=%u\n",
+    Serial.printf("[SNOUT] stopped. twins=%u storm_peak=%u hidden=%u\r\n",
         _twinCount, _deauthPeak, _hiddenCount);
 }
 

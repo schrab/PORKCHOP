@@ -110,7 +110,7 @@ void BoarBrosMenu::loadBros() {
     }
     
     f.close();
-    Serial.printf("[BOAR_BROS] Loaded %d bros\n", (int)bros.size());
+    Serial.printf("[BOAR_BROS] Loaded %d bros\r\n", (int)bros.size());
 }
 
 void BoarBrosMenu::formatBSSID(uint64_t bssid, char* out, size_t len) {

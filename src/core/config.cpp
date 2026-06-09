@@ -39,7 +39,7 @@ static constexpr uint16_t CONFIG_VERSION = 1;
 
 static const char* configBinPathSD() {
     return SDLayout::usingNewLayout()
-        ? "/m5porkchop/config/porkchop.dat"
+        ? "/porkchop/config/porkchop.dat"
         : "/porkchop.dat";
 }
 
@@ -148,12 +148,12 @@ static void populateBlob(ConfigBlob& b, const GPSConfig& gps, const WiFiConfig& 
 static bool writeBlobTo(fs::FS& fs, const char* path, const ConfigBlob& b) {
     File file = fs.open(path, FILE_WRITE);
     if (!file) {
-        Serial.printf("[CONFIG] writeBlobTo: failed to open '%s'\n", path);
+        Serial.printf("[CONFIG] writeBlobTo: failed to open '%s'\r\n", path);
         return false;
     }
     size_t written = file.write((const uint8_t*)&b, sizeof(b));
     file.close();
-    Serial.printf("[CONFIG] writeBlobTo: %u/%u bytes -> '%s'\n",
+    Serial.printf("[CONFIG] writeBlobTo: %u/%u bytes -> '%s'\r\n",
                   written, sizeof(b), path);
     return written == sizeof(b);
 }
@@ -171,7 +171,7 @@ static bool readBlobFrom(fs::FS& fs, const char* path, ConfigBlob& b) {
     file.close();
 
     if (got < 8 || b.magic != CONFIG_MAGIC) return false;
-    Serial.printf("[CONFIG] readBlobFrom: '%s' v%u, %u bytes\n", path, b.version, got);
+    Serial.printf("[CONFIG] readBlobFrom: '%s' v%u, %u bytes\r\n", path, b.version, got);
     return true;
 }
 
@@ -182,6 +182,7 @@ static void extractBlob(const ConfigBlob& b, GPSConfig& gps, WiFiConfig& wifi,
     gps.rxPin          = b.gpsRxPin;
     gps.txPin          = b.gpsTxPin;
     gps.baudRate       = b.gpsBaudRate;
+    if (gps.baudRate != 9600 && gps.baudRate != 4800 && gps.baudRate != 38400) gps.baudRate = 9600;  // Force sane baud
     gps.updateInterval = b.gpsUpdateInterval;
     gps.sleepTimeMs    = b.gpsSleepTimeMs;
     gps.powerSave      = b.gpsPowerSave != 0;
@@ -252,7 +253,8 @@ static void sanitizeWiFiConfig(WiFiConfig& cfg) {
     cfg.spectrumMinRssi = clampI8(cfg.spectrumMinRssi, -95, -30);
     cfg.attackMinRssi = clampI8(cfg.attackMinRssi, -90, -50);
     if (cfg.spectrumTopN > 100) cfg.spectrumTopN = 100;
-    cfg.spectrumStaleMs = clampU16(cfg.spectrumStaleMs, 1000, 20000);
+    if (cfg.spectrumStaleMs < 2000) cfg.spectrumStaleMs = 5000;  // Treat stale/old values as uninitialized
+    cfg.spectrumStaleMs = clampU16(cfg.spectrumStaleMs, 2000, 20000);
 }
 
 static void ensureSdSpiReady() {
@@ -293,9 +295,8 @@ bool Config::init() {
 
     // Retry with progressive SPI speeds for reliability
     sdAvailable = false;
-    const int maxRetries = 6;
+    const int maxRetries = 5;
     const uint32_t speeds[] = {
-        25000000, // 25 MHz
         20000000, // 20 MHz
         10000000, // 10 MHz
         8000000,  // 8 MHz
@@ -305,7 +306,7 @@ bool Config::init() {
 
     for (int attempt = 0; attempt < maxRetries && !sdAvailable; attempt++) {
         uint32_t speed = speeds[attempt];
-        Serial.printf("[CONFIG] SD init attempt %d/%d at %luMHz\n",
+        Serial.printf("[CONFIG] SD init attempt %d/%d at %luMHz\r\n",
                       attempt + 1, maxRetries, speed / 1000000);
 
         if (attempt > 0) {
@@ -316,7 +317,7 @@ bool Config::init() {
 
         // Use explicit CS + dedicated SPI + explicit speed
         if (SD.begin(SD_CS_PIN, sdSPI, speed)) {
-            Serial.printf("[CONFIG] SD card mounted at %luMHz\n", speed / 1000000);
+            Serial.printf("[CONFIG] SD card mounted at %luMHz\r\n", speed / 1000000);
             sdAvailable = true;
         }
     }
@@ -338,7 +339,7 @@ bool Config::init() {
     }
 
     // Load main config: SD primary, SPIFFS fallback
-    Serial.printf("[CONFIG] Pre-load state: sdAvailable=%d, newLayout=%d\n",
+    Serial.printf("[CONFIG] Pre-load state: sdAvailable=%d, newLayout=%d\r\n",
                   sdAvailable, SDLayout::usingNewLayout());
     if (!load()) {
         Serial.println("[CONFIG] Creating default config");
@@ -361,6 +362,10 @@ bool Config::init() {
     }
 
     initialized = true;
+
+    // ATGM336H on this board is always 9600 — force it regardless of saved config
+    gpsConfig.baudRate = 9600;
+
     return true;
 }
 
@@ -430,9 +435,8 @@ bool Config::reinitSD() {
 
     // Retry with progressive SPI speeds
     sdAvailable = false;
-    const int maxRetries = 6;
+    const int maxRetries = 5;
     const uint32_t speeds[] = {
-        25000000,
         20000000,
         10000000,
         8000000,
@@ -442,7 +446,7 @@ bool Config::reinitSD() {
 
     for (int attempt = 0; attempt < maxRetries && !sdAvailable; attempt++) {
         uint32_t speed = speeds[attempt];
-        Serial.printf("[CONFIG] SD reinit attempt %d/%d at %luMHz\n",
+        Serial.printf("[CONFIG] SD reinit attempt %d/%d at %luMHz\r\n",
                       attempt + 1, maxRetries, speed / 1000000);
 
         if (attempt > 0) {
@@ -452,7 +456,7 @@ bool Config::reinitSD() {
         }
 
         if (SD.begin(SD_CS_PIN, sdSPI, speed)) {
-            Serial.printf("[CONFIG] SD card mounted at %luMHz\n", speed / 1000000);
+            Serial.printf("[CONFIG] SD card mounted at %luMHz\r\n", speed / 1000000);
             sdAvailable = true;
         }
     }
@@ -482,7 +486,7 @@ bool Config::loadFrom(fs::FS& fs, const char* path) {
     if (!file) return false;
 
     size_t fileSize = file.size();
-    Serial.printf("[CONFIG] loadFrom(): '%s' size=%u bytes\n", path, fileSize);
+    Serial.printf("[CONFIG] loadFrom(): '%s' size=%u bytes\r\n", path, fileSize);
     if (fileSize == 0) { file.close(); return false; }
 
     JsonDocument doc;
@@ -490,7 +494,7 @@ bool Config::loadFrom(fs::FS& fs, const char* path) {
     file.close();
 
     if (err) {
-        Serial.printf("[CONFIG] loadFrom(): JSON error: %s ('%s')\n", err.c_str(), path);
+        Serial.printf("[CONFIG] loadFrom(): JSON error: %s ('%s')\r\n", err.c_str(), path);
         return false;
     }
 
@@ -517,7 +521,8 @@ bool Config::applyJson(const JsonDocument& doc) {
             gpsConfig.txPin = doc["gps"]["txPin"] | 2;
         }
 
-        gpsConfig.baudRate = doc["gps"]["baudRate"] | 115200;
+        gpsConfig.baudRate = doc["gps"]["baudRate"] | 9600;
+        if (gpsConfig.baudRate != 9600 && gpsConfig.baudRate != 4800 && gpsConfig.baudRate != 38400) gpsConfig.baudRate = 9600;
         gpsConfig.updateInterval = doc["gps"]["updateInterval"] | 5;
         gpsConfig.sleepTimeMs = doc["gps"]["sleepTimeMs"] | 5000;
         gpsConfig.powerSave = doc["gps"]["powerSave"] | true;
@@ -528,7 +533,7 @@ bool Config::applyJson(const JsonDocument& doc) {
     if (doc["ml"].is<JsonObject>()) {
         mlConfig.enabled = doc["ml"]["enabled"] | true;
         mlConfig.collectionMode = static_cast<MLCollectionMode>(doc["ml"]["collectionMode"] | 0);
-        const char* mp = doc["ml"]["modelPath"] | "/m5porkchop/models/porkchop_model.bin";
+        const char* mp = doc["ml"]["modelPath"] | "/porkchop/models/porkchop_model.bin";
         strncpy(mlConfig.modelPath, mp, sizeof(mlConfig.modelPath) - 1);
         mlConfig.modelPath[sizeof(mlConfig.modelPath) - 1] = '\0';
         if (sdAvailable && SDLayout::usingNewLayout()) {
@@ -596,7 +601,7 @@ bool Config::applyJson(const JsonDocument& doc) {
         bleConfig.advDuration = doc["ble"]["advDuration"] | 100;
     }
 
-    Serial.printf("[CONFIG] Loaded OK: wpaKey=%s, wigleName=%s, wigleToken=%s, otaSSID=%s, deauth=%d, gps=%d\n",
+    Serial.printf("[CONFIG] Loaded OK: wpaKey=%s, wigleName=%s, wigleToken=%s, otaSSID=%s, deauth=%d, gps=%d\r\n",
                   strlen(wifiConfig.wpaSecKey) > 0 ? "(SET)" : "(EMPTY)",
                   strlen(wifiConfig.wigleApiName) > 0 ? "(SET)" : "(EMPTY)",
                   strlen(wifiConfig.wigleApiToken) > 0 ? "(SET)" : "(EMPTY)",
@@ -607,7 +612,7 @@ bool Config::applyJson(const JsonDocument& doc) {
 }
 
 bool Config::load() {
-    Serial.printf("[CONFIG] load(): sdAvail=%d, newLayout=%d\n",
+    Serial.printf("[CONFIG] load(): sdAvail=%d, newLayout=%d\r\n",
                   sdAvailable, SDLayout::usingNewLayout());
 
     ConfigBlob blob;
@@ -649,16 +654,16 @@ bool Config::load() {
     if (sdAvailable) {
         const char* sdPath = SDLayout::configPathSD();
         if (loadFrom((fs::FS&)SD, sdPath)) {
-            Serial.printf("[CONFIG] Migrated JSON from SD: '%s'\n", sdPath);
+            Serial.printf("[CONFIG] Migrated JSON from SD: '%s'\r\n", sdPath);
             save();           // write binary to both SD + SPIFFS
             SD.remove(sdPath);  // delete old JSON
-            Serial.printf("[CONFIG] Deleted old JSON: '%s'\n", sdPath);
+            Serial.printf("[CONFIG] Deleted old JSON: '%s'\r\n", sdPath);
             return true;
         }
         if (SDLayout::usingNewLayout()) {
             const char* legacyPath = SDLayout::legacyConfigPath();
             if (loadFrom((fs::FS&)SD, legacyPath)) {
-                Serial.printf("[CONFIG] Migrated JSON from SD legacy: '%s'\n", legacyPath);
+                Serial.printf("[CONFIG] Migrated JSON from SD legacy: '%s'\r\n", legacyPath);
                 save();
                 SD.remove(legacyPath);
                 return true;
@@ -691,7 +696,7 @@ bool Config::loadPersonality() {
     file.close();
 
     if (err) {
-        Serial.printf("[CONFIG] Personality JSON error: %s\n", err.c_str());
+        Serial.printf("[CONFIG] Personality JSON error: %s\r\n", err.c_str());
         return false;
     }
 
@@ -724,7 +729,7 @@ bool Config::loadPersonality() {
     }
     personalityConfig.bootMode = static_cast<BootMode>(bootMode);
 
-    Serial.printf("[CONFIG] Personality: %s (mood: %d, sound: %s, bright: %d%%, dim: %ds, theme: %d)\n",
+    Serial.printf("[CONFIG] Personality: %s (mood: %d, sound: %s, bright: %d%%, dim: %ds, theme: %d)\r\n",
                   personalityConfig.name,
                   personalityConfig.mood,
                   personalityConfig.soundEnabled ? "ON" : "OFF",
@@ -755,7 +760,7 @@ void Config::savePersonalityToSPIFFS() {
     if (file) {
         serializeJsonPretty(doc, file);
         file.close();
-        Serial.printf("[CONFIG] Saved personality to SPIFFS (sound: %s)\n",
+        Serial.printf("[CONFIG] Saved personality to SPIFFS (sound: %s)\r\n",
                       personalityConfig.soundEnabled ? "ON" : "OFF");
     } else {
         Serial.println("[CONFIG] Failed to save personality to SPIFFS");
@@ -766,7 +771,7 @@ bool Config::save() {
     ConfigBlob blob;
     populateBlob(blob, gpsConfig, wifiConfig, bleConfig, mlConfig);
 
-    Serial.printf("[CONFIG] save(): sdAvail=%d, wpaKey=%s, wigle=%s\n",
+    Serial.printf("[CONFIG] save(): sdAvail=%d, wpaKey=%s, wigle=%s\r\n",
                   sdAvailable,
                   strlen(wifiConfig.wpaSecKey) > 0 ? "(SET)" : "(EMPTY)",
                   strlen(wifiConfig.wigleApiName) > 0 ? "(SET)" : "(EMPTY)");
@@ -862,13 +867,13 @@ bool Config::loadWpaSecKeyFromFile() {
     }
 
     if (keyLen != 32) {
-        Serial.printf("[CONFIG] Invalid WPA-SEC key length: %d (expected 32)\n", (int)keyLen);
+        Serial.printf("[CONFIG] Invalid WPA-SEC key length: %d (expected 32)\r\n", (int)keyLen);
         return false;
     }
 
     for (int i = 0; i < 32; i++) {
         if (!isxdigit(key[i])) {
-            Serial.printf("[CONFIG] Invalid hex char in WPA-SEC key at position %d\n", i);
+            Serial.printf("[CONFIG] Invalid hex char in WPA-SEC key at position %d\r\n", i);
             return false;
         }
     }
@@ -973,12 +978,12 @@ bool Config::importCredsFromJsonConf() {
     file.close();
 
     if (err) {
-        Serial.printf("[CONFIG] importCreds: JSON parse error: %s ('%s')\n", err.c_str(), confPath);
+        Serial.printf("[CONFIG] importCreds: JSON parse error: %s ('%s')\r\n", err.c_str(), confPath);
         return false;
     }
 
     if (!doc["wifi"].is<JsonObject>()) {
-        Serial.printf("[CONFIG] importCreds: no 'wifi' object in '%s'\n", confPath);
+        Serial.printf("[CONFIG] importCreds: no 'wifi' object in '%s'\r\n", confPath);
         SD.remove(confPath);
         return false;
     }
@@ -1019,7 +1024,7 @@ bool Config::importCredsFromJsonConf() {
 
     // Delete the JSON conf after import (same pattern as key files)
     if (SD.remove(confPath)) {
-        Serial.printf("[CONFIG] importCreds: deleted '%s' after import\n", confPath);
+        Serial.printf("[CONFIG] importCreds: deleted '%s' after import\r\n", confPath);
     }
 
     return merged;

@@ -16,10 +16,18 @@ uint32_t GPS::lastFixTime = 0;
 uint32_t GPS::lastUpdateTime = 0;
 SemaphoreHandle_t GPS::mutex = nullptr;
 
+// NMEA ring buffer
+char GPS::nmeaRing[NMEA_RING_LINES][NMEA_LINE_MAX];
+uint8_t GPS::nmeaHead = 0;
+uint8_t GPS::nmeaCount = 0;
+char GPS::nmeaLineBuf[NMEA_LINE_MAX];
+uint8_t GPS::nmeaLinePos = 0;
+uint32_t GPS::totalBytesProcessed = 0;
+
 void GPS::init(uint8_t rxPin, uint8_t txPin, uint32_t baud) {
     // GPS source now auto-configured via GPSSource enum in config
     // Pin selection happens in Config::load() based on gpsSource setting
-    Serial.printf("[GPS] Init: RX=%d, TX=%d, baud=%lu\n", rxPin, txPin, baud);
+    Serial.printf("[GPS] Init: RX=%d, TX=%d, baud=%lu\r\n", rxPin, txPin, baud);
     
     // Create mutex for thread safety
     if (mutex == nullptr) {
@@ -65,7 +73,7 @@ void GPS::reinit(uint8_t rxPin, uint8_t txPin, uint32_t baud) {
     }
     
     // GPS logs silenced - pig prefers stealth
-    // Serial.printf("[GPS] Re-initialized on pins RX:%d TX:%d @ %d baud\n", rxPin, txPin, baud);
+    // Serial.printf("[GPS] Re-initialized on pins RX:%d TX:%d @ %d baud\r\n", rxPin, txPin, baud);
 }
 
 void GPS::update() {
@@ -85,8 +93,6 @@ void GPS::update() {
 void GPS::processSerial() {
     if (!serial) return;  // Safety check
     
-    static uint32_t lastDebugTime = 0;
-    static uint32_t bytesProcessed = 0;
     uint32_t processedThisCall = 0;
     const uint32_t maxBytesPerCall = 128; // Limit processing per call to prevent WDT
     
@@ -94,8 +100,20 @@ void GPS::processSerial() {
         char c = serial->read();
         if (c != -1) { // Valid byte read
             gps.encode(c);
-            bytesProcessed++;
+            totalBytesProcessed++;
             processedThisCall++;
+            
+            // Capture NMEA lines for diagnostic display
+            if (c == '$') {
+                nmeaLinePos = 0;  // Start new sentence
+            }
+            if (nmeaLinePos < NMEA_LINE_MAX - 1 && c != '\r') {
+                nmeaLineBuf[nmeaLinePos++] = c;
+                if (c == '\n') {
+                    nmeaLineBuf[nmeaLinePos - 1] = '\0';  // Strip \n
+                    pushNmeaLine();
+                }
+            }
         }
     }
     
@@ -105,12 +123,6 @@ void GPS::processSerial() {
     }
     
     // GPS debug logs silenced - pig prefers stealth
-    // Uncomment for debugging:
-    // uint32_t now = millis();
-    // if (now - lastDebugTime >= 5000) {
-    //     Serial.printf("[GPS] Bytes: %lu, Sats: %d, Valid: %s\n", bytesProcessed, gps.satellites.value(), gps.location.isValid() ? "Y" : "N");
-    //     lastDebugTime = now;
-    // }
 }
 
 void GPS::updateData() {
@@ -123,7 +135,7 @@ void GPS::updateData() {
     double altitude = gps.altitude.meters();
     float speed = gps.speed.kmph();
     float course = gps.course.deg();
-    uint8_t satellites = gps.satellites.value();
+    uint8_t satellites = gps.satellites.isValid() ? gps.satellites.value() : 0;
     uint16_t hdop = gps.hdop.value();
     uint32_t date = gps.date.isValid() ? gps.date.value() : 0;
     uint32_t time = gps.time.isValid() ? gps.time.value() : 0;
@@ -140,7 +152,7 @@ void GPS::updateData() {
         currentData.altitude = altitude;
         currentData.speed = speed;
         currentData.course = course;
-        currentData.satellites = satellites;
+        if (satellites > 0) currentData.satellites = satellites;  // retain last valid count
         currentData.hdop = hdop;
         currentData.date = date;
         currentData.time = time;
@@ -313,4 +325,29 @@ uint32_t GPS::getLastFixTime() {
         return time;
     }
     return 0; // Return safe value if mutex unavailable
+}
+
+void GPS::pushNmeaLine() {
+    nmeaLineBuf[NMEA_LINE_MAX - 1] = '\0';
+    strncpy(nmeaRing[nmeaHead], nmeaLineBuf, NMEA_LINE_MAX);
+    nmeaHead = (nmeaHead + 1) % NMEA_RING_LINES;
+    if (nmeaCount < NMEA_RING_LINES) nmeaCount++;
+    nmeaLinePos = 0;
+}
+
+uint8_t GPS::getNmeaLineCount() {
+    return nmeaCount;
+}
+
+const char* GPS::getNmeaLine(uint8_t index) {
+    if (index >= nmeaCount) return "";
+    uint8_t start = (nmeaCount < NMEA_RING_LINES)
+        ? 0
+        : nmeaHead;  // ring is full, head points to oldest
+    uint8_t pos = (start + index) % NMEA_RING_LINES;
+    return nmeaRing[pos];
+}
+
+uint32_t GPS::getTotalBytesProcessed() {
+    return totalBytesProcessed;
 }

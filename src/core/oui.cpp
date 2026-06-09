@@ -550,6 +550,6 @@ bool OUI::selfTest() {
         Serial.println("[OUI] WARNING: First entry is all zeros");
     }
     
-    Serial.printf("[OUI] Self-test passed, %d vendors loaded\n", OUI_TABLE_SIZE);
+    Serial.printf("[OUI] Self-test passed, %d vendors loaded\r\n", OUI_TABLE_SIZE);
     return true;
 }

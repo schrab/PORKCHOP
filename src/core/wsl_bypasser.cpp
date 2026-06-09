@@ -48,10 +48,10 @@ void randomizeMAC() {
     esp_err_t result = esp_wifi_set_mac(WIFI_IF_STA, mac);
     
     if (result == ESP_OK) {
-        Serial.printf("[WSL] MAC randomized: %02X:%02X:%02X:%02X:%02X:%02X\n",
+        Serial.printf("[WSL] MAC randomized: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
                       mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     } else {
-        Serial.printf("[WSL] MAC randomization failed: %d\n", result);
+        Serial.printf("[WSL] MAC randomization failed: %d\r\n", result);
     }
 }
 
