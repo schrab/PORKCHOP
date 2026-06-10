@@ -100,15 +100,36 @@ static void _addHit(const char* ssid, const uint8_t* bssid, int8_t rssi, uint8_t
     Wartales::logDetection(label, ssid[0] ? ssid : "hidden");
 }
 
+struct _PendingHit {
+    char ssid[33];
+    uint8_t bssid[6];
+    int8_t rssi;
+    uint8_t type;
+};
+
 static void _scanNetworks() {
+    _PendingHit pending[8];
+    uint8_t pendingCount = 0;
+
     NetworkRecon::enterCritical();
     const auto& nets = NetworkRecon::getNetworks();
     for (const auto& n : nets) {
         uint8_t type = 0;
         bool hit = _ssidMatch(n.ssid, type) || _ouiMatch(n.bssid, type);
-        if (hit) _addHit(n.ssid, n.bssid, n.rssi, type);
+        if (hit && pendingCount < 8) {
+            strncpy(pending[pendingCount].ssid, n.ssid, 32);
+            pending[pendingCount].ssid[32] = 0;
+            memcpy(pending[pendingCount].bssid, n.bssid, 6);
+            pending[pendingCount].rssi = n.rssi;
+            pending[pendingCount].type = type;
+            pendingCount++;
+        }
     }
     NetworkRecon::exitCritical();
+
+    for (uint8_t i = 0; i < pendingCount; i++) {
+        _addHit(pending[i].ssid, pending[i].bssid, pending[i].rssi, pending[i].type);
+    }
 }
 
 void PorkPatrolMode::start() {

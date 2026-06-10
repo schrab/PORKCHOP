@@ -113,7 +113,7 @@ src/
 │   ├── donoham.h/.cpp        Passive recon mode (DO NO HAM)
 │   ├── warhog.h/.cpp         Wardriving mode (CSV logging)
 │   ├── bacon.h/.cpp          Beacon injection mode
-│   ├── spectrum.h/.cpp       WiFi spectrum analyzer
+│   ├── spectrum.h/.cpp       WiFi spectrum analyzer + client monitor + attack mode
 │   ├── piggyblues.h/.cpp     BLE advertisement spam
 │   ├── pigsync_client.h/.cpp ESP-NOW peer sync
 │   ├── charging.h/.cpp       Low-power battery display
@@ -280,7 +280,7 @@ class DisplayCanvas {
 ```cpp
 // Key codes
 KEY_UP 0xDA  KEY_DOWN 0xD9  KEY_LEFT 0xD8  KEY_RIGHT 0xD7
-KEY_ENTER 0x0D  KEY_ESC 0x1B  KEY_TAB 0x09
+KEY_ENTER 0x0D  KEY_ESC 0x1B
 
 void hal_input_init();         // Setup joystick GPIOs (INPUT_PULLUP)
 void hal_input_update();       // Poll + debounce — call once per loop()
@@ -294,6 +294,8 @@ InputEvent hal_input_keysState();  // Single-shot poll {pressed, key}
 bool hal_input_isKeyPressed(char key);  // Raw read of specific key
 bool hal_input_shouldExit();   // ESC pressed?
 bool hal_input_isLongEnter();  // Long-press ENTER (800ms hold)
+bool hal_input_isLongUp();     // Long-press UP (800ms hold, attack mode in Spectrum)
+bool hal_input_isLongRight();  // Long-press RIGHT (800ms hold, filter cycle in Spectrum)
 void hal_input_consumeLongEsc();  // Consume long-press LEFT ESC flag
 ```
 

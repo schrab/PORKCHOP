@@ -55,9 +55,10 @@ static const float kTrendDropV = 0.030f;
 static const float kDischargeVoltages[] = {3.00f, 3.30f, 3.50f, 3.60f, 3.70f, 3.75f, 3.80f, 3.90f, 4.00f, 4.10f, 4.20f};
 static const uint8_t kDischargePercents[] = {0, 5, 10, 20, 30, 40, 50, 60, 70, 85, 100};
 
-// Charging curve - flattened upper range to model constant-voltage (CV) phase
+// Charging curve - models CC/CV phase. CV phase compresses top 20% into 4.10-4.20V.
+// At 4.16V during charge, cell is ~88% full (not 70%).
 static const float kChargeVoltages[] = {3.50f, 3.70f, 3.85f, 3.95f, 4.05f, 4.10f, 4.13f, 4.16f, 4.18f, 4.19f, 4.20f};
-static const uint8_t kChargePercents[] = {0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100};
+static const uint8_t kChargePercents[] = {0, 10, 25, 40, 60, 75, 82, 88, 94, 97, 100};
 
 static bool isUsbConnected() {
 #if ARDUINO_USB_MODE
@@ -137,7 +138,9 @@ void ChargingMode::start() {
     animFrame = 0;
     lastAnimMs = millis();
     
-    // Initial battery read
+    // Initial battery read — reinit ADC after WiFi shutdown
+    // (WiFi driver can clobber ADC1 registers on ESP32-S3)
+    hal_battery_reset();
     updateBattery();
     
     Serial.printf("[CHARGING] Mode started. Battery: %d%% (%.2fV) Charging: %s\r\n",

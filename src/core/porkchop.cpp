@@ -28,6 +28,7 @@
 #include "../modes/pork_patrol.h"
 #include "../modes/swine_radar.h"
 #include "../modes/snout.h"
+#include "../modes/charging.h"
 #include "../core/ghost.h"
 #include "../core/wartales.h"
 #include "../web/fileserver.h"
@@ -463,6 +464,9 @@ void Porkchop::setMode(PorkchopMode mode) {
         case PorkchopMode::WEBUI_MODE:
             WebUI::stop();
             break;
+        case PorkchopMode::CHARGING:
+            ChargingMode::stop();
+            break;
         default:
             break;
     }
@@ -601,6 +605,9 @@ void Porkchop::setMode(PorkchopMode mode) {
             break;
         case PorkchopMode::ABOUT:
             Display::resetAboutState();
+            break;
+        case PorkchopMode::CHARGING:
+            ChargingMode::start();
             break;
         
             
@@ -956,6 +963,13 @@ void Porkchop::updateMode() {
             if (!PigSyncMode::isRunning()) {
                 // User exited, go back to menu
                 setMode(PorkchopMode::MENU);
+            }
+            break;
+        case PorkchopMode::CHARGING:
+            ChargingMode::update();
+            if (ChargingMode::shouldExit()) {
+                ChargingMode::clearExit();
+                setMode(PorkchopMode::IDLE);
             }
             break;
         

@@ -17,3 +17,4 @@ scripts/heap_analyzer.py
 *.ski*
 !./docs/images/*
 temp/
+src/build_info.h

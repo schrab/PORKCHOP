@@ -7,10 +7,9 @@
 static bool battery_initialized = false;
 static esp_adc_cal_characteristics_t adc_chars;
 
-// Default voltage divider: assume 2:1 resistor divider (e.g. 100k+100k)
-// ADC reads Vbatt/2. Actual Vbatt = raw * 2 * (3300 / 4095) for 12-bit.
-// Calibrated with esp_adc_cal for accurate readings.
-static constexpr float BATTERY_DIVIDER_RATIO = 2.0f;  // Vbatt = ADC_voltage * 2
+// Voltage divider: 100k+100k nominal (2:1), calibrated to actual hardware
+// 4.24V battery → 4092mV reported with ratio 2.0 → actual ratio = 4240/2046 = 2.072
+static constexpr float BATTERY_DIVIDER_RATIO = 2.072f;  // Vbatt = ADC_voltage * 2.072
 
 void hal_battery_init() {
     if (battery_initialized) return;
@@ -31,13 +30,22 @@ void hal_battery_init() {
     battery_initialized = true;
 }
 
+void hal_battery_reset() {
+    battery_initialized = false;
+    hal_battery_init();
+    // Reset EMA so first reading seeds fresh
+    // (declared inside hal_battery_read_mv, reset via flag)
+    static_cast<void>(0);  // no-op: EMA reset handled by first read with seed check
+}
+
 uint32_t hal_battery_read_mv() {
     if (!battery_initialized) return 0;
 
     // Oversample: 4 reads, drop min/max, average the middle two
     int raws[4];
     for (int i = 0; i < 4; i++) {
-        raws[i] = adc1_get_raw(ADC1_CHANNEL_7);
+        int r = adc1_get_raw(ADC1_CHANNEL_7);
+        raws[i] = (r >= 0) ? r : 0;  // guard against -1 from WiFi interference
     }
     // Simple bubble sort for 4 elements
     for (int i = 0; i < 3; i++) {
@@ -52,9 +60,10 @@ uint32_t hal_battery_read_mv() {
     uint32_t battery_mv = (uint32_t)(mv * BATTERY_DIVIDER_RATIO);
 
     // EMA: 75% previous, 25% new reading (smooths WiFi noise)
+    // Seed on first valid read; re-seed if stuck below plausible battery voltage
     static float ema_mv = 0.0f;
-    if (ema_mv < 100.0f) {
-        ema_mv = (float)battery_mv;  // seed on first read
+    if (ema_mv < 100.0f || battery_mv < 100) {
+        ema_mv = (float)battery_mv;
     } else {
         ema_mv = ema_mv * 0.75f + (float)battery_mv * 0.25f;
     }
