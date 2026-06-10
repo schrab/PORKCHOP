@@ -915,7 +915,7 @@ void resume() {
     }
     channelLockedBeforePause = false;
     
-    Serial.printf("[RECON] Resumed on channel %d\n", currentChannel);
+    Serial.printf("[RECON] Resumed on channel %d\r\n", currentChannel);
 }
 
 void update() {
@@ -1091,7 +1091,7 @@ void lockChannel(uint8_t channel) {
     channelLocked.store(true, std::memory_order_release);
     esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     
-    Serial.printf("[RECON] Channel locked to %d\n", channel);
+    Serial.printf("[RECON] Channel locked to %d\r\n", channel);
 }
 
 void unlockChannel() {

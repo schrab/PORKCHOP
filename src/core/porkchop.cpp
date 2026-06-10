@@ -72,10 +72,11 @@ static const char* modeToString(PorkchopMode mode) {
         case PorkchopMode::PIGSYNC_DEVICE_SELECT: return "PIGSYNC_DEVICE_SELECT";
         case PorkchopMode::BACON_MODE: return "BACON";
         case PorkchopMode::SD_FORMAT: return "SD_FORMAT";
-         return "CHARGING";
+        case PorkchopMode::CHARGING: return "CHARGING";
         case PorkchopMode::PORK_PATROL: return "PORKPATROL";
         case PorkchopMode::SWINE_RADAR: return "SWINERADAR";
         case PorkchopMode::SNOUT_MODE: return "SNOUT";
+        case PorkchopMode::WEBUI_MODE: return "WEBUI";
         case PorkchopMode::ABOUT: return "ABOUT";
         default: return "UNKNOWN";
     }

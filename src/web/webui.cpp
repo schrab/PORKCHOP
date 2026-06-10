@@ -159,15 +159,31 @@ static void _serveClient(int cfd) {
 void WebUI::start() {
     if (_active) return;
 
-    NetworkRecon::pause();
+    // Fully stop NetworkRecon — cleaner WiFi state than pause()
+    NetworkRecon::stop();
+    
+    WiFi.persistent(false);
     WiFi.scanDelete();
-    WiFi.mode(WIFI_AP);
+    
+    // Soft disconnect — no driver teardown
+    WiFi.disconnect(false, false);
     delay(200);
+    
+    // AP_STA mode — ESP32-S3 radio handles AP beacons better
+    // when STA interface stays initialized
+    WiFi.mode(WIFI_AP_STA);
+    delay(500);
+    
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-    WiFi.softAP(WEBUI_AP_SSID);
+    bool apOk = WiFi.softAP(WEBUI_AP_SSID);
+    Serial.printf("[WEBUI] softAP: %s\r\n", apOk ? "OK" : "FAILED");
+    
+    delay(1000);  // beacon stabilization
+    
     uint32_t t0 = millis();
     while (WiFi.softAPIP().toString() == "0.0.0.0" && millis() - t0 < 3000) delay(100);
-    Serial.printf("[WEBUI] AP IP: %s  heap=%u\r\n", WiFi.softAPIP().toString().c_str(), ESP.getFreeHeap());
+    Serial.printf("[WEBUI] AP IP: %s  mode=%d  heap=%u\r\n",
+        WiFi.softAPIP().toString().c_str(), (int)WiFi.getMode(), ESP.getFreeHeap());
 
     struct sockaddr_in sa = {};
     sa.sin_family = AF_INET;
@@ -187,12 +203,18 @@ void WebUI::start() {
 void WebUI::stop() {
     if (!_active) return;
     if (_listenSock >= 0) { close(_listenSock); _listenSock = -1; }
-    WiFi.softAPdisconnect(true);
+    
+    // Soft AP disconnect — don't power off radio (causes rxcb errors)
+    WiFi.softAPdisconnect(false);
     delay(100);
+    
+    // Switch to STA for NetworkRecon
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect(false);
     delay(200);
-    NetworkRecon::resume();
+    
+    // Restart NetworkRecon (we fully stopped it in start())
+    NetworkRecon::start();
+    
     _active = false;
     Serial.println("[WEBUI] stopped — STA restored");
     Display::showToast("WEBUI OFF", 2000);
