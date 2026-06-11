@@ -219,6 +219,9 @@ private:
     static uint32_t attackStartTime;         // When attack began
     static uint32_t lastAttackDeauth;        // Deauth throttle timer
     static uint32_t deauthCount;             // Deauths sent this attack
+    static uint32_t deauthTxErrors;          // Deauth TX failures
+    static uint32_t eapolRxCount;            // EAPOL frames received in attack mode
+    static uint32_t eapolRxNoKey;            // EAPOL frames that weren't EAPOL-Key
     static SpectrumPMKID capturedPMKIDs[4];  // Captured PMKIDs (static pool)
     static uint8_t capturedPMKIDCount;       // How many captured
     static volatile bool pendingAttackPMKID; // Flag: PMKID captured (set in callback)

@@ -327,6 +327,7 @@ void DoNoHamMode::stop() {
     saveAllHandshakes();
     if (pausedByUs) {
         NetworkRecon::resume();
+        yield();
     }
     
     // Free per-handshake beacon memory to prevent leaks
@@ -490,6 +491,7 @@ void DoNoHamMode::update() {
                         saveAllPMKIDs();
                         if (pausedByUs) {
                             NetworkRecon::resume();
+                            yield();
                         }
                     }
                 }

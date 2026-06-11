@@ -203,6 +203,11 @@ private:
     static int selectionIndex;  // Cursor for network selection
     static std::atomic<uint32_t> packetCount;
     static uint32_t deauthCount;
+    static uint32_t deauthTxOk;
+    static uint32_t deauthTxErrors;
+    static uint32_t eapolRxCount;
+    static uint32_t eapolRxNoKey;
+    static uint32_t eapolRxNotTarget;
     
     // Beacon frame storage (for PCAP)
     static uint8_t* beaconFrame;
@@ -226,10 +231,8 @@ private:
     static bool detectPMF(const uint8_t* payload, uint16_t len);
 
     static int findNetwork(const uint8_t* bssid);
-    static int findOrCreateHandshake(const uint8_t* bssid, const uint8_t* station);
-    static int findOrCreatePMKID(const uint8_t* bssid, const uint8_t* station);
-    static int findOrCreateHandshakeSafe(const uint8_t* bssid, const uint8_t* station);  // Main thread only
-    static int findOrCreatePMKIDSafe(const uint8_t* bssid, const uint8_t* station);      // Main thread only
+    static int findOrCreateHandshakeSafe(const uint8_t* bssid, const uint8_t* station);  // Core 1 only
+    static int findOrCreatePMKIDSafe(const uint8_t* bssid, const uint8_t* station);      // Core 1 only
     static void sortNetworksByPriority();
     static void updateTargetCache();
     static bool hasHandshakeFor(const uint8_t* bssid);

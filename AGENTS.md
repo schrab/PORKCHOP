@@ -212,8 +212,15 @@ flushes every 10 events or 10s. `logEvent()` records mode starts and key actions
 
 ### NetworkRecon (`core/network_recon.h/.cpp`)
 Background WiFi scanning service. Channel hopping, stale network cleanup,
-promiscuous packet callback (one at a time). Thread-safe via mutex.
-`enterCritical()` / `exitCritical()` for vector access.
+promiscuous packet callback (one at a time).
+
+**Thread safety**:
+- `enterCritical()` / `exitCritical()` protect the shared `networks[]` vector.
+  These are safe on Core 1 (main thread) but **MUST NOT** be called from Core 0
+  (promiscuous callback) — cross-core spinlock deadlock → TG1WDT.
+- Mode-owned capture data (OINK `handshakes[]`, `pmkids[]`) is **Core 1 territory**.
+  The callback is a PURE ENQUEUER — copies raw frame data to `pendingHsPool[]`,
+  no vector iteration. Core 1 dequeue does all vector lookups and writes.
 
 ## Display Port Status
 
@@ -369,6 +376,8 @@ BOTTOM_BAR  = 14px   (bottom overlay)
 - **Branch**: `esp32-s3-mini-port` for this port — `main` is upstream M5Cardputer
 - **Style**: Arduino framework, C++17, snake_case for functions, PascalCase for classes
 - **Config**: New config fields append at end of `ConfigBlob` struct (packed, `CONFIG_VERSION=1`). Old blobs zero-initialize new fields via `memset`.
+- **Core 0 spinlock safety**: The WiFi promiscuous callback runs on Core 0. `taskENTER_CRITICAL` on a cross-core spinlock blocks Core 0 with interrupts disabled. If Core 1 holds the lock → TG1WDT after ~300ms. **OINK callback is a PURE ENQUEUER**: it only copies frame data to a queue slot under `oinkQueueMux`, no vector access. Core 1 dequeue does ALL vector lookups/writes. `oinkQueueMux` ONLY protects the queue, not vectors.
+- **Deferred SSID lookup**: `networks[]` lookups from `networks()` require `vectorMux` (via `NetworkRecon::enterCritical()`). Callback code MUST defer SSID lookups to Core 1 dequeue handlers; never access `networks()` from Core 0.
 - **SnOUT note**: `NetworkRecon::setPacketCallback()` supports only **one** callback at a time. SnOUT registers its deauth callback on start, clears on stop. Do not run SnOUT alongside modes that use packet callbacks.
 
 # DOX framework

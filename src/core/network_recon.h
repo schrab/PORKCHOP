@@ -86,6 +86,12 @@ bool isRunning();
 bool isPaused();
 
 /**
+ * @brief Check if it's safe to transmit frames right now
+ * Returns false if recon is not running, paused, or WiFi driver not ready
+ */
+bool canSendFramesNow();
+
+/**
  * @brief Check if heap has stabilized after start
  * Returns true once largest free block exceeds threshold
  */

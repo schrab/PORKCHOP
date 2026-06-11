@@ -830,6 +830,8 @@ WigleSyncResult WiGLE::syncFiles(WigleProgressCallback cb) {
     // Resume NetworkRecon after sync operations complete
     if (wasReconRunning) {
         Serial.println("[WIGLE] Resuming NetworkRecon after TLS operations");
+        WiFi.disconnect(false, false);
+        delay(50);
         NetworkRecon::resume();
     }
     

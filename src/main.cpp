@@ -95,6 +95,7 @@ void setup() {
     delay(100);
     Serial.println("\n=== PORKCHOP STARTING (ESP32-S3 Mini) ===\n");
 
+
     // NVS init — must run before Preferences, Config, XP, or anything using NVS.
     // Recover automatically if the partition has stale data from a previous flash layout.
     {

@@ -847,6 +847,8 @@ WPASecSyncResult WPASec::syncCaptures(WPASecProgressCallback cb) {
     // Resume NetworkRecon after sync operations complete
     if (wasReconRunning) {
         Serial.println("[WPASEC] Resuming NetworkRecon after TLS operations");
+        WiFi.disconnect(false, false);
+        delay(50);
         NetworkRecon::resume();
     }
     

