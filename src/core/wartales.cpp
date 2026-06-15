@@ -37,6 +37,11 @@ static void writeLine(const char* line) {
 }
 
 void Wartales::init() {
+    // Close any in-progress session from a previous run
+    if (sOpen && sLogFile) {
+        sLogFile.close();
+    }
+    sLogFile = File();
     sSessionStart = 0;
     sEventCount = 0;
     sOpen = false;
@@ -51,6 +56,10 @@ void Wartales::sessionStart() {
     if (!sSdReady) {
         Serial.println("[WARTALES] SD not available");
         return;
+    }
+    // End the previous session cleanly so it gets its footer
+    if (sOpen) {
+        sessionEnd();
     }
     sSessionStart = millis();
     sEventCount = 0;

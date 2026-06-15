@@ -164,7 +164,7 @@ static const Note SND_ERROR[] = {
     {0, 0, 0}
 };
 
-// BOOT: Nostromo-style long boot sequence (2-3s)
+// BOOT: Nostromo-style long boot sequence (2-3s) — preserved, not currently used
 static const Note SND_BOOT[] = {
     {140, 650, 140},  // low hum pulse
     {600, 12, 30},
@@ -180,6 +180,30 @@ static const Note SND_BOOT[] = {
     {170, 230, 70},  // tape thud
     {210, 320, 90},
     {240, 360, 0},
+    {0, 0, 0}
+};
+
+// BOOT: Dial-up modem handshake sequence
+// Silence → chirp sweep → negotiation chirps → carrier tone
+static const Note SND_MODEM[] = {
+    {0, 120, 80},           // initial silence (modem off)
+    {440, 60, 10},          // dial tone start
+    {600, 50, 8},
+    {800, 45, 6},
+    {1000, 40, 60},         // pause (dialing)
+    {1200, 30, 8},          // carrier detect chirps
+    {1500, 30, 8},
+    {1800, 30, 8},
+    {2200, 35, 8},
+    {2600, 35, 40},         // handshake negotiation
+    {1800, 25, 6},
+    {2400, 25, 6},
+    {2000, 25, 6},
+    {2800, 30, 8},
+    {1600, 25, 6},
+    {3000, 30, 6},
+    {2200, 25, 50},         // pause (training)
+    {1800, 300, 0},         // carrier tone (steady)
     {0, 0, 0}
 };
 
@@ -419,7 +443,7 @@ bool update() {
                 }
                 break;
             case BOOT:
-                startSequence(SND_BOOT);
+                startSequence(SND_MODEM);
                 break;
             case PIGSYNC_BOOT:
                 startSequence(SND_PIGSYNC_BOOT);
