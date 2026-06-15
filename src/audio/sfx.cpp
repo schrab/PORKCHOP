@@ -324,9 +324,6 @@ static uint8_t currentStep = 0;
 static uint32_t stepStartTime = 0;
 static bool inNote = false;  // true = playing tone, false = in pause
 
-// Watchdog: if a note/sequence runs too long, force stop
-static const uint32_t MAX_PLAY_MS = 5000;  // 5s hard cap per note/sequence
-
 // ==[ EVENT RING BUFFER ]== prevents event loss under rapid fire
 static constexpr uint8_t QUEUE_SIZE = 4;
 static Event eventQueue[QUEUE_SIZE];
@@ -505,21 +502,6 @@ bool update() {
     }
     
     // Process current sequence
-    if (currentSequence != nullptr) {
-        uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
-        // Watchdog: cap total playback time under 5s and stop without advancing
-        if (now - stepStartTime > MAX_PLAY_MS) {
-            hal_audio_stop();
-            currentSequence = nullptr;
-            currentStep = 0;
-            inNote = false;
-            taskENTER_CRITICAL(&queueMutex);
-            bool eventsWaiting = (queueTail != queueHead);
-            taskEXIT_CRITICAL(&queueMutex);
-            return eventsWaiting;
-        }
-    }
-
     if (currentSequence == nullptr) {
         taskENTER_CRITICAL(&queueMutex);
         bool eventsWaiting = (queueTail != queueHead);
