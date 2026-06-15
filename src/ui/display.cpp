@@ -1336,6 +1336,9 @@ void Display::showBootSplash() {
     // Reset display state for main UI compatibility
     g_Display.setTextDatum(top_left);
     g_Display.setTextSize(1);
+
+    // Hard stop any leftover boot sound before main UI loads
+    SFX::stop();
 }
 
 
