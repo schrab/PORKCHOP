@@ -237,12 +237,9 @@ void Display::init() {
     // is safe via the if(m_sprite) guard, but if m_sprite is ever corrupted to a
     // non-null garbage value (e.g. 0xa5a5a5a5 from PSRAM heap poison) the guard
     // passes and the crash occurs. Give it a real sprite to prevent that.
-    topBar.createSprite(DISPLAY_W, TOP_BAR_H);
-    topBar.setColorDepth(8);
-    mainCanvas.createSprite(DISPLAY_W, MAIN_H);
-    mainCanvas.setColorDepth(16);
-    bottomBar.createSprite(DISPLAY_W, BOTTOM_BAR_H);
-    bottomBar.setColorDepth(8);
+    topBar.createSprite(DISPLAY_W, TOP_BAR_H, 8);
+    mainCanvas.createSprite(DISPLAY_W, MAIN_H, 16);
+    bottomBar.createSprite(DISPLAY_W, BOTTOM_BAR_H, 8);
     
     topBar.setTextSize(1);
     mainCanvas.setTextSize(1);
@@ -350,7 +347,7 @@ void Display::update() {
             drawPigSyncDeviceSelect(mainCanvas);
             break;
 
-            
+        
         case PorkchopMode::SPECTRUM_MODE:
             // Spectrum mode draws its own content including XP bar
             SpectrumMode::draw(mainCanvas);

@@ -13,14 +13,17 @@ DisplayCanvas::DisplayCanvas(TFT_eSPI* display)
 
 DisplayCanvas::~DisplayCanvas() { deleteSprite(); }
 
-void DisplayCanvas::createSprite(int32_t w, int32_t h) {
+void DisplayCanvas::createSprite(int32_t w, int32_t h, int8_t bpp) {
     // Release existing pixel buffer (does not destroy the object)
     if (m_created) {
         m_sprite.deleteSprite();
         m_created = false;
     }
-    m_sprite.setColorDepth(8);
-    m_sprite.setAttribute(PSRAM_ENABLE, 1);
+    // Force internal RAM for sprite buffer to avoid PSRAM bus stall TG1WDT
+    // when Core 0 is busy with WiFi handshake processing (OINK capture).
+    // Must happen BEFORE createSprite, not after setColorDepth re-creates it.
+    m_sprite.setAttribute(PSRAM_ENABLE, 0);
+    m_sprite.setColorDepth(bpp);
     void* buf = m_sprite.createSprite(w, h);
     m_created = (buf != nullptr);
 }
@@ -33,6 +36,7 @@ void DisplayCanvas::deleteSprite() {
 }
 
 void DisplayCanvas::setColorDepth(int8_t b) { if (m_created) m_sprite.setColorDepth(b); }
+void DisplayCanvas::setAttribute(int16_t attr, int16_t val) { m_sprite.setAttribute(attr, val); }
 void DisplayCanvas::fillSprite(uint32_t color) { if (m_created) m_sprite.fillSprite(color); else if (m_display) m_display->fillScreen(color); }
 void DisplayCanvas::fillScreen(uint32_t color) { if (m_display) m_display->fillScreen(color); }
 void DisplayCanvas::pushSprite(int32_t x, int32_t y) { if (m_created) m_sprite.pushSprite(x, y); }

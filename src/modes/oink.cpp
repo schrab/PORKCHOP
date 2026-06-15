@@ -551,9 +551,8 @@ void OinkMode::update() {
         strncpy(lastPwnedSSID, pendingHandshakeCopy, sizeof(lastPwnedSSID) - 1);
         lastPwnedSSID[sizeof(lastPwnedSSID) - 1] = '\0';
         Display::showLoot(lastPwnedSSID);  // Show PWNED banner in top bar
-        Serial.write('M');  // DIAG: mood+display done
     }
-    
+
     // Process pending mood: PMKID captured (clientless attack - extra special!)
     char pendingPMKIDCopy[33] = {0};
     bool hasPendingPMKID = false;
@@ -573,7 +572,7 @@ void OinkMode::update() {
         // BUG FIX: Trigger auto-save for PMKID (was missing, causing beeps but no file)
         pendingAutoSave = true;
     }
-    
+
     // Process pending auto-save (callback set flag, we do SD I/O here)
     bool shouldAutoSave = false;
     if (pendingAutoSave) {
@@ -582,10 +581,7 @@ void OinkMode::update() {
     }
     if (shouldAutoSave) {
         autoSaveCheck();
-        Serial.write('A');  // DIAG: autoSave done
     }
-    
-    // Process pending EAPOL frames from circular buffer
     // Core 0 was a PURE ENQUEUER — just memcpy'd raw frame data to pendingHsPool.
     // Core 1 (here) does ALL vector access: find/create handshake, store frame, check completion.
     // Copy slot under oinkQueueMux, free immediately, process outside lock.
@@ -1947,7 +1943,6 @@ bool OinkMode::isTargetHidden() {
 }
 
 void OinkMode::autoSaveCheck() {
-    // Check if SD card is available
     if (!Config::isSDAvailable()) {
         return;
     }

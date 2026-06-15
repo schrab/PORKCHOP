@@ -28,9 +28,10 @@ public:
     ~DisplayCanvas();
 
     // Lifecycle — PSRAM pixel buffer allocation only (object itself is embedded)
-    void createSprite(int32_t w, int32_t h);
+    void createSprite(int32_t w, int32_t h, int8_t bpp = 16);
     void deleteSprite();
     void setColorDepth(int8_t b);
+    void setAttribute(int16_t attr, int16_t val);
 
     // Drawing
     void fillSprite(uint32_t color);

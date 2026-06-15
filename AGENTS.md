@@ -265,7 +265,7 @@ void hal_display_setBrightness(uint8_t brightness);  // LEDC PWM on BL pin
 
 // M5Canvas-compatible sprite wrapper
 class DisplayCanvas {
-    void createSprite(w, h);         // Create off-screen sprite
+    void createSprite(w, h, bpp=16);   // Create off-screen sprite at given color depth
     void deleteSprite();
     void pushSprite(x, y);           // Flush sprite to display
     void fillSprite(color);
@@ -379,6 +379,7 @@ BOTTOM_BAR  = 14px   (bottom overlay)
 - **Core 0 spinlock safety**: The WiFi promiscuous callback runs on Core 0. `taskENTER_CRITICAL` on a cross-core spinlock blocks Core 0 with interrupts disabled. If Core 1 holds the lock → TG1WDT after ~300ms. **OINK callback is a PURE ENQUEUER**: it only copies frame data to a queue slot under `oinkQueueMux`, no vector access. Core 1 dequeue does ALL vector lookups/writes. `oinkQueueMux` ONLY protects the queue, not vectors.
 - **Deferred SSID lookup**: `networks[]` lookups from `networks()` require `vectorMux` (via `NetworkRecon::enterCritical()`). Callback code MUST defer SSID lookups to Core 1 dequeue handlers; never access `networks()` from Core 0.
 - **SnOUT note**: `NetworkRecon::setPacketCallback()` supports only **one** callback at a time. SnOUT registers its deauth callback on start, clears on stop. Do not run SnOUT alongside modes that use packet callbacks.
+- **Sprite buffer PSRAM trap**: `CONFIG_SPIRAM_USE_MALLOC=y` in sdkconfig makes plain `calloc()` return PSRAM even when TFT_eSPI's `PSRAM_ENABLE` flag is `false`. The library is patched in `.pio/libdeps/.../TFT_eSPI/Extensions/Sprite.cpp` to use `heap_caps_calloc(MALLOC_CAP_INTERNAL)` in all 4 bpp paths of `callocSprite()`. This forces sprite pixel buffers into internal RAM regardless of heap config, preventing PSRAM bus stall TG1WDT during dual-core access (OINK handshake capture + display update). Patch persists across rebuilds; lost only on `pio lib update`.
 
 # DOX framework
 
