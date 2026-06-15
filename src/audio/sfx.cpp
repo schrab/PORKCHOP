@@ -506,6 +506,7 @@ bool update() {
     
     // Process current sequence
     if (currentSequence != nullptr) {
+        uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
         // Watchdog: cap total playback time under 5s and stop without advancing
         if (now - stepStartTime > MAX_PLAY_MS) {
             hal_audio_stop();
