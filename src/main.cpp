@@ -47,6 +47,10 @@ static void preInitWiFiDriverEarly() {
     // No modem sleep to reduce odd timing/latency during TLS + UI load
     WiFi.setSleep(false);
 
+    // Set TX power to 19.0 dBm (76 in quarter-dBm steps)
+    // Default is ~12.5 dBm which is too weak for reliable deauth
+    esp_wifi_set_max_tx_power(76);
+
     delay(HeapPolicy::kWiFiModeDelayMs);
 }
 

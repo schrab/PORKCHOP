@@ -14,8 +14,10 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
 - `ghost.cpp` — MAC randomization (Ghost Mode)
 - `sd_layout.cpp` — SD card directory structure + migration
 - `sdlog.cpp` — SD event logging (4KB ring buffer, periodic flush every 30s or 75% full)
+- `sd_format.cpp` — SD card format utilities
 - `heap_health.cpp` — heap diagnostics (NVS watermarks, SD fallback migration)
 - `heap_gates.cpp` — heap gate checks before allocations
+- `heap_policy.h` — heap allocation policy constants (thresholds, watermarks)
 - `wifi_utils.cpp` — MAC address utilities, SSID helpers, WiFi config
 - `oui.cpp` — OUI (MAC vendor) lookup
 - `challenges.cpp` — session challenge definitions and tracking
@@ -66,8 +68,10 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
 | `core/wartales.*` | Session diary logging |
 | `core/ghost.*` | MAC randomization |
 | `core/sd_layout.*` | SD card directory structure |
+| `core/sd_format.*` | SD card format utilities |
 | `core/sdlog.*` | SD event logging |
 | `core/heap_*` | Heap management & diagnostics |
+| `core/heap_policy.*` | Heap allocation policy constants |
 | `core/wifi_utils.*` | MAC/SSID utilities |
 | `core/oui.*` | OUI vendor lookup |
 | `core/challenges.*` | Session challenges |

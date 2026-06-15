@@ -71,16 +71,21 @@ struct CapturedHandshake {
     bool hasM4() const { return capturedMask & 0x08; }
     bool hasBeacon() const { return beaconData != nullptr && beaconLen > 0; }
     
-    // Valid crackable pairs: M1+M2 (preferred) or M2+M3 (fallback if M1 missed)
-    bool hasValidPair() const { return (hasM1() && hasM2()) || (hasM2() && hasM3()); }
-    bool isComplete() const { return hasValidPair(); }  // Alias for backward compat
+    // Valid crackable pairs: M2+M3 (preferred - authorized, ANonce from M3) or M1+M2 (fallback)
+    // M2+M3 is strongly preferred by hashcat/WPA-SEC because it proves successful authentication
+    bool hasValidPair() const { return (hasM2() && hasM3()) || (hasM1() && hasM2()); }
+    // isComplete() requires M2+M3 (authorized pair) for WPA-SEC validation
+    // M1+M2 alone is NOT sufficient — the handshake may not be crackable
+    bool isComplete() const { return hasM2() && hasM3(); }
+    // hasAnyPair() — true if we have at least M1+M2 (may still become M2+M3)
+    bool hasAnyPair() const { return (hasM1() && hasM2()) || (hasM2() && hasM3()); }
     bool isFull() const { return (capturedMask & 0x0F) == 0x0F; }
-    
+
     // Get message pair type for hashcat 22000 format:
-    // Returns 0x00 for M1+M2, 0x02 for M2+M3, 0xFF for invalid
+    // Returns 0x02 for M2+M3 (authorized, preferred), 0x00 for M1+M2 (fallback), 0xFF for invalid
     uint8_t getMessagePair() const {
-        if (hasM1() && hasM2()) return 0x00;  // M1+M2: EAPOL from M2 (challenge)
-        if (hasM2() && hasM3()) return 0x02;  // M2+M3: EAPOL from M2 (authorized)
+        if (hasM2() && hasM3()) return 0x02;  // M2+M3: EAPOL from M2 (authorized) — preferred
+        if (hasM1() && hasM2()) return 0x00;  // M1+M2: EAPOL from M2 (challenge) — fallback
         return 0xFF;  // Invalid
     }
 };

@@ -326,6 +326,9 @@ void CapturesMenu::processAsyncScan() {
         processed++;
         scanProgress++;
 
+        // Yield to prevent TG1WDT when many files need processing
+        yield();
+
         if (processed >= SCAN_CHUNK_SIZE) {
             break;
         }

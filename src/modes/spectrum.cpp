@@ -1681,9 +1681,12 @@ float SpectrumMode::channelToFreq(uint8_t channel) {
 // ============================================================
 
 void SpectrumMode::updateDialChannel() {
-    // Skip if not Cardputer ADV (no accelerometer on regular Cardputer)
-    if (false) return;
-    
+    // Skip if in attack mode — channel must stay locked to target
+    if (attackMode) return;
+
+    // Skip if no IMU available (ESP32-S3 Mini has no IMU)
+    if (!hal_imu_isAvailable()) return;
+
     // Skip if tilt-to-tune is disabled
     if (!Config::wifi().spectrumTiltEnabled) {
         if (dialMode) {

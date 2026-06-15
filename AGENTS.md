@@ -116,6 +116,7 @@ src/
 │   ├── spectrum.h/.cpp       WiFi spectrum analyzer + client monitor + attack mode
 │   ├── piggyblues.h/.cpp     BLE advertisement spam
 │   ├── pigsync_client.h/.cpp ESP-NOW peer sync
+│   ├── pigsync_protocol.h      PigSync protocol definitions (header only)
 │   ├── charging.h/.cpp       Low-power battery display
 │   ├── pork_patrol.h/.cpp    Flock Safety + Axon bodycam detection
 │   ├── swine_radar.h/.cpp    5-tab threat detection radar
@@ -221,6 +222,10 @@ promiscuous packet callback (one at a time).
 - Mode-owned capture data (OINK `handshakes[]`, `pmkids[]`) is **Core 1 territory**.
   The callback is a PURE ENQUEUER — copies raw frame data to `pendingHsPool[]`,
   no vector iteration. Core 1 dequeue does all vector lookups and writes.
+
+### SD Format (`core/sd_format.h/.cpp`)
+SD card format utility. Provides UI and logic for formatting the SD card.
+Called from the FORMATSD system menu.
 
 ## Display Port Status
 
