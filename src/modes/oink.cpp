@@ -2448,14 +2448,18 @@ void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uin
     // Guard: skip TX if WiFi driver not ready (prevents TG1WDT after resume)
     if (!NetworkRecon::canSendFramesNow()) return;
 
-    // Match CYD pattern: send frames back-to-back with NO jitter delays.
-    // Jitter was starving EAPOL processing on Core 1, causing TX ERR 257 (NO_MEM)
-    // because the WiFi driver TX buffer pool is exhausted while main loop is delayed.
+    // Match Spectrum/CYD pattern: send 1 forward + 1 reverse per iteration,
+    // with a delay between iterations to let the WiFi driver drain the TX queue.
+    // The previous 5-iteration burst with 10 rapid-fire frames exhausted the
+    // driver's internal TX buffer pool (ESP_ERR_NO_MEM=257) even with 32 buffers.
     uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
     // Mark session as having deauthed (for Silent Witness achievement tracking)
     SessionStats& sess = const_cast<SessionStats&>(XP::getSession());
     sess.everDeauthed = true;
+
+    // Cap count to prevent queue flood — 2 iterations = 4 frames max
+    if (count > 2) count = 2;
 
     for (uint8_t i = 0; i < count; i++) {
         // AP -> Client (pretend to be AP)
@@ -2477,16 +2481,17 @@ void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uin
             esp_err_t rev_err = esp_wifi_80211_tx(WIFI_IF_STA, reversePacket, sizeof(reversePacket), false);
             if (rev_err != ESP_OK) {
                 deauthTxErrors++;
-                // Back off on error — don't keep spamming a saturated queue
                 if (rev_err == 257) {
                     yield();
-                    return;
+                    return;  // Queue full — stop immediately
                 }
             }
         }
 
-        // Yield every 8 frames to prevent WDT while keeping queue pressure low
-        if ((i & 0x07) == 0x07) {
+        // Small delay between iterations to let WiFi driver drain TX queue
+        // This prevents ESP_ERR_NO_MEM (257) from rapid-fire TX flooding
+        if (i < count - 1) {
+            delay(1);
             yield();
         }
     }
