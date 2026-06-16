@@ -1714,10 +1714,11 @@ void OinkMode::processEAPOL(const uint8_t* payload, uint16_t len,
     uint8_t secure = (keyInfo >> 9) & 0x01;
     
     uint8_t messageNum = 0;
-    if (keyAck && !keyMic) messageNum = 1;
-    else if (!keyAck && keyMic && !secure) messageNum = 2;
-    else if (keyAck && keyMic && install) messageNum = 3;
-    else if (!keyAck && keyMic && secure) messageNum = 4;
+    if (keyAck && !keyMic && !install && !secure) messageNum = 1;
+    else if (!keyAck && keyMic && !install && !secure) messageNum = 2;
+    else if (keyAck && keyMic && install && !secure) messageNum = 3;
+    else if (!keyAck && keyMic && !install && secure) messageNum = 4;
+    else if (keyAck && keyMic && !install && secure) messageNum = 4;  // PMF M4
     
     if (messageNum == 0) { eapolRxNoKey++; return; }
     
