@@ -40,16 +40,13 @@ static void preInitWiFiDriverEarly() {
     // Force driver/buffers allocation while heap is still clean/contiguous
     WiFi.mode(WIFI_STA);
 
-    // Stop radio but keep driver initialized (buffers stay allocated).
-    // Signature: disconnect(bool wifioff, bool eraseap)
-    WiFi.disconnect(true /* wifioff */, false /* eraseap */);
+    // Disconnect from saved network but keep radio active so TX buffer pool stays allocated.
+    // Note: WiFi.disconnect(true) would shut down the PHY, and later WiFi.mode(WIFI_STA)
+    // is a no-op (same mode), so the PHY never reboots → ESP_ERR_NO_MEM on every TX.
+    WiFi.disconnect(false /* wifioff */, false /* eraseap */);
 
     // No modem sleep to reduce odd timing/latency during TLS + UI load
     WiFi.setSleep(false);
-
-    // Set TX power to 19.0 dBm (76 in quarter-dBm steps)
-    // Default is ~12.5 dBm which is too weak for reliable deauth
-    esp_wifi_set_max_tx_power(76);
 
     delay(HeapPolicy::kWiFiModeDelayMs);
 }

