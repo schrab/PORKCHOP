@@ -3,8 +3,11 @@
 # Based on PORKCHOP sdkconfig.defaults + WiFiTool PSRAM config
 #
 
-# Core dump disabled (saves flash + boot time)
-CONFIG_ESP_COREDUMP_ENABLE=n
+# Core dump — enabled for crash diagnostics. 64KB partition in
+# partitions_esp32s3_mini.csv. Use `espcoredump.py` to dump after a crash.
+CONFIG_ESP_COREDUMP_ENABLE=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_BIN=y
+CONFIG_ESP_COREDUMP_CAPTURE_DRAM=y
 
 # mbedTLS: dynamic buffers with 2KB content length (proven stable)
 CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=2048

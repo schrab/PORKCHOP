@@ -687,14 +687,15 @@ void OinkMode::update() {
                 }
             }
             NetworkRecon::exitCritical();
-            
+            yield();  // Break up the dequeue work between spinlock regions
+
             // Check if handshake is now complete
             if (hs.isComplete() && !hs.saved) {
                 pendingHandshakeComplete = true;
                 strncpy(pendingHandshakeSSID, hs.ssid, 32);
                 pendingHandshakeSSID[32] = 0;
                 WarhogMode::markCaptured(hs.bssid);
-                
+
                 NetworkRecon::enterCritical();
                 for (auto& net : networks()) {
                     if (memcmp(net.bssid, hs.bssid, 6) == 0) {
@@ -703,8 +704,11 @@ void OinkMode::update() {
                     }
                 }
                 NetworkRecon::exitCritical();
-                
-                autoSaveCheck();
+
+                // Defer save to the next OinkMode::update() tick. Calling
+                // autoSaveCheck() here stacks blocking SD I/O (100-500ms) with the
+                // dequeue's spinlock work and starves the watchdog.
+                pendingAutoSave = true;
             }
             
             // Handle PMKID from M1 if present
@@ -1066,6 +1070,10 @@ void OinkMode::update() {
                     deauthing = true;
                 }
             }
+            // DIAG: yield in LOCKING to prevent TG1WDT. Quick spinlock work above
+            // shouldn't starve watchdog, but a yield here costs nothing and may
+            // help if the LOCKING→ATTACKING transition has a hidden delay.
+            yield();
             break;
             }
             
@@ -2063,12 +2071,14 @@ void OinkMode::autoSaveCheck() {
             
             // Save PCAP (for wireshark/manual analysis)
             bool pcapOk = saveHandshakePCAP(hs, filename);
-            
+            yield();  // Feed watchdog between PCAP and 22000 writes — both are blocking SD I/O
+
             // Save 22000 format (hashcat-ready, no conversion needed)
             char filename22000[64];
             SDLayout::buildCaptureFilename(filename22000, sizeof(filename22000),
                                            handshakesDir, hs.ssid, hs.bssid, "_hs.22000");
             bool hs22kOk = saveHandshake22000(hs, filename22000);
+            yield();  // Feed watchdog after 22000 write
             
             if (pcapOk || hs22kOk) {
                 hs.saved = true;
@@ -2137,7 +2147,7 @@ static const uint8_t RADIOTAP_HEADER[] = {
 void OinkMode::writePCAPPacket(fs::File& f, const uint8_t* data, uint16_t len, uint32_t ts) {
     // Total packet length = radiotap header + 802.11 frame
     uint32_t totalLen = sizeof(RADIOTAP_HEADER) + len;
-    
+
     PCAPPacketHeader pkt = {
         .ts_sec = ts / 1000,
         .ts_usec = (ts % 1000) * 1000,
@@ -2145,10 +2155,12 @@ void OinkMode::writePCAPPacket(fs::File& f, const uint8_t* data, uint16_t len, u
         .orig_len = totalLen
     };
     f.write((uint8_t*)&pkt, sizeof(pkt));
-    
+    yield();  // Feed watchdog between SD writes — full PCAP save is 15+ blocking writes
+
     // Write radiotap header
     f.write(RADIOTAP_HEADER, sizeof(RADIOTAP_HEADER));
-    
+    yield();
+
     // Write 802.11 frame data
     f.write(data, len);
 }
