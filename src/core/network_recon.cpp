@@ -830,7 +830,10 @@ void start() {
         WSLBypasser::randomizeMAC();
     }
     
-    WiFi.disconnect();
+    // DIAG TEST: was WiFi.disconnect() (default args, eraseap=true). That calls
+    // esp_wifi_set_config() which may reset the dynamic TX buffer pool. Use
+    // disconnect(false, false) to skip the set_config call and preserve pool.
+    WiFi.disconnect(false /* wifioff */, false /* eraseap */);
     delay(50);
     
     // Set up promiscuous mode

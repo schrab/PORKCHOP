@@ -401,6 +401,20 @@ void OinkMode::start() {
     if (!NetworkRecon::isRunning()) {
         NetworkRecon::start();
     }
+
+    // DIAG: log WiFi/heap state at OINK start so we can diagnose ERR 257
+    {
+        wifi_mode_t mode = WIFI_MODE_NULL;
+        esp_wifi_get_mode(&mode);
+        wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+        uint8_t ch = 0;
+        esp_wifi_get_channel(&ch, &second);
+        Serial.printf("[OINK-DIAG] start: mode=%d ch=%d free=%u largest=%u phy_init_done=%d\n",
+                      (int)mode, (int)ch,
+                      (unsigned)ESP.getFreeHeap(),
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                      (int)NetworkRecon::isRunning());
+    }
     
     // Initialize WSL bypasser for deauth frame injection
     WSLBypasser::init();
@@ -493,9 +507,31 @@ void OinkMode::stop() {
 
 void OinkMode::update() {
     if (!running) return;
-    
+
     uint32_t now = millis();
-    
+
+    // DIAG: periodic heap/WiFi state — prints every 2s. The most recent line
+    // before a TG1WDT reset tells us the state right when the watchdog fired.
+    {
+        static uint32_t lastDiagMs = 0;
+        if (now - lastDiagMs > 2000) {
+            lastDiagMs = now;
+            uint8_t ch = 0;
+            wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+            esp_wifi_get_channel(&ch, &second);
+            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d\r\n",
+                          (unsigned)now,
+                          (unsigned)ESP.getFreeHeap(),
+                          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                          (int)ch,
+                          (unsigned long)deauthTxOk,
+                          (unsigned long)deauthTxErrors,
+                          (unsigned)handshakes.size(),
+                          (unsigned)pmkids.size(),
+                          (int)autoState);
+        }
+    }
+
     // Guard access to networks/handshakes vectors from promiscuous callback
     // NOTE: oinkBusy is secondary protection, spinlock is primary
     oinkBusy = true;
@@ -585,8 +621,22 @@ void OinkMode::update() {
     // Core 0 was a PURE ENQUEUER — just memcpy'd raw frame data to pendingHsPool.
     // Core 1 (here) does ALL vector access: find/create handshake, store frame, check completion.
     // Copy slot under oinkQueueMux, free immediately, process outside lock.
+    //
+    // Cap at 2 frames per loop tick + yield between iterations. Each iteration holds
+    // oinkQueueMux AND NetworkRecon::vectorMux (cross-core spinlock) while iterating
+    // networks[]. A full burst of 4 frames × spinlock + vector scan + autoSaveCheck()
+    // can starve the Core 0 WiFi task → TG1WDT_SYS_RST. Remaining frames drain on
+    // subsequent ticks (matches the bounded pattern in NetworkRecon::processDeferredEvents).
     static PendingEAPOLFrame frameLocal;
-    while (true) {
+    uint8_t hsProcessed = 0;
+    const uint8_t kMaxHsPerTick = 2;
+    static uint32_t hsDequeueCount = 0;
+    hsDequeueCount++;
+    if (hsDequeueCount <= 3 || (hsDequeueCount % 100) == 0) {
+        Serial.printf("[OINK-DIAG] dequeue#%u enter read=%u write=%u\r\n",
+                      (unsigned)hsDequeueCount, (unsigned)pendingHsRead, (unsigned)pendingHsWrite);
+    }
+    while (hsProcessed < kMaxHsPerTick) {
         bool hasSlot = false;
         taskENTER_CRITICAL(&oinkQueueMux);
         if (pendingHsRead != pendingHsWrite && pendingHsAllocated[pendingHsRead]) {
@@ -675,12 +725,22 @@ void OinkMode::update() {
                 }
             }
         }
+        hsProcessed++;
+        yield();  // Release spinlocks, let Core 0 WiFi task run between dequeue iterations
+    }
+    if (hsDequeueCount <= 3 || (hsDequeueCount % 100) == 0) {
+        Serial.printf("[OINK-DIAG] dequeue#%u exit processed=%u\r\n",
+                      (unsigned)hsDequeueCount, (unsigned)hsProcessed);
     }
     
-    // Process pending PMKID creation (callback queued, we do push_back here)
+    // Process pending PMKID creation (callback queued, we do push_back here).
+    // Same bounded pattern as the EAPOL dequeue above — cap + yield between iterations
+    // to avoid starving the Core 0 WiFi task on PMKID bursts.
     {
         PendingPMKIDCreate pmkidPending = {};
-        while (dequeuePendingPMKID(pmkidPending)) {
+        uint8_t pmkidProcessed = 0;
+        const uint8_t kMaxPmkidPerTick = 2;
+        while (pmkidProcessed < kMaxPmkidPerTick && dequeuePendingPMKID(pmkidPending)) {
             int idx = findOrCreatePMKIDSafe(pmkidPending.bssid, pmkidPending.station);
             if (idx >= 0 && !pmkids[idx].saved) {
                 memcpy(pmkids[idx].pmkid, pmkidPending.pmkid, 16);
@@ -701,6 +761,8 @@ void OinkMode::update() {
                 }
                 WarhogMode::markCaptured(pmkids[idx].bssid);
             }
+            pmkidProcessed++;
+            yield();  // Let Core 0 WiFi task run between PMKID dequeue iterations
         }
     }
     
@@ -2431,14 +2493,37 @@ void OinkMode::sendDeauthFrame(const uint8_t* bssid, const uint8_t* station, uin
     memcpy(deauthPacket + 10, bssid, 6);
     memcpy(deauthPacket + 16, bssid, 6);
     deauthPacket[24] = reason;
+    static uint32_t txAttemptCount = 0;
+    txAttemptCount++;
+    // Circuit breaker: if we've seen too many ERR 257 in a row, skip TX to let
+    // the driver pool refill. Driver doesn't release TX descriptors while
+    // promiscuous mode is on a busy channel — they sit waiting for ACKs that
+    // never come. Without this backoff we burn ~80+ ERR calls/sec and the
+    // pool never recovers.
+    static uint8_t errStreak = 0;
+    if (errStreak > 0) {
+        // Exponential backoff: 50ms, 100ms, 200ms, 400ms cap.
+        uint32_t backoffMs = 50U << (errStreak > 4 ? 4 : errStreak - 1);
+        uint32_t until = millis() + backoffMs;
+        while ((int32_t)(millis() - until) < 0) {
+            yield();
+        }
+    }
     esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, deauthPacket, sizeof(deauthPacket), false);
     if (err != ESP_OK) {
         deauthTxErrors++;
-        // Back off when TX queue is full — don't keep spamming
         if (err == 257) {
-            yield();
+            if (errStreak < 255) errStreak++;
+        } else {
+            errStreak = 0;
         }
-        if (deauthTxErrors <= 5 || (deauthTxErrors % 50 == 0)) {
+        // DIAG: per-TX log for first 30 attempts. After 30, fall back to compact rule.
+        if (txAttemptCount <= 30) {
+            Serial.printf("[OINK-DIAG] tx#%u ERR=%d ok=%lu err=%lu streak=%u\r\n",
+                          (unsigned)txAttemptCount, (int)err,
+                          (unsigned long)deauthTxOk, (unsigned long)deauthTxErrors,
+                          (unsigned)errStreak);
+        } else if (deauthTxErrors <= 5 || (deauthTxErrors % 50 == 0)) {
             uint8_t ch = 0;
             wifi_second_chan_t secondCh = WIFI_SECOND_CHAN_NONE;
             esp_wifi_get_channel(&ch, &secondCh);
@@ -2448,6 +2533,12 @@ void OinkMode::sendDeauthFrame(const uint8_t* bssid, const uint8_t* station, uin
         }
     } else {
         deauthTxOk++;
+        errStreak = 0;  // Reset backoff on success
+        if (txAttemptCount <= 30) {
+            Serial.printf("[OINK-DIAG] tx#%u OK ok=%lu err=%lu\r\n",
+                          (unsigned)txAttemptCount,
+                          (unsigned long)deauthTxOk, (unsigned long)deauthTxErrors);
+        }
     }
 }
 
