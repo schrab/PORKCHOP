@@ -36,6 +36,9 @@ static std::atomic<uint32_t> packetCount{0};
 static std::atomic<bool> busy{false};  // [BUG3 FIX] Atomic for cross-core visibility
 static std::atomic<uint32_t> hopIntervalOverrideMs{0};
 static bool heapStabilized = false;
+// Core 0 heartbeat: incremented in promiscuousCallback (runs on Core 0).
+// Read by OINK diag emitter on Core 1 to detect Core 0 stall before TG1WDT.
+static std::atomic<uint32_t> s_core0PktCount{0};
 // shrinkDeferCount removed — shrink_to_fit no longer runs during operation
 
 // Channel hop order (most common channels first for faster discovery)
@@ -622,6 +625,7 @@ static void promiscuousCallback(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (len < 24) return;
     
     packetCount.fetch_add(1, std::memory_order_relaxed);
+    s_core0PktCount.fetch_add(1, std::memory_order_relaxed);
     
     const uint8_t* payload = pkt->payload;
     uint8_t frameSubtype = (payload[0] >> 4) & 0x0F;
@@ -923,8 +927,10 @@ void resume() {
     
     Serial.println("[RECON] Resuming promiscuous mode...");
     
-    // Disconnect from any network before enabling promiscuous mode
-    WiFi.disconnect();
+    // Disconnect without resetting TX buffer pool or powering off WiFi.
+    // Default WiFi.disconnect() uses eraseap=true which calls esp_wifi_set_config()
+    // and can nuke the dynamic TX buffer pool — see AGENTS.md / docs/err257_wdt_fix_log.md.
+    WiFi.disconnect(false /* wifioff */, false /* eraseap */);
     delay(50);
     
     // Re-enable promiscuous
@@ -1032,6 +1038,10 @@ void clearHopIntervalOverride() {
 
 uint32_t getPacketCount() {
     return packetCount.load(std::memory_order_relaxed);
+}
+
+uint32_t getCore0PacketCount() {
+    return s_core0PktCount.load(std::memory_order_relaxed);
 }
 
 uint8_t estimateClientCount(const DetectedNetwork& net) {

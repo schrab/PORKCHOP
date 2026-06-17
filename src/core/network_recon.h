@@ -114,6 +114,12 @@ void clearHopIntervalOverride();
  */
 uint32_t getPacketCount();
 
+/**
+ * @brief Get Core 0 packet count (incremented in promiscuous callback)
+ * Used by OINK diag emitter to detect Core 0 stall before TG1WDT.
+ */
+uint32_t getCore0PacketCount();
+
 // ============================================================================
 // Quality + Client Estimates
 // ============================================================================

@@ -43,6 +43,11 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
 - `oinkQueueMux` ONLY protects the OINK queue (`pendingHsPool[]`), not capture vectors.
 - `setPacketCallback()` supports only **one** callback at a time. SnOUT registers on start, clears on stop. Do not run alongside other callback-using modes.
 - `pause()` for ESP-NOW modes (PIGSYNC). `stop()` for BLE modes (PIGGYBLUES).
+- `start()` and `resume()` both use `WiFi.disconnect(false, false)` — never
+  default params (which erase AP config and can reset the TX buffer pool).
+- `getCore0PacketCount()` returns an atomic packet counter incremented in
+  the promiscuous callback. Used by OINK diag as `c0pkt=N` delta to detect
+  Core 0 heartbeat stalls (PSRAM bus stall / IDLE starvation).
 
 ### WarTales flush cadence
 - Open file handle per session. Flush every 10 events or 10s.

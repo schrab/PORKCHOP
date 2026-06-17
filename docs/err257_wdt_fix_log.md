@@ -135,6 +135,15 @@ longer limited by ERR 257s.
   The dequeue cap+yield fix should mitigate the third, but a hard
   test is needed to confirm.
 
+**Update (2026-06-17):** The BORED-state TG1WDT appears to be fixed.
+`NetworkRecon::resume()` now uses `WiFi.disconnect(false, false)` to
+prevent TX pool reset, and BORED `getNextTarget()` is throttled to
+every 2s (was every iteration). Verification in `debug_TG1WDT-5.txt`:
+3 sessions, 0 TG1WDT crashes, 3 handshakes captured, 5 BORED↔SCANNING
+cycles in session 2 (~284s). Core 0 heartbeat (`c0pkt=N`) confirmed
+alive throughout. See `docs/tg1wdt_investigation.md` § "BORED-state
+TG1WDT fix" for full analysis.
+
 - **F1RST D3AUTH achievement**: counts attempts not successes. The
   achievement fires even when all deauths fail with ERR 257. Logic
   bug, separate from this fix.

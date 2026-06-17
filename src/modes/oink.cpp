@@ -301,6 +301,7 @@ static const uint8_t TARGET_MAX_ATTEMPTS = 4;
 // Bored state tracking
 static uint8_t consecutiveFailedScans = 0;      // Track failed getNextTarget() calls
 static uint32_t lastBoredUpdate = 0;            // For periodic bored mood updates
+static uint32_t lastBoredTargetCheck = 0;       // Throttle getNextTarget() during BORED (was every iter, now 2s)
 
 // Recon warm-up tracking
 static uint32_t oinkStartMs = 0;
@@ -334,6 +335,7 @@ void OinkMode::init() {
     // Reset bored state tracking
     consecutiveFailedScans = 0;
     lastBoredUpdate = 0;
+    lastBoredTargetCheck = 0;
     boredStateReset = true;
 
     // Reset static pool tracking under spinlock (callback may still be active briefly)
@@ -587,6 +589,13 @@ void OinkMode::update() {
             }
             const uint32_t idleStarvedMs = (gap > 2000) ? (gap - 2000) : 0;
             lastDiagMs = now;
+            // Core 0 heartbeat delta: packets processed by Core 0 promiscuous
+            // callback in the last ~2s window. If this drops to 0 while WiFi
+            // is active, Core 0 is stalled (PSRAM bus or WiFi driver internal).
+            static uint32_t lastCore0Count = 0;
+            uint32_t curCore0 = NetworkRecon::getCore0PacketCount();
+            uint32_t core0Delta = curCore0 - lastCore0Count;
+            lastCore0Count = curCore0;
             uint8_t ch = 0;
             wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
             esp_wifi_get_channel(&ch, &second);
@@ -598,7 +607,7 @@ void OinkMode::update() {
             uint32_t maxHold = 0, totalHold = 0, callCount = 0;
             NetworkRecon::Profile::lockProfileSnapshot(maxHold, totalHold, callCount);
             NetworkRecon::Profile::lockProfileReset();
-            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d gap=%u maxGap=%u@%u idleStarved=%u lockMax=%u lockTotal=%u lockCalls=%u\r\n",
+            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d gap=%u maxGap=%u@%u idleStarved=%u lockMax=%u lockTotal=%u lockCalls=%u c0pkt=%u\r\n",
                           (unsigned)now,
                           (unsigned)ESP.getFreeHeap(),
                           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -614,9 +623,10 @@ void OinkMode::update() {
                           (unsigned)idleStarvedMs,
                           (unsigned)maxHold,
                           (unsigned)totalHold,
-                          (unsigned)callCount);
+                          (unsigned)callCount,
+                          (unsigned)core0Delta);
 #else
-            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d gap=%u maxGap=%u@%u idleStarved=%u\r\n",
+            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d gap=%u maxGap=%u@%u idleStarved=%u c0pkt=%u\r\n",
                           (unsigned)now,
                           (unsigned)ESP.getFreeHeap(),
                           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -629,9 +639,8 @@ void OinkMode::update() {
                           (unsigned)gap,
                           (unsigned)maxDiagGapMs,
                           (unsigned)maxGapAtMs,
-                          (unsigned)idleStarvedMs);
-                          (unsigned)maxDiagGapMs,
-                          (unsigned)idleStarvedMs);
+                          (unsigned)idleStarvedMs,
+                          (unsigned)core0Delta);
 #endif
         }
     }
@@ -1470,8 +1479,12 @@ void OinkMode::update() {
                 lastBoredUpdate = now;
             }
             
-            // Check if new networks appeared (promiscuous mode still active)
-            if (!networks().empty()) {
+            // Check if new networks appeared (throttled to every 2s —
+            // getNextTarget() holds vectorMux for full network scan; calling
+            // every iteration at ~50Hz was 210 lockCalls/2s during BORED,
+            // elevating cross-core contention for no benefit)
+            if (!networks().empty() && now - lastBoredTargetCheck > 2000) {
+                lastBoredTargetCheck = now;
                 int nextIdx = getNextTarget();
                 if (nextIdx >= 0) {
                     // New valid target appeared!

@@ -48,6 +48,14 @@
   (safe on Core 1) with `oinkBusy=true` to gate Core 0 callbacks.
 - SSID lookups from `networks[]` are **deferred** from Core 0 to Core 1 dequeue handlers.
 
+### OINK BORED state lock throttle
+- `getNextTarget()` iterates all ~60 networks under `vectorMux` to score targets.
+- In BORED state, this was called every loop iteration (~50Hz), causing
+  210 lockCalls/2s (vs ~77 normal). Throttled to every 2s via `lastBoredTargetCheck`
+  timestamp — reduced to ~141 lockCalls/2s (channel-hop Recon lock + one target scan).
+- Core 0 heartbeat (`c0pkt=N` delta in OINK-DIAG) monitors Core 0 liveness.
+  Verified in debug_TG1WDT-5.txt: c0pkt never drops to 0, PSRAM bus stall theory disproven.
+
 ### NetworkRecon interaction modes
 | Mode | NetworkRecon action |
 |---|---|

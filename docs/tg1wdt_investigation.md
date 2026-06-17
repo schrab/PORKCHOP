@@ -445,3 +445,66 @@ work but adds wear, ~1-2 ms per write, and the same question
 applies: the crash might happen before the write. Profiling
 avoids the storage problem entirely by recording the data
 *during* the OINK session, not after.
+
+## BORED-state TG1WDT fix (2026-06-17)
+
+### Problem
+
+After the lock profiler was added, `debug_TG1WDT-4.txt` showed two
+crashes. Boot timings were all under 3s — ruling out the previous
+startup-blocking hypothesis. The crashes happened during or shortly
+after BORED state, with these signatures:
+
+- **Session 1**: TX ERR 257 accumulation (766 errors), heap drops to
+  47K, crash after OINK exit.
+- **Session 2**: Clean operation, no TX errors, BORED for 30s, crash
+  4s into SCANNING after BORED. Lock profiling showed BORED had
+  `lockCalls=210/2s` (vs ~77 normal), `lockMax=1982µs`.
+
+### Root cause analysis
+
+Two contributing factors identified:
+
+1. **`NetworkRecon::resume()` called `WiFi.disconnect()` with default
+   params** (`eraseap=true`). This calls `esp_wifi_set_config()` which
+   can reset the dynamic TX buffer pool. Every pause/resume cycle
+   (mode transitions, channel changes) was corrupting WiFi state.
+
+2. **BORED state called `getNextTarget()` every loop iteration** (~50Hz).
+   Each call holds `vectorMux` across all ~60 networks for scoring.
+   This produced 210 lockCalls/2s — 2.7× the normal rate — creating
+   sustained cross-core spinlock pressure.
+
+A third hypothesis — PSRAM bus stall on Core 0 from
+`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` — was tested by adding a Core 0
+heartbeat counter (`c0pkt=N` delta in OINK-DIAG).
+
+### Fixes applied
+
+| Fix | File | Change |
+|---|---|---|
+| `WiFi.disconnect(false, false)` in `resume()` | `network_recon.cpp` | Prevent TX pool reset on resume |
+| BORED `getNextTarget()` throttle to 2s | `oink.cpp` | `lastBoredTargetCheck` timestamp gate |
+| Core 0 heartbeat diagnostic | `network_recon.cpp/h` + `oink.cpp` | `s_core0PktCount` atomic, `c0pkt=N` in diag |
+
+### Verification (debug_TG1WDT-5.txt)
+
+Three sessions, zero TG1WDT crashes:
+
+| Session | Duration | Handshakes | BORED cycles | TX Errors | Result |
+|---|---|---|---|---|---|
+| 1 | ~115s | 0 | 1 (28s) | 482 | User exit |
+| 2 | ~284s | 2 | 5 (BORED↔SCANNING) | 0 | Unknown reset¹ |
+| 3 | ~82s+ | 1 | N/A | 660 | Log cut off |
+
+¹ Line 957: corrupted reset banner, no TG1WDT panic backtrace.
+
+**Key findings:**
+- `c0pkt` never drops to 0 across all sessions — Core 0 stays alive.
+  **PSRAM bus stall theory disproven.**
+- BORED lock contention reduced: `lockCalls` ~141/2s (was 210).
+  `lockMax` ~47µs (was 2208µs in crash log).
+- `WiFi.disconnect(false, false)` fix prevents TX pool corruption
+  on every pause/resume cycle.
+- TX ERR 257 still occurs during sustained ATTACKING (660 errors in
+  session 3) but no longer leads to TG1WDT.
