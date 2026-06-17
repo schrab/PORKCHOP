@@ -158,3 +158,11 @@ TG1WDT fix" for full analysis.
   ~120 bytes internal RAM; 256 = ~31KB, eats into the 65KB largest
   block. The exponential backoff is the better fix; the remaining
   errors are an ESP32 driver quirk with promiscuous mode on busy channels.
+
+**Update (2026-06-17): Early bail on TX pool exhaustion.** ATTACKING state
+now tracks delta TX OK/ERR from attack start. After 4s with >70% error rate
+(minimum 20 TX attempts), bails early to WAITING with RSSI-scaled cooldown.
+Prevents wasting 10+ seconds throwing deauths at targets whose channel is
+drowning in ERR 257 (e.g. PONTIFEX in debug_TG1WDT-5.txt: 558ok/660err over
+two full 15s attack cycles with zero handshakes). With early bail the pig
+would've moved to the next target ~11s sooner. Logged as `[OINK] early bail:`.

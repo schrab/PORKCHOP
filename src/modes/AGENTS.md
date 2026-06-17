@@ -56,6 +56,14 @@
 - Core 0 heartbeat (`c0pkt=N` delta in OINK-DIAG) monitors Core 0 liveness.
   Verified in debug_TG1WDT-5.txt: c0pkt never drops to 0, PSRAM bus stall theory disproven.
 
+### OINK early bail on TX pool exhaustion
+- ATTACKING state tracks delta `deauthTxOk` / `deauthTxErrors` from attack start.
+- After 4s, if error rate >70% (minimum 20 TX attempts), bails early to WAITING
+  with RSSI-scaled cooldown (same as normal 15s timeout).
+- Prevents wasting TX descriptors on targets whose channel is drowning in
+  ESP_ERR_NO_MEM (257). Logs `[OINK] early bail:` with rate/delta/duration.
+- Constants: `BAIL_CHECK_MS=4000`, `BAIL_ERR_PCT=70`, `BAIL_MIN_TX=20`.
+
 ### NetworkRecon interaction modes
 | Mode | NetworkRecon action |
 |---|---|

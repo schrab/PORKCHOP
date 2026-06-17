@@ -271,12 +271,19 @@ enum class AutoState {
 static AutoState autoState = AutoState::SCANNING;
 static uint32_t stateStartTime = 0;
 static uint32_t attackStartTime = 0;
+static uint32_t attackStartTxOk = 0;
+static uint32_t attackStartTxErr = 0;
 static const uint32_t SCAN_TIME = 5000;         // 5 sec initial scan
 // LOCK_TIME now uses SwineStats::getLockTime() for class buff support
 static const uint32_t ATTACK_TIMEOUT = 15000;   // 15 sec per target
 static const uint32_t WAIT_TIME = 4500;         // 4.5 sec between targets (allows late EAPOL M3/M4)
 static const uint32_t BORED_RETRY_TIME = 30000; // 30 sec between retry scans when bored
 static const uint32_t BORED_THRESHOLD = 3;      // Failed target attempts before bored
+
+// Early bail on sustained TX errors (ESP_ERR_NO_MEM / pool exhaustion)
+static const uint32_t BAIL_CHECK_MS = 4000;     // Min time before checking error rate
+static const uint8_t  BAIL_ERR_PCT = 70;        // Error rate threshold (%)
+static const uint32_t BAIL_MIN_TX = 20;         // Min TX attempts before bail
 
 // PMKID hunting variables
 static int pmkidTargetIndex = 0;
@@ -386,6 +393,8 @@ void OinkMode::init() {
     autoState = AutoState::SCANNING;
     stateStartTime = 0;
     attackStartTime = 0;
+    attackStartTxOk = 0;
+    attackStartTxErr = 0;
     lastDeauthTime = 0;
     lastPwnedSSID[0] = '\0';
     lastMoodUpdate = 0;
@@ -1185,6 +1194,8 @@ void OinkMode::update() {
                 if (hasRecentClient && lockElapsed >= LOCK_FAST_TRACK_MS) {
                     autoState = AutoState::ATTACKING;
                     attackStartTime = now;
+                    attackStartTxOk = deauthTxOk;
+                    attackStartTxErr = deauthTxErrors;
                     deauthCount = 0;
                     deauthing = true;
                     break;
@@ -1193,6 +1204,8 @@ void OinkMode::update() {
                 if (lockElapsed > SwineStats::getLockTime()) {
                     autoState = AutoState::ATTACKING;
                     attackStartTime = now;
+                    attackStartTxOk = deauthTxOk;
+                    attackStartTxErr = deauthTxErrors;
                     deauthCount = 0;
                     deauthing = true;
                 }
@@ -1382,8 +1395,27 @@ void OinkMode::update() {
                     deauthing = false;
                 }
                 
-                // Timeout - move to next target
-                if (autoState == AutoState::ATTACKING && now - attackStartTime > ATTACK_TIMEOUT) {
+                // Early bail on sustained TX errors — don't waste descriptors
+                // on a target whose channel is drowning in ERR 257.
+                bool shouldBail = false;
+                if (autoState == AutoState::ATTACKING) {
+                    uint32_t deltaOk = deauthTxOk - attackStartTxOk;
+                    uint32_t deltaErr = deauthTxErrors - attackStartTxErr;
+                    uint32_t deltaTotal = deltaOk + deltaErr;
+                    if ((now - attackStartTime > BAIL_CHECK_MS) &&
+                        deltaTotal >= BAIL_MIN_TX &&
+                        (deltaErr * 100 / deltaTotal) > BAIL_ERR_PCT) {
+                        Serial.printf("[OINK] early bail: %u%% err (%u ok / %u err in %ums)\r\n",
+                            (unsigned)(deltaErr * 100 / deltaTotal),
+                            (unsigned)deltaOk, (unsigned)deltaErr,
+                            (unsigned)(now - attackStartTime));
+                        shouldBail = true;
+                    }
+                }
+
+                // Timeout or early bail — both apply RSSI-scaled cooldown
+                if (autoState == AutoState::ATTACKING &&
+                    (shouldBail || now - attackStartTime > ATTACK_TIMEOUT)) {
                     NetworkRecon::enterCritical();
                     for (auto& net : networks()) {
                         if (memcmp(net.bssid, targetBssid, 6) == 0) {
