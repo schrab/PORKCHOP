@@ -48,6 +48,19 @@
   (safe on Core 1) with `oinkBusy=true` to gate Core 0 callbacks.
 - SSID lookups from `networks[]` are **deferred** from Core 0 to Core 1 dequeue handlers.
 
+### OINK autosave: pause promiscuous during SD writes
+- `autoSaveCheck()` (via `autosaveTask` on Core 0) pauses promiscuous mode before
+  blocking SD I/O. Matches DONOHAM's proven pattern (donoham.cpp:484-495, 616-626,
+  766-775). Without this pause, the Core 0 WiFi task processes RX packets during
+  the full PCAP + 22000 + PMKID write sequence, starving the TG1 interrupt
+  handler → TG1WDT_SYS_RST.
+- `NetworkRecon::pause()` stops promiscuous RX (`esp_wifi_set_promiscuous(false)`)
+  and clears the WiFi-level callback. `resume()` re-enables with `WiFi.disconnect
+  (false,false)` (BUG4 fix — safe TX buffer pool, no state corruption).
+- The previous attempt to pause during autosave (before BUG4) used
+  `WiFi.disconnect(true,true)` which reset the TX descriptor pool → TG1WDT on
+  resume. The current `resume()` avoids this.
+
 ### OINK BORED state lock throttle
 - `getNextTarget()` iterates all ~60 networks under `vectorMux` to score targets.
 - In BORED state, this was called every loop iteration (~50Hz), causing

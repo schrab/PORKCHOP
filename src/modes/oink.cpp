@@ -2279,10 +2279,17 @@ void OinkMode::autoSaveCheck() {
                   (unsigned)pmkids.size(),
                   (unsigned)millis());
 
-    // NOTE: No need to pause promiscuous mode for SD writes.
-    // Promiscuous uses WiFi radio, SD uses SPI — completely separate hardware.
-    // The oinkBusy flag in the callback already prevents concurrent access to handshakes.
-    // Previously pausing here caused 100% TG1WDT crash on resume (WiFi driver state corruption).
+    // Pause promiscuous mode during SD writes to prevent Core 0 WiFi task
+    // from starving the TG1 interrupt handler while blocking on SPI I/O.
+    // Same proven pattern as DONOHAM (see donoham.cpp:484-495, 616-626,
+    // 766-775). The previous attempt at this used WiFi.disconnect(true,true)
+    // in resume() which corrupted the TX buffer pool — fixed by BUG4
+    // (WiFi.disconnect(false,false) in NetworkRecon::resume()).
+    bool pausedByUs = false;
+    if (NetworkRecon::isRunning()) {
+        NetworkRecon::pause();
+        pausedByUs = true;
+    }
 
     // Save any unsaved complete handshakes
     for (auto& hs : handshakes) {
@@ -2357,6 +2364,13 @@ void OinkMode::autoSaveCheck() {
     saveAllPMKIDs();
     const uint32_t pmkidDt = (uint32_t)esp_timer_get_time() - pmkidStart;
     Serial.printf("[OINK] save pmkid dt=%uus\r\n", (unsigned)pmkidDt);
+
+    // Resume promiscuous mode after SD writes complete.
+    // Core 0 WiFi task can now process packets again without
+    // contention with blocking SPI I/O.
+    if (pausedByUs) {
+        NetworkRecon::resume();
+    }
 
     const uint32_t autosaveDt = (uint32_t)esp_timer_get_time() - autosaveStart;
     Serial.printf("[OINK] autosave exit dt=%uus t=%u\r\n",

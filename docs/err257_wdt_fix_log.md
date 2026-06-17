@@ -168,3 +168,21 @@ triggered in practice — error rate plateaued at ~62% because the first 30
 clean TXs diluted the average. Sliding window catches pool drowning NOW.
 Prevents wasting 10+ seconds throwing deauths at targets whose channel is
 drowning in ERR 257. Logged as `[OINK] early bail:`.
+
+**Update (2026-06-18): Autosave promiscuous pause — TG1WDT post-attack fix.**
+Even with early bail working (attacks cut from 15s to ~7.3s with low ERR 257
+rates), the TG1WDT crash persisted during `autoSaveCheck()` — the SD write that
+saves captured handshakes. Two crashes at the same execution point (different
+saved PCs) confirmed this was independent of attack duration and ERR 257 rate.
+
+Root cause: `autoSaveCheck()` runs on Core 0 via `autosaveTask` (priority 0).
+The WiFi promiscuous callback (Core 0, higher priority) keeps processing RX
+packets during the full PCAP + 22000 + PMKID SD write sequence (~200-500ms
+blocking I/O). The TG1 interrupt handler can't fire because the WiFi task
+monopolizes Core 0 between SD write chunks → TG1WDT_SYS_RST.
+
+Fix: pause promiscuous mode before SD writes (matching DONOHAM's proven pattern
+at donoham.cpp:484-495). `NetworkRecon::pause()` stops promiscuous RX — the
+callback returns immediately, Core 0 SD writes finish without WiFi contention.
+`NetworkRecon::resume()` after saves re-enables with `WiFi.disconnect(false,false)`
+(BUG4 fix — safe). Logged as `[OINK] autosave enter / exit` timing lines.
