@@ -58,11 +58,14 @@
 
 ### OINK early bail on TX pool exhaustion
 - ATTACKING state tracks delta `deauthTxOk` / `deauthTxErrors` from attack start.
-- After 4s, if error rate >70% (minimum 20 TX attempts), bails early to WAITING
-  with RSSI-scaled cooldown (same as normal 15s timeout).
+- Sliding window (last 30 TXs) checks recent error rate to avoid dilution
+  from the initial clean burst (~30 TXs before pool saturates).
+- After 4s, if recent-window error rate >50% (minimum 20 TX total), bails
+  early to WAITING with RSSI-scaled cooldown (same as normal 15s timeout).
 - Prevents wasting TX descriptors on targets whose channel is drowning in
-  ESP_ERR_NO_MEM (257). Logs `[OINK] early bail:` with rate/delta/duration.
-- Constants: `BAIL_CHECK_MS=4000`, `BAIL_ERR_PCT=70`, `BAIL_MIN_TX=20`.
+  ESP_ERR_NO_MEM (257). Logs `[OINK] early bail:` with avg/recent rates.
+- Constants: `BAIL_CHECK_MS=4000`, `BAIL_ERR_PCT=50`, `BAIL_MIN_TX=20`,
+  `BAIL_RECENT_TX=30`.
 
 ### NetworkRecon interaction modes
 | Mode | NetworkRecon action |

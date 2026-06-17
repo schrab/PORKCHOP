@@ -273,6 +273,8 @@ static uint32_t stateStartTime = 0;
 static uint32_t attackStartTime = 0;
 static uint32_t attackStartTxOk = 0;
 static uint32_t attackStartTxErr = 0;
+static uint32_t lastBailTxOk = 0;
+static uint32_t lastBailTxErr = 0;
 static const uint32_t SCAN_TIME = 5000;         // 5 sec initial scan
 // LOCK_TIME now uses SwineStats::getLockTime() for class buff support
 static const uint32_t ATTACK_TIMEOUT = 15000;   // 15 sec per target
@@ -282,8 +284,9 @@ static const uint32_t BORED_THRESHOLD = 3;      // Failed target attempts before
 
 // Early bail on sustained TX errors (ESP_ERR_NO_MEM / pool exhaustion)
 static const uint32_t BAIL_CHECK_MS = 4000;     // Min time before checking error rate
-static const uint8_t  BAIL_ERR_PCT = 70;        // Error rate threshold (%)
+static const uint8_t  BAIL_ERR_PCT = 50;        // Error rate threshold (%) — sliding window
 static const uint32_t BAIL_MIN_TX = 20;         // Min TX attempts before bail
+static const uint32_t BAIL_RECENT_TX = 30;      // Recent window size (avoids dilution from clean burst)
 
 // PMKID hunting variables
 static int pmkidTargetIndex = 0;
@@ -395,6 +398,8 @@ void OinkMode::init() {
     attackStartTime = 0;
     attackStartTxOk = 0;
     attackStartTxErr = 0;
+    lastBailTxOk = 0;
+    lastBailTxErr = 0;
     lastDeauthTime = 0;
     lastPwnedSSID[0] = '\0';
     lastMoodUpdate = 0;
@@ -1196,6 +1201,8 @@ void OinkMode::update() {
                     attackStartTime = now;
                     attackStartTxOk = deauthTxOk;
                     attackStartTxErr = deauthTxErrors;
+                    lastBailTxOk = deauthTxOk;
+                    lastBailTxErr = deauthTxErrors;
                     deauthCount = 0;
                     deauthing = true;
                     break;
@@ -1206,6 +1213,8 @@ void OinkMode::update() {
                     attackStartTime = now;
                     attackStartTxOk = deauthTxOk;
                     attackStartTxErr = deauthTxErrors;
+                    lastBailTxOk = deauthTxOk;
+                    lastBailTxErr = deauthTxErrors;
                     deauthCount = 0;
                     deauthing = true;
                 }
@@ -1397,20 +1406,32 @@ void OinkMode::update() {
                 
                 // Early bail on sustained TX errors — don't waste descriptors
                 // on a target whose channel is drowning in ERR 257.
+                // Uses a sliding window (last BAIL_RECENT_TX) to avoid dilution
+                // from the initial clean burst (~30 TXs before pool saturates).
                 bool shouldBail = false;
                 if (autoState == AutoState::ATTACKING) {
                     uint32_t deltaOk = deauthTxOk - attackStartTxOk;
                     uint32_t deltaErr = deauthTxErrors - attackStartTxErr;
                     uint32_t deltaTotal = deltaOk + deltaErr;
+                    // Recent-window check: catches pool drowning NOW
+                    uint32_t recentOk = deauthTxOk - lastBailTxOk;
+                    uint32_t recentErr = deauthTxErrors - lastBailTxErr;
+                    uint32_t recentTotal = recentOk + recentErr;
+                    bool windowBail = (recentTotal >= BAIL_RECENT_TX) &&
+                        (recentErr * 100 / recentTotal) > BAIL_ERR_PCT;
                     if ((now - attackStartTime > BAIL_CHECK_MS) &&
                         deltaTotal >= BAIL_MIN_TX &&
-                        (deltaErr * 100 / deltaTotal) > BAIL_ERR_PCT) {
-                        Serial.printf("[OINK] early bail: %u%% err (%u ok / %u err in %ums)\r\n",
-                            (unsigned)(deltaErr * 100 / deltaTotal),
+                        (windowBail || (deltaErr * 100 / deltaTotal) > BAIL_ERR_PCT)) {
+                        Serial.printf("[OINK] early bail: %u%% err (%u ok / %u err in %ums, recent %u%%)\r\n",
+                            deltaTotal > 0 ? (unsigned)(deltaErr * 100 / deltaTotal) : 0,
                             (unsigned)deltaOk, (unsigned)deltaErr,
-                            (unsigned)(now - attackStartTime));
+                            (unsigned)(now - attackStartTime),
+                            recentTotal > 0 ? (unsigned)(recentErr * 100 / recentTotal) : 0);
                         shouldBail = true;
                     }
+                    // Advance the window
+                    lastBailTxOk = deauthTxOk;
+                    lastBailTxErr = deauthTxErrors;
                 }
 
                 // Timeout or early bail — both apply RSSI-scaled cooldown

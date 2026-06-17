@@ -160,9 +160,11 @@ TG1WDT fix" for full analysis.
   errors are an ESP32 driver quirk with promiscuous mode on busy channels.
 
 **Update (2026-06-17): Early bail on TX pool exhaustion.** ATTACKING state
-now tracks delta TX OK/ERR from attack start. After 4s with >70% error rate
+now tracks delta TX OK/ERR from attack start. After 4s with >50% error rate
 (minimum 20 TX attempts), bails early to WAITING with RSSI-scaled cooldown.
+Uses a sliding window (last 30 TXs) to avoid dilution from the initial clean
+burst (~30 TXs before pool saturates). The original 70% threshold never
+triggered in practice — error rate plateaued at ~62% because the first 30
+clean TXs diluted the average. Sliding window catches pool drowning NOW.
 Prevents wasting 10+ seconds throwing deauths at targets whose channel is
-drowning in ERR 257 (e.g. PONTIFEX in debug_TG1WDT-5.txt: 558ok/660err over
-two full 15s attack cycles with zero handshakes). With early bail the pig
-would've moved to the next target ~11s sooner. Logged as `[OINK] early bail:`.
+drowning in ERR 257. Logged as `[OINK] early bail:`.
