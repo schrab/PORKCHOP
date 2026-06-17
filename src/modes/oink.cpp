@@ -571,15 +571,20 @@ void OinkMode::update() {
     {
         static uint32_t lastDiagMs = 0;
         static uint32_t maxDiagGapMs = 0;
+        static uint32_t maxGapAtMs = 0;       // boot-relative ms when maxGap happened
         if (now - lastDiagMs > 2000) {
             // IDLE-starvation measurement: the loop iterates hundreds of
             // times per second normally, so each diag print should be
             // ~2000 ms apart. If it's more, the loop was blocked from
             // running for the excess — meaning Core 1 IDLE was starved
             // for that duration (the TWDT checks IDLE on Core 1 by
-            // default).
+            // default). Recording the timestamp of the worst starve
+            // lets us correlate it with the state-machine log.
             const uint32_t gap = now - lastDiagMs;
-            if (gap > maxDiagGapMs) maxDiagGapMs = gap;
+            if (gap > maxDiagGapMs) {
+                maxDiagGapMs = gap;
+                maxGapAtMs = now;
+            }
             const uint32_t idleStarvedMs = (gap > 2000) ? (gap - 2000) : 0;
             lastDiagMs = now;
             uint8_t ch = 0;
@@ -593,7 +598,7 @@ void OinkMode::update() {
             uint32_t maxHold = 0, totalHold = 0, callCount = 0;
             NetworkRecon::Profile::lockProfileSnapshot(maxHold, totalHold, callCount);
             NetworkRecon::Profile::lockProfileReset();
-            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d gap=%u maxGap=%u idleStarved=%u lockMax=%u lockTotal=%u lockCalls=%u\r\n",
+            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d gap=%u maxGap=%u@%u idleStarved=%u lockMax=%u lockTotal=%u lockCalls=%u\r\n",
                           (unsigned)now,
                           (unsigned)ESP.getFreeHeap(),
                           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -605,12 +610,13 @@ void OinkMode::update() {
                           (int)autoState,
                           (unsigned)gap,
                           (unsigned)maxDiagGapMs,
+                          (unsigned)maxGapAtMs,
                           (unsigned)idleStarvedMs,
                           (unsigned)maxHold,
                           (unsigned)totalHold,
                           (unsigned)callCount);
 #else
-            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d gap=%u maxGap=%u idleStarved=%u\r\n",
+            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d gap=%u maxGap=%u@%u idleStarved=%u\r\n",
                           (unsigned)now,
                           (unsigned)ESP.getFreeHeap(),
                           (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
@@ -621,6 +627,9 @@ void OinkMode::update() {
                           (unsigned)pmkids.size(),
                           (int)autoState,
                           (unsigned)gap,
+                          (unsigned)maxDiagGapMs,
+                          (unsigned)maxGapAtMs,
+                          (unsigned)idleStarvedMs);
                           (unsigned)maxDiagGapMs,
                           (unsigned)idleStarvedMs);
 #endif
