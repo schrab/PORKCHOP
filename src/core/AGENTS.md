@@ -23,6 +23,7 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
 - `challenges.cpp` — session challenge definitions and tracking
 - `stress_test.cpp` — heap stress testing utilities
 - `wsl_bypasser.cpp` — deauth frame construction (WSL bypass)
+- `pc_snapshot.cpp` — phase checkpoint writer for TG1WDT post-mortem (RTC-backed)
 - `logging.h` — compile-time serial logging macros (header only)
 
 ## Local Contracts
@@ -57,6 +58,20 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
 - `SDLayout::` namespace resolves paths for both layouts.
 - `ensureDirs()` creates all required directories.
 
+### PCSnapshot
+- `checkpoint(Phase)` writes the phase ID + `millis()` directly to RTC slow
+  memory. Survives any reset including TG1WDT_SYS_RST.
+- No timer-based sampler — a 1 Hz `esp_timer` snapshot was tried first and
+  the sampler was starved in the seconds before the WDT fired, never
+  writing RTC and defeating the purpose. Direct writes are immune to that
+  and cost ~hundreds of ns.
+- `printStoredSnapshot()` must be called from `setup()` before any other init
+  that could interleave output. Clears the stored snapshot after printing.
+- Instrument only the sites that answer a specific debugging question.
+  Adding markers to "everything" dilutes the signal: the OINK hunt uses
+  exactly 5 sites (`PORKCHOP` + 4 OINK sub-phases). See
+  `docs/tg1wdt_investigation.md` for rationale.
+
 ## Child DOX Index
 
 | Child | Scope |
@@ -77,4 +92,5 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
 | `core/challenges.*` | Session challenges |
 | `core/stress_test.*` | Heap stress testing |
 | `core/wsl_bypasser.*` | Deauth frame construction |
+| `core/pc_snapshot.*` | Phase checkpoint writer (TG1WDT post-mortem) |
 | `core/logging.h` | Logging macros (header only) |

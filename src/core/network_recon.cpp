@@ -69,6 +69,30 @@ static const uint32_t BEACON_INTERVAL_MAX_MS = 5000;
 
 static portMUX_TYPE vectorMux = portMUX_INITIALIZER_UNLOCKED;
 
+#ifdef NETRECON_LOCK_PROFILE
+// Per-tick lock-hold accumulators. Core 1 writes, Core 1 reads — no lock
+// needed for the counters themselves, but reads on the diag emitter must
+// use the relaxed atomic ordering to avoid seeing torn values.
+static std::atomic<uint32_t> s_lockProfileEnterUs{0};
+static std::atomic<uint32_t> s_lockProfileMaxUs{0};
+static std::atomic<uint32_t> s_lockProfileTotalUs{0};
+static std::atomic<uint32_t> s_lockProfileCallCount{0};
+static std::atomic<uint8_t>  s_lockProfileInLock{0};
+
+namespace Profile {
+    void lockProfileReset() {
+        s_lockProfileMaxUs.store(0, std::memory_order_relaxed);
+        s_lockProfileTotalUs.store(0, std::memory_order_relaxed);
+        s_lockProfileCallCount.store(0, std::memory_order_relaxed);
+    }
+    void lockProfileSnapshot(uint32_t& maxHoldUs, uint32_t& totalHoldUs, uint32_t& callCount) {
+        maxHoldUs   = s_lockProfileMaxUs.load(std::memory_order_relaxed);
+        totalHoldUs = s_lockProfileTotalUs.load(std::memory_order_relaxed);
+        callCount   = s_lockProfileCallCount.load(std::memory_order_relaxed);
+    }
+}
+#endif // NETRECON_LOCK_PROFILE
+
 // ============================================================================
 // Shared Data
 // ============================================================================
@@ -1092,9 +1116,11 @@ void lockChannel(uint8_t channel) {
     lockedChannel = channel;
     currentChannel = channel;
     channelLocked.store(true, std::memory_order_release);
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
-    
-    Serial.printf("[RECON] Channel locked to %d\r\n", channel);
+    const uint32_t t0 = (uint32_t)esp_timer_get_time();
+    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    const uint32_t dt = (uint32_t)esp_timer_get_time() - t0;
+    Serial.printf("[RECON] Channel locked to %d (set_channel err=%d dt=%uus)\r\n",
+                  channel, (int)err, (unsigned)dt);
 }
 
 void unlockChannel() {
@@ -1109,7 +1135,11 @@ bool isChannelLocked() {
 void setChannel(uint8_t channel) {
     if (channel < 1 || channel > 14) return;
     currentChannel = channel;
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    const uint32_t t0 = (uint32_t)esp_timer_get_time();
+    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    const uint32_t dt = (uint32_t)esp_timer_get_time() - t0;
+    Serial.printf("[RECON] setChannel ch=%d err=%d dt=%uus\r\n",
+                  channel, (int)err, (unsigned)dt);
 }
 
 void setPacketCallback(PacketCallback callback) {
@@ -1121,11 +1151,38 @@ void setNewNetworkCallback(NewNetworkCallback callback) {
 }
 
 void enterCritical() {
+#ifdef NETRECON_LOCK_PROFILE
+    // Record enter timestamp BEFORE taking the lock. esp_timer_get_time
+    // is a single register read on Xtensa, no syscall.
+    s_lockProfileEnterUs.store((uint32_t)(esp_timer_get_time() & 0xFFFFFFFF),
+                               std::memory_order_relaxed);
+    s_lockProfileInLock.store(1, std::memory_order_relaxed);
+#endif
     taskENTER_CRITICAL(&vectorMux);
 }
 
 void exitCritical() {
     taskEXIT_CRITICAL(&vectorMux);
+#ifdef NETRECON_LOCK_PROFILE
+    if (s_lockProfileInLock.load(std::memory_order_relaxed)) {
+        const uint32_t enterUs = s_lockProfileEnterUs.load(std::memory_order_relaxed);
+        const uint32_t exitUs  = (uint32_t)(esp_timer_get_time() & 0xFFFFFFFF);
+        // Handle microsecond wrap (esp_timer_get_time is 64-bit, we cast to
+        // 32-bit so wrap happens at ~71 minutes). Unlikely to matter for
+        // per-tick lock holds (always < 100ms).
+        uint32_t holdUs = (exitUs >= enterUs) ? (exitUs - enterUs) : 0;
+        // Atomic fetch-add for the running total, atomic load+max for the peak.
+        uint32_t prevMax = s_lockProfileMaxUs.load(std::memory_order_relaxed);
+        while (holdUs > prevMax &&
+               !s_lockProfileMaxUs.compare_exchange_weak(prevMax, holdUs,
+                                                         std::memory_order_relaxed)) {
+            // prevMax was updated by another writer; retry
+        }
+        s_lockProfileTotalUs.fetch_add(holdUs, std::memory_order_relaxed);
+        s_lockProfileCallCount.fetch_add(1, std::memory_order_relaxed);
+        s_lockProfileInLock.store(0, std::memory_order_relaxed);
+    }
+#endif
 }
 
 } // namespace NetworkRecon

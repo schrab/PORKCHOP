@@ -13,6 +13,7 @@
 #include "../core/xp.h"
 #include "../core/heap_policy.h"
 #include "../core/heap_health.h"
+#include "../core/pc_snapshot.h"
 #include "../ui/display.h"
 #include "../piglet/mood.h"
 #include "../piglet/avatar.h"
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <cstdarg>  // For va_list in deferred logging
 #include <esp_heap_caps.h>
+#include <esp_task_wdt.h>
 #include <atomic>  // For atomic beaconCaptured flag
 
 // NOTE: handshakes[]/pmkids[] vectors are Core 1 territory.
@@ -510,6 +512,30 @@ void OinkMode::update() {
 
     uint32_t now = millis();
 
+    // State-transition trace: print only when autoState changes, not every tick.
+    // This is cheap (one integer compare per loop) and gives us a clear timeline
+    // in the serial log up to the moment of the TG1WDT.
+    {
+        static AutoState lastAutoState = AutoState::SCANNING;
+        if (autoState != lastAutoState) {
+            auto nameOf = [](AutoState s) -> const char* {
+                switch (s) {
+                    case AutoState::SCANNING:       return "SCANNING";
+                    case AutoState::PMKID_HUNTING:  return "PMKID_HUNTING";
+                    case AutoState::NEXT_TARGET:    return "NEXT_TARGET";
+                    case AutoState::LOCKING:        return "LOCKING";
+                    case AutoState::ATTACKING:      return "ATTACKING";
+                    case AutoState::WAITING:        return "WAITING";
+                    case AutoState::BORED:          return "BORED";
+                }
+                return "?";
+            };
+            Serial.printf("[OINK] state %s -> %s t=%u\r\n",
+                          nameOf(lastAutoState), nameOf(autoState), (unsigned)now);
+            lastAutoState = autoState;
+        }
+    }
+
     // DIAG: periodic heap/WiFi state — prints every 2s. The most recent line
     // before a TG1WDT reset tells us the state right when the watchdog fired.
     {
@@ -519,6 +545,28 @@ void OinkMode::update() {
             uint8_t ch = 0;
             wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
             esp_wifi_get_channel(&ch, &second);
+#ifdef NETRECON_LOCK_PROFILE
+            // Read the per-tick lock-hold profile built up over the last
+            // ~2 seconds, then reset for the next window. Format: max=NNNus
+            // total=NNNus calls=NN. With NETRECON_LOCK_PROFILE off, this
+            // block compiles to nothing.
+            uint32_t maxHold = 0, totalHold = 0, callCount = 0;
+            NetworkRecon::Profile::lockProfileSnapshot(maxHold, totalHold, callCount);
+            NetworkRecon::Profile::lockProfileReset();
+            Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d lockMax=%u lockTotal=%u lockCalls=%u\r\n",
+                          (unsigned)now,
+                          (unsigned)ESP.getFreeHeap(),
+                          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                          (int)ch,
+                          (unsigned long)deauthTxOk,
+                          (unsigned long)deauthTxErrors,
+                          (unsigned)handshakes.size(),
+                          (unsigned)pmkids.size(),
+                          (int)autoState,
+                          (unsigned)maxHold,
+                          (unsigned)totalHold,
+                          (unsigned)callCount);
+#else
             Serial.printf("[OINK-DIAG] t=%u free=%u largest=%u ch=%d deauthTxOk=%lu deauthTxErr=%lu hs=%u pmkid=%u auto=%d\r\n",
                           (unsigned)now,
                           (unsigned)ESP.getFreeHeap(),
@@ -529,6 +577,7 @@ void OinkMode::update() {
                           (unsigned)handshakes.size(),
                           (unsigned)pmkids.size(),
                           (int)autoState);
+#endif
         }
     }
 
@@ -616,6 +665,7 @@ void OinkMode::update() {
         shouldAutoSave = true;
     }
     if (shouldAutoSave) {
+        PCSnapshot::checkpoint(PCSnapshot::PHASE_OINK_AUTOSAVE);
         autoSaveCheck();
     }
     // Core 0 was a PURE ENQUEUER — just memcpy'd raw frame data to pendingHsPool.
@@ -636,6 +686,7 @@ void OinkMode::update() {
         Serial.printf("[OINK-DIAG] dequeue#%u enter read=%u write=%u\r\n",
                       (unsigned)hsDequeueCount, (unsigned)pendingHsRead, (unsigned)pendingHsWrite);
     }
+    PCSnapshot::checkpoint(PCSnapshot::PHASE_OINK_DEQUEUE);
     while (hsProcessed < kMaxHsPerTick) {
         bool hasSlot = false;
         taskENTER_CRITICAL(&oinkQueueMux);
@@ -646,9 +697,11 @@ void OinkMode::update() {
             hasSlot = true;
         }
         taskEXIT_CRITICAL(&oinkQueueMux);
-        
+
         if (!hasSlot) break;
-        
+
+        PCSnapshot::checkpoint(PCSnapshot::PHASE_OINK_PROCESS_EAPOL);
+
         // Core 1: find or create handshake entry (push_back on vector)
         int idx = findOrCreateHandshakeSafe(frameLocal.bssid, frameLocal.station);
         if (idx >= 0) {
@@ -1128,6 +1181,7 @@ void OinkMode::update() {
 
                 // Send deauth burst every 180ms (optimal rate per research - prevents queue saturation)
                 if (now - lastDeauthTime > 180) {
+                    PCSnapshot::checkpoint(PCSnapshot::PHASE_OINK_DEAUTH);
                     // Skip if PMF (shouldn't happen but safety check)
                     if (targetHasPMF) {
                         selectionIndex++;
@@ -1192,32 +1246,56 @@ void OinkMode::update() {
                 }
                 
                 // Check if handshake captured - use BSSID lookup instead of targetIndex
-                // to avoid marking wrong network if cleanup shifted indices
+                // to avoid marking wrong network if cleanup shifted indices.
+                //
+                // Lock-window fix (2026-06-17): the previous version held
+                // NetworkRecon::vectorMux across the entire O(handshakes × networks)
+                // nested loop, which could starve the Core 0 WiFi task and trigger
+                // TG1WDT. Now we do BSSID lookups via findNetwork() (which takes
+                // the lock briefly per call and copies the entry) and only re-take
+                // the lock once at the end for the hasHandshake flag writes.
                 bool targetHandshakeCaptured = false;
                 char targetHandshakeSSID[33] = {0};
-                const bool wasBusyHandshake = oinkBusy;
-                oinkBusy = true;
-                NetworkRecon::enterCritical();
+
+                // First pass: look up each complete handshake's BSSID, capturing
+                // any target SSID match. No lock held during the iteration.
+                struct PendingFlag {
+                    uint8_t bssid[6];
+                };
+                PendingFlag pendingFlags[8];  // bounded; MAX_HANDSHAKES is the real cap
+                uint8_t pendingFlagCount = 0;
+
                 for (const auto& hs : handshakes) {
                     if (!hs.isComplete()) continue;
-                    int netIdx = -1;
-                    for (int i = 0; i < (int)networks().size(); i++) {
-                        if (memcmp(networks()[i].bssid, hs.bssid, 6) == 0) {
-                            netIdx = i;
-                            break;
-                        }
+                    DetectedNetwork netCopy;
+                    if (!NetworkRecon::findNetwork(hs.bssid, &netCopy)) continue;
+
+                    if (pendingFlagCount < 8) {
+                        memcpy(pendingFlags[pendingFlagCount].bssid, hs.bssid, 6);
+                        pendingFlagCount++;
                     }
-                    if (netIdx >= 0) {
-                        networks()[netIdx].hasHandshake = true;
-                        if (targetIndex >= 0 && targetIndex < (int)networks().size() &&
-                            memcmp(networks()[targetIndex].bssid, hs.bssid, 6) == 0) {
-                            targetHandshakeCaptured = true;
-                            strncpy(targetHandshakeSSID, networks()[netIdx].ssid, 32);
-                            targetHandshakeSSID[32] = 0;
-                        }
+
+                    if (targetIndex >= 0 && targetIndex < (int)NetworkRecon::getNetworkCount() &&
+                        memcmp(targetBssid, hs.bssid, 6) == 0) {
+                        targetHandshakeCaptured = true;
+                        strncpy(targetHandshakeSSID, netCopy.ssid, 32);
+                        targetHandshakeSSID[32] = 0;
                     }
                 }
-                NetworkRecon::exitCritical();
+
+                // Second pass: take the lock ONCE to set all hasHandshake flags.
+                const bool wasBusyHandshake = oinkBusy;
+                oinkBusy = true;
+                if (pendingFlagCount > 0) {
+                    NetworkRecon::enterCritical();
+                    for (uint8_t k = 0; k < pendingFlagCount; k++) {
+                        int idx = NetworkRecon::findNetworkIndex(pendingFlags[k].bssid);
+                        if (idx >= 0) {
+                            networks()[idx].hasHandshake = true;
+                        }
+                    }
+                    NetworkRecon::exitCritical();
+                }
                 oinkBusy = wasBusyHandshake;
                 if (targetHandshakeCaptured) {
                     if (targetHandshakeSSID[0] != 0) {
@@ -2017,11 +2095,19 @@ void OinkMode::autoSaveCheck() {
     if (!Config::isSDAvailable()) {
         return;
     }
-    
+
+    // Reset the task watchdog for the calling task (loop task) at the start.
+    // The loop task is auto-subscribed to TWDT on ESP-IDF Arduino (confirmed
+    // by src/core/sd_format.cpp:306,357,366 which already calls
+    // esp_task_wdt_reset() from the loop task). This guarantees the watchdog
+    // is fed before any potentially-long SD I/O begins, even if the
+    // IDLE task's reset hook is starved while we hold oinkBusy.
+    esp_task_wdt_reset();
+
     // Check if there's anything to save before pausing promiscuous
     bool hasUnsavedHS = false;
     bool hasUnsavedPMKID = false;
-    
+
     for (const auto& hs : handshakes) {
         if (hs.isComplete() && !hs.saved && hs.saveAttempts < 3) {
             hasUnsavedHS = true;
@@ -2034,16 +2120,22 @@ void OinkMode::autoSaveCheck() {
             break;
         }
     }
-    
+
     if (!hasUnsavedHS && !hasUnsavedPMKID) {
         return;  // Nothing to save, skip promiscuous pause
     }
-    
+
+    const uint32_t autosaveStart = (uint32_t)esp_timer_get_time();
+    Serial.printf("[OINK] autosave enter hs_unsaved=%u pmkid_unsaved=%u t=%u\r\n",
+                  (unsigned)handshakes.size(),
+                  (unsigned)pmkids.size(),
+                  (unsigned)millis());
+
     // NOTE: No need to pause promiscuous mode for SD writes.
     // Promiscuous uses WiFi radio, SD uses SPI — completely separate hardware.
     // The oinkBusy flag in the callback already prevents concurrent access to handshakes.
     // Previously pausing here caused 100% TG1WDT crash on resume (WiFi driver state corruption).
-    
+
     // Save any unsaved complete handshakes
     for (auto& hs : handshakes) {
         if (hs.isComplete() && !hs.saved && hs.saveAttempts < 3) {
@@ -2053,14 +2145,14 @@ void OinkMode::autoSaveCheck() {
             if (timeSinceCapture < backoffMs[hs.saveAttempts]) {
                 continue;  // Wait for backoff period
             }
-            
+
             const char* handshakesDir = SDLayout::handshakesDir();
 
             // Generate filename: SSID_BSSID.pcap
             char filename[64];
             SDLayout::buildCaptureFilename(filename, sizeof(filename),
                                            handshakesDir, hs.ssid, hs.bssid, ".pcap");
-            
+
             // Ensure directory exists
             if (!SD.exists(handshakesDir)) {
                 if (!SD.mkdir(handshakesDir)) {
@@ -2068,18 +2160,29 @@ void OinkMode::autoSaveCheck() {
                     continue;  // Skip this handshake if we can't create directory
                 }
             }
-            
+
+            const uint32_t hsStart = (uint32_t)esp_timer_get_time();
+
             // Save PCAP (for wireshark/manual analysis)
             bool pcapOk = saveHandshakePCAP(hs, filename);
+            const uint32_t pcapDt = (uint32_t)esp_timer_get_time() - hsStart;
             yield();  // Feed watchdog between PCAP and 22000 writes — both are blocking SD I/O
 
             // Save 22000 format (hashcat-ready, no conversion needed)
             char filename22000[64];
             SDLayout::buildCaptureFilename(filename22000, sizeof(filename22000),
                                            handshakesDir, hs.ssid, hs.bssid, "_hs.22000");
+            const uint32_t h22Start = (uint32_t)esp_timer_get_time();
             bool hs22kOk = saveHandshake22000(hs, filename22000);
+            const uint32_t h22Dt = (uint32_t)esp_timer_get_time() - h22Start;
             yield();  // Feed watchdog after 22000 write
-            
+
+            Serial.printf("[OINK] save hs '%s' pcap=%s dt=%uus 22000=%s dt=%uus total=%uus\r\n",
+                          hs.ssid,
+                          pcapOk ? "OK" : "FAIL", (unsigned)pcapDt,
+                          hs22kOk ? "OK" : "FAIL", (unsigned)h22Dt,
+                          (unsigned)((uint32_t)esp_timer_get_time() - hsStart));
+
             if (pcapOk || hs22kOk) {
                 hs.saved = true;
                 SDLog::log("OINK", "Handshake saved: %s (pcap:%s 22000:%s)",
@@ -2093,14 +2196,23 @@ void OinkMode::autoSaveCheck() {
                     hs.saved = true;  // Mark as done to stop retries (data still in RAM)
                 }
             }
-            
-            // Yield to watchdog/scheduler after each save (prevents WDT during mass saves)
-            delay(1);
+
+            // Yield to watchdog/scheduler after each save. vTaskDelay puts the
+            // task in Blocked state so the IDLE task can run and reset the
+            // task watchdog — delay() does not always let IDLE run.
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
     }
-    
+
     // Also save any unsaved PMKIDs
+    const uint32_t pmkidStart = (uint32_t)esp_timer_get_time();
     saveAllPMKIDs();
+    const uint32_t pmkidDt = (uint32_t)esp_timer_get_time() - pmkidStart;
+    Serial.printf("[OINK] save pmkid dt=%uus\r\n", (unsigned)pmkidDt);
+
+    const uint32_t autosaveDt = (uint32_t)esp_timer_get_time() - autosaveStart;
+    Serial.printf("[OINK] autosave exit dt=%uus t=%u\r\n",
+                  (unsigned)autosaveDt, (unsigned)millis());
 }
 
 // PCAP file format structures
@@ -2170,9 +2282,14 @@ bool OinkMode::saveHandshakePCAP(const CapturedHandshake& hs, const char* path) 
     if (!f) {
         return false;
     }
-    
+    // SD.open is itself a blocking SPI transaction (FAT directory lookup +
+    // cluster allocation). Yield to IDLE so the watchdog can be fed even
+    // on the first PCAP write after the captures were deleted from SD.
+    vTaskDelay(pdMS_TO_TICKS(1));
+
     writePCAPHeader(f);
-    
+    vTaskDelay(pdMS_TO_TICKS(1));
+
     int packetCount = 0;
     
     // Write beacon frame first (required for hashcat to crack)
@@ -2342,7 +2459,10 @@ bool OinkMode::saveHandshake22000(const CapturedHandshake& hs, const char* path)
     if (!f) {
         return false;
     }
-    
+    // SD.open is a blocking SPI transaction. Yield to IDLE so the
+    // watchdog is fed during the 22000 write's open phase.
+    vTaskDelay(pdMS_TO_TICKS(1));
+
     // Extract MIC from M2 EAPOL frame (offset 81, 16 bytes)
     // EAPOL-Key: ver(1)+type(1)+len(2)+desc(1)+keyinfo(2)+keylen(2)+replay(8)+nonce(32)+iv(16)+rsc(8)+reserved(8)+MIC(16)
     // Offsets: 0-3=EAPOL hdr, 4=desc, 5-6=keyinfo, 7-8=keylen, 9-16=replay, 17-48=nonce, 49-64=iv, 65-72=rsc, 73-80=reserved, 81-96=MIC
@@ -2414,7 +2534,10 @@ bool OinkMode::saveHandshake22000(const CapturedHandshake& hs, const char* path)
 
 bool OinkMode::saveAllPMKIDs() {
     if (!Config::isSDAvailable()) return false;
-    
+
+    // Reset TWDT before PMKID saves — same reasoning as in autoSaveCheck().
+    esp_task_wdt_reset();
+
     const char* handshakesDir = SDLayout::handshakesDir();
 
     // Ensure directory exists
@@ -2691,8 +2814,14 @@ void OinkMode::sendAssociationRequest(const uint8_t* bssid, const char* ssid, ui
     assocReq[bodyOffset++] = 0x12;  // 9 Mbps
     assocReq[bodyOffset++] = 0x18;  // 12 Mbps
     assocReq[bodyOffset++] = 0x24;  // 18 Mbps
-    
-    esp_wifi_80211_tx(WIFI_IF_STA, assocReq, bodyOffset, false);
+
+    esp_err_t txErr = esp_wifi_80211_tx(WIFI_IF_STA, assocReq, bodyOffset, false);
+    if (txErr != ESP_OK) {
+        Serial.printf("[OINK] ASSOC TX err=%d bssid=%02X:%02X:%02X:%02X:%02X:%02X len=%u\r\n",
+                      (int)txErr,
+                      bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+                      (unsigned)bodyOffset);
+    }
 }
 
 void OinkMode::clearTargetClients() {

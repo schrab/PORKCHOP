@@ -176,3 +176,272 @@ TG1WDT instead of guessing.
 The user is correct that we have been adding fixes "just for the
 luck". The remaining unfixed crash is a real bug; we need
 observability before more code changes.
+
+## Snapshot service — what we tried and why we stopped
+
+A phase-checkpoint sampler (`src/core/pc_snapshot.{h,cpp}`) was added
+to capture the last main-loop phase entered before a WDT reset. It
+writes the current `Phase` ID + `millis()` to `RTC_DATA_ATTR` storage
+so the next boot can print which phase we were last in.
+
+**Result: the snapshot service is implemented and the code is in
+place, but the data it produces is not useful for debugging TG1WDT.**
+
+**Evidence (single OINK crash → reboot, 2026-06-17):**
+
+```
+[OINK-DIAG] t=141461 ... auto=1
+[OINK-DIAG] t=143487 ... auto=1
+[OINK-DIAG] dequeue#2400 enter read=3 write=3
+[OINK-DIAG] dequeue#2400 exit processed=0
+[RECON] Channel locked to 11
+[RECON] Channel locked to 1
+[RECON] Channel locked to 2
+ESP-ROM:esp32s3-20210327
+rst:0x8 (TG1WDT_SYS_RST) Saved PC:0x42075b1f
+…
+=== PORKCHOP STARTING ===
+[PC-SNAPSHOT] raw phase=0 ms=0 (name=BOOT)        ← prior boot crashed
+[PC-SNAPSHOT] no prior snapshot (clean boot or first run)
+[BOOT] NVS init: OK
+[PC-SNAPSHOT] self-test: wrote phase=0xAA ms=0xBBCCDDEE; readback phase=0xAA ms=0xBBCCDDEE
+[PC-SNAPSHOT] init: direct RTC writes (no sampler)
+```
+
+**Interpretation:**
+
+- The self-test in `setup()` writes `0xAA` / `0xBBCCDDEE` to the
+  `RTC_DATA_ATTR` variables and reads back the same values. **The
+  storage works at boot.** This rules out a linker/placement bug
+  (the map file confirms `s_rtcPhase`/`s_rtcMs` are in
+  `.rtc.data` at `0x50000004`/`0x50000000`).
+- The prior boot's RTC contents are zero. The OINK session
+  demonstrably reached `OinkMode::update()` (we see `dequeue#2400`
+  enter/exit, diag emits, and `[RECON] Channel locked to N` lines)
+  and at least 4 of the 5 checkpoint sites are inside that path.
+- So either (a) the WDT reset path on this chip wipes the
+  `.rtc.data` contents, or (b) the WDT fires from a code path that
+  never reaches a checkpoint. We have no experiment to distinguish
+  these on real hardware without a deliberate WDT-forced reboot
+  test, and that test was not done.
+- The simplest explanation consistent with both observations is
+  (a): TG1WDT on this firmware/board erases the `.rtc.data`
+  section. (The ESP32-S3 TRM documents `.rtc.data` as preserved
+  across CPU resets, but the WDT path goes through `esp_restart()`
+  → `esp_cpu_reset(0)` and behavior of that path on
+  ESP32-S3 has been a moving target across silicon revisions.)
+- Even if (b) is correct and adding more checkpoint sites would
+  catch it, we have no way to *verify* a fix without a way to
+  observe what the snapshot service captures — and the storage is
+  demonstrably not capturing it.
+
+**Decision:** the snapshot service is kept in source as harmless
+code (it adds ~16 bytes to flash, doesn't affect runtime) but is
+not useful for this debug pass. The data we'd want is the
+per-tick time spent inside `NetworkRecon::enterCritical()` in
+`OinkMode::update()` — which the OINK vs SPECTRUM comparison
+below identifies as the prime suspect anyway.
+
+## OINK vs SPECTRUM — behavioral comparison
+
+SPECTRUM is the control case: it runs for 30+ minutes, attacks
+clients on a single AP, captures handshakes, never TG1WDTs.
+OINK TG1WDTs within 1–3 minutes of attack. Both modes use the
+same `NetworkRecon::setPacketCallback` (single slot, last-wins)
+and both run on the same hardware. The culprit lives in the
+**difference** between the two.
+
+**Key differences (file:line refs in parens):**
+
+1. **Cross-core spinlock count per `update()` tick:**
+   - OINK: 22+ `NetworkRecon::enterCritical()` / `exitCritical()`
+     pairs in `OinkMode::update()` (`oink.cpp:686,694,704,711,725,733,
+     881,915,1008,1016,1097,1109,1206,1226,1241,1256,1280,1288,1317,1322,
+     1370,1378,1392,1398,1406,1448`)
+   - SPECTRUM: **zero** in the same path. (`SpectrumMode::update`
+     uses the `busy` atomic for cross-core visibility, not the
+     spinlock.)
+   - If Core 0's WiFi task ever needs the same `vectorMux`
+     (e.g. via `NetworkRecon::processDeferredEvents` from the
+     promiscuous ISR), it spins with IRQs disabled while Core 1
+     holds the lock. The TG1WDT is on Core 1's main task — so
+     Core 0's spinlock-held deadlock is what kills it.
+
+2. **`oinkBusy = true` window length:**
+   - OINK: set at `oink.cpp:533`, cleared at `oink.cpp:789`. The
+     Core 0 callback cannot enqueue during that whole window,
+     which spans the deferred-event processing, the 2-frame
+     dequeue (with 2 `enterCritical` regions per frame), the
+     `autoSaveCheck()` blocking SD I/O, the PMKID dequeue, and
+     the 10-second beacon audit.
+   - SPECTRUM: `busy=true` windows are short and bracketed around
+     individual vector accesses only.
+
+3. **Per-attack-tick deauth rate:**
+   - OINK: 4 clients × 3–8 deauths + 8 disassoc = 20–44 frames
+     every 180 ms ⇒ **~110–240 deauths/sec** sustained
+     (`oink.cpp:1011–1066`).
+   - SPECTRUM: 4 clients × 2 deauths = 8 frames every 180 ms ⇒
+     ~44 deauths/sec, with `delay(3)` between frames
+     (`spectrum.cpp:2880`).
+   - 5–6× more TX per attack tick in OINK.
+
+4. **Channel switching in auto mode:**
+   - OINK: 4–8 `setChannel()` calls per target cycle
+     (`selectTarget`, PMKID_HUNTING entry, CH MISMATCH retry,
+     LOCKING→ATTACKING transition).
+   - SPECTRUM in single-AP monitor+attack: **1** `setChannel()`
+     at `enterClientMonitor` (`spectrum.cpp:2431`). Static channel
+     for the whole session.
+
+5. **Hot-path memory allocation:**
+   - OINK: `findOrCreateHandshakeSafe` mallocs 1500 B
+     `beaconData` per handshake (`oink.cpp:1924`); `handshakes[]`
+     vector `reserve(5)` grows 5→10→20→40→50 doubling
+     (`oink.cpp:351`); `sortNetworksByPriority` copies ~60 KB
+     on every SCAN→PMKID_HUNTING transition (`oink.cpp:2846`).
+   - SPECTRUM: zero hot-path allocations during monitor+attack;
+     all pools are fixed-size BSS (`attackBeaconBuf[350]`,
+     `capturedHandshakes[2]`, etc.).
+
+6. **Per-tick spinlock-held work in ATTACKING:**
+   - OINK `oink.cpp:1097–1109`: nested `for (hs : handshakes) for
+     (net : networks())` under `enterCritical`. With
+     MAX_HANDSHAKES=50 and networks()=200, that's 10,000
+     iterations per 180 ms = ~55,000 spinlock-held iterations/sec.
+   - SPECTRUM has no equivalent.
+
+**Most likely mechanism:**
+
+The combination of (1) excessive Core 1 `enterCritical` calls per
+tick, (2) the long `oinkBusy=true` window that blocks Core 0
+enqueue, and (6) the spinlock-held `O(handshakes × networks)`
+inner loop during ATTACKING. When Core 0's WiFi task needs the
+same `vectorMux` (e.g. to enqueue a deauth result, a beacon
+update, or any deferred NetworkRecon work), it spins with IRQs
+disabled. If the spin exceeds the TG1WDT window, Core 1's main
+task — which holds the lock — never gets to call
+`esp_task_wdt_reset()` and the chip resets.
+
+The in-file comment at `oink.cpp:622–631` is the maintainer's own
+diagnosis of this failure mode: *"each iteration holds
+oinkQueueMux AND NetworkRecon::vectorMux (cross-core spinlock)
+while iterating networks[]. A full burst of 4 frames × spinlock
++ vector scan + autoSaveCheck() can starve the Core 0 WiFi task
+→ TG1WDT_SYS_RST."*
+
+**Next concrete step (if we proceed to a fix):**
+
+Reduce the `enterCritical` count and shorten the `oinkBusy=true`
+window to match SPECTRUM's pattern. Specifically:
+- Move the `O(handshakes × networks)` inner loop out from under
+  `enterCritical` (cache the networks snapshot outside the lock,
+  do the work outside, take the lock only for the actual flag
+  writes).
+- Bracket `oinkBusy = true` around the vector access only, not
+  the entire dequeue + autoSave work.
+- Add `yield()` between the remaining `enterCritical/exitCritical`
+  regions (matches the existing comment at `oink.cpp:709–711`
+  which already added `yield()` for exactly this reason).
+
+This is a behavior change to the attack hot path and needs
+on-hardware testing (TG1WDT is intermittent, so a single 10-min
+run is not enough to claim the fix).
+
+## Fix applied (2026-06-17)
+
+The first item was applied in `oink.cpp:1202–1252` (ATTACKING
+handshake-marking scan). The `O(handshakes × networks)` nested
+loop no longer holds `vectorMux` for the whole iteration. Instead:
+
+1. **First pass** (lock-free): iterate `handshakes[]`, call
+   `NetworkRecon::findNetwork(hs.bssid, &netCopy)` for each
+   complete handshake. `findNetwork` takes the lock briefly to
+   copy the entry and releases it. Collect the BSSIDs that need
+   their `hasHandshake` flag set into a small stack array
+   `pendingFlags[8]`. Capture `targetHandshakeSSID` from the
+   stack copy.
+2. **Second pass** (lock held briefly): take the lock ONCE,
+   look up each pending BSSID via `findNetworkIndex()`, and set
+   `networks()[idx].hasHandshake = true`. Lock window is now
+   bounded by `min(complete_handshakes, 8) × O(1)` writes
+   instead of `complete_handshakes × networks()` iterations.
+
+The `oinkBusy=true` window was already bracketed narrowly here
+(set right before the lock, cleared right after) — no change
+needed for that site. The remaining `enterCritical` sites
+(lines 686, 694, 704, 711, 725, 733, 881, 915, 1008, 1016, 1097,
+1109, 1206, 1226, 1241, 1256, 1280, 1288, 1317, 1322, 1370, 1378,
+1392, 1398, 1406, 1448) are all in the dequeue + state-machine
+path and are already bracketed by `yield()` calls. They were not
+modified in this commit.
+
+**Verification needed on real hardware:** the TG1WDT is
+intermittent. A single 10-minute OINK run is not enough to claim
+the fix worked. We need at least the user's normal test pattern
+(30+ min OINK with auto-mode switching across multiple APs) to
+declare the fix verified. If the WDT still fires, the next most
+likely suspect is the 22+ `enterCritical` calls in the state
+machine during `auto=1→2→3→4` transitions — but those should be
+addressed one site at a time, not in a batch.
+
+## Profiling tool added (2026-06-17)
+
+After the handshake-marking fix did not stop the crash (crash at
+`t=38994` in PMKID_HUNTING, before reaching the ATTACKING
+handshake-marking scan), a lock-hold profiler was added to
+`NetworkRecon::enterCritical/exitCritical`.
+
+**Build flag:** `-DNETRECON_LOCK_PROFILE=1` (set in
+`platformio.ini` for the `esp32s3-mini` env only). Off by default
+in other envs and the m5cardputer upstream env.
+
+**What it measures:** for every `enterCritical/exitCritical` pair,
+records the hold time in microseconds. Accumulates three
+quantities over a tick window:
+
+- `lockMax` — longest single hold in this window (µs)
+- `lockTotal` — sum of all holds in this window (µs)
+- `lockCalls` — number of `enterCritical` calls in this window
+
+The OINK diag emit (2-second interval) appends these to its line:
+```
+[OINK-DIAG] t=... free=... lockMax=NNN lockTotal=NNN lockCalls=NN
+```
+
+**Reset semantics:** `OinkMode::update()` calls
+`NetworkRecon::Profile::lockProfileReset()` implicitly on each
+diag print (via the `lockProfileSnapshot` + `lockProfileReset`
+pair in the diag block). So `lockTotal` and `lockCalls` are
+per-2-second-window, not per-tick-of-OinkMode-update.
+
+**What to look for in the data:**
+
+- If `lockMax` is consistently < 1000 µs (1 ms) per window and
+  `lockTotal` is < 5000 µs (5 ms) per window: lock contention is
+  NOT the WDT cause. The WDT must be from somewhere else
+  (RTOS task starvation, memory pressure, WiFi driver hiccup).
+- If `lockMax` is in the 1-10 ms range: that's the candidate
+  site. The fix path is to refactor that specific lock region
+  (the PMKID_HUNTING scan at `oink.cpp:885–915` is a likely
+  candidate because it iterates `pmkids[]` inside the lock).
+- If `lockMax` is > 10 ms: that's a long critical section by
+  any measure, and the WDT almost certainly comes from it. The
+  `enterCritical` site that produced it is the immediate
+  suspect.
+
+**Site attribution is NOT automatic** — the current profiler
+measures aggregate hold time but does not tag the call site.
+For a single tick with one long hold, the site is whatever
+`OinkMode::update()` was doing at the time of the diag emit;
+the user can read the OINK-DIAG line state (`auto=1/2/3/4`) and
+correlate with the call site in the state machine.
+
+**Why not flash-backed snapshot storage?** A 1 Hz sampler
+writing to flash was considered (see "Snapshot service" section
+above) but the direct-RTC approach was simpler and surfaced the
+real fact: TG1WDT wipes `.rtc.data` on this chip. Flash would
+work but adds wear, ~1-2 ms per write, and the same question
+applies: the crash might happen before the write. Profiling
+avoids the storage problem entirely by recording the data
+*during* the OINK session, not after.

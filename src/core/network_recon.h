@@ -241,6 +241,31 @@ void enterCritical();
  */
 void exitCritical();
 
+// ============================================================================
+// Lock-hold Profiling (debug only — enabled by build flag)
+// ============================================================================
+//
+// Compile-time toggle. When defined, NetworkRecon::enterCritical/exitCritical
+// track per-tick max hold time and total hold time. The OINK diag emitter
+// reads and resets these each tick. Add to platformio.ini build_flags to use:
+//   -DNETRECON_LOCK_PROFILE=1
+//
+// Disabled by default — adds a few register reads per enter/exit but no
+// allocation, no logging, no extra locks.
+
+#ifdef NETRECON_LOCK_PROFILE
+namespace Profile {
+    // Reset per-tick accumulators. Call at the top of OinkMode::update().
+    void lockProfileReset();
+
+    // Snapshot the current per-tick totals. Does NOT reset.
+    //   maxHoldUs: longest single enter/exitCritical span this tick (µs)
+    //   totalHoldUs: sum of all enter/exitCritical spans this tick (µs)
+    //   callCount: number of enter/exitCritical pairs this tick
+    void lockProfileSnapshot(uint32_t& maxHoldUs, uint32_t& totalHoldUs, uint32_t& callCount);
+}
+#endif
+
 /**
  * @brief RAII wrapper for critical section
  */

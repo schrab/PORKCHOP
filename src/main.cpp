@@ -20,6 +20,7 @@
 #include "core/heap_policy.h"
 #include "core/heap_health.h"
 #include "core/network_recon.h"
+#include "core/pc_snapshot.h"
 #include "ui/display.h"
 #include "gps/gps.h"
 #include "piglet/avatar.h"
@@ -96,6 +97,10 @@ void setup() {
     delay(100);
     Serial.println("\n=== PORKCHOP STARTING (ESP32-S3 Mini) ===\n");
 
+    // Print any stored crash checkpoint from the previous boot. Must run
+    // before any other init that could interleave output. After this call
+    // the stored snapshot is cleared, so a clean boot only prints once.
+    PCSnapshot::printStoredSnapshot();
 
     // NVS init — must run before Preferences, Config, XP, or anything using NVS.
     // Recover automatically if the partition has stale data from a previous flash layout.
@@ -124,6 +129,10 @@ void setup() {
 
     // Init audio early (piezo on GPIO 7)
     hal_audio_init();
+
+    // Start the 1 Hz checkpoint sampler. Stored snapshots from prior boots
+    // have already been printed above; this just enables future capture.
+    PCSnapshot::init();
 
     // Reservation fence: push WiFi driver allocations high in heap, then free
     // the fence to leave large contiguous space at the bottom.
@@ -171,7 +180,7 @@ void setup() {
     Serial.println("=== PORKCHOP READY ===");
     Serial.printf("Piglet: %s\r\n", Config::personality().name);
     Serial.printf("[BOOT] After init: free=%u\r\n", (unsigned)ESP.getFreeHeap());
-    
+
     // Start background network reconnaissance service
     // This stabilizes heap by running WiFi promiscuous mode early
     // and provides shared network data for OINK/DONOHAM/SPECTRUM modes
@@ -232,6 +241,7 @@ void loop() {
     Mood::update();
 
     // Update main controller (handles modes, input, state)
+    PCSnapshot::checkpoint(PCSnapshot::PHASE_PORKCHOP);
     porkchop.update();
 
     // Update display
