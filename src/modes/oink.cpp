@@ -27,6 +27,8 @@
 #include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
 #include <atomic>  // For atomic beaconCaptured flag
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 // NOTE: handshakes[]/pmkids[] vectors are Core 1 territory.
 // Callback (Core 0) is a PURE ENQUEUER — copies raw frame data to pool, no vector access.
@@ -38,6 +40,16 @@
 // The promiscuous callback runs in WiFi task context (not true ISR), but still needs
 // synchronization to prevent race conditions on networks/handshakes vectors
 static volatile bool oinkBusy = false;
+
+// Autosave worker task. Pinned to Core 0 (the WiFi core) so SD I/O
+// never blocks the loop task on Core 1, which is what Core 1's IDLE
+// needs to run to feed the TG1WDT. Created in OinkMode::init(),
+// deleted in OinkMode::stop(). Triggered by xTaskNotifyGive().
+static TaskHandle_t s_autosaveTaskHandle = nullptr;
+
+// Forward declaration so OinkMode::init() can create the task. Body
+// is defined below, just before OinkMode::autoSaveCheck().
+static void autosaveTask(void* arg);
 
 // Minimum free heap thresholds (centralized in HeapPolicy)
 static const size_t HANDSHAKE_ALLOC_MIN_BLOCK = sizeof(CapturedHandshake) + HeapPolicy::kHandshakeAllocSlack;
@@ -386,6 +398,16 @@ void OinkMode::init() {
     
     // Load BOAR BROS exclusion list
     loadBoarBros();
+
+    // Create the autosave worker task. Pinned to Core 0 so its SD I/O
+    // never blocks the loop task on Core 1, which is what Core 1's IDLE
+    // task needs to run to feed the TWDT. Stack 4 KB is enough —
+    // autoSaveCheck uses small locals only.
+    if (s_autosaveTaskHandle == nullptr) {
+        xTaskCreatePinnedToCore(autosaveTask, "oinkAuto", 4096, nullptr,
+                                0 /* priority: below loop */,
+                                &s_autosaveTaskHandle, 0 /* core 0 */);
+    }
 }
 
 void OinkMode::start() {
@@ -447,15 +469,23 @@ void OinkMode::start() {
 
 void OinkMode::stop() {
     if (!running) return;
-    
+
     Serial.println("[OINK] Stopping...");
-    
+
     deauthing = false;
     scanning = false;
-    
+
     // Stop grass animation
     Avatar::setGrassMoving(false);
-    
+
+    // Delete the autosave worker task before clearing the data
+    // structures it reads. vTaskDelete is synchronous — the task
+    // is guaranteed not running when this returns.
+    if (s_autosaveTaskHandle != nullptr) {
+        vTaskDelete(s_autosaveTaskHandle);
+        s_autosaveTaskHandle = nullptr;
+    }
+
     // Clear our callbacks (NetworkRecon keeps running)
     NetworkRecon::setPacketCallback(nullptr);
     NetworkRecon::setNewNetworkCallback(nullptr);
@@ -666,7 +696,17 @@ void OinkMode::update() {
     }
     if (shouldAutoSave) {
         PCSnapshot::checkpoint(PCSnapshot::PHASE_OINK_AUTOSAVE);
-        autoSaveCheck();
+        // Dispatch the save to the worker task on Core 0 instead of
+        // running it inline. The inline path blocks the loop on SD
+        // I/O, starving Core 1's IDLE task → TG1WDT_SYS_RST. The
+        // worker has its own task context; the loop returns to its
+        // normal tick rate immediately.
+        if (s_autosaveTaskHandle != nullptr) {
+            xTaskNotifyGive(s_autosaveTaskHandle);
+        } else {
+            // Fallback before init() has created the worker.
+            autoSaveCheck();
+        }
     }
     // Core 0 was a PURE ENQUEUER — just memcpy'd raw frame data to pendingHsPool.
     // Core 1 (here) does ALL vector access: find/create handshake, store frame, check completion.
@@ -2089,6 +2129,23 @@ const uint8_t* OinkMode::getTargetBSSID() {
 
 bool OinkMode::isTargetHidden() {
     return targetCacheValid ? targetHiddenCache : false;
+}
+
+// Autosave worker task body. Runs on Core 0 at priority 0 (below
+// the WiFi task which is priority 1). Waits on a notification
+// from the loop, then calls autoSaveCheck() to do the SD I/O.
+// The loop task never blocks on SD I/O — it only sends a
+// notification. This fixes TG1WDT by letting Core 1's IDLE
+// task run during the SD work (the actual starved task).
+static void autosaveTask(void* /*arg*/) {
+    for (;;) {
+        // Block until the loop sets pendingAutoSave.
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        // Hand off to the existing autoSaveCheck body. It already
+        // uses vTaskDelay(1) between SD writes to let Core 1 IDLE
+        // run while we do the cluster allocation / file writes.
+        OinkMode::autoSaveCheck();
+    }
 }
 
 void OinkMode::autoSaveCheck() {
