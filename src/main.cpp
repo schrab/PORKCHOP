@@ -92,6 +92,15 @@ static void setupHeapLayout() {
                   (unsigned)afterFree, (unsigned)afterLargest);
 }
 
+// Per-subsystem init timing — prints the wall-clock duration of each
+// startup step so we can identify which subsystem is the long block.
+// Usage: `TIMED_INIT("name") { ...code... }` prints
+// "[BOOT] TIMED name: NNNus". Cheap (one Serial.printf per call).
+#define TIMED_INIT(label) \
+    for (uint32_t _timed_start = (uint32_t)esp_timer_get_time(), _timed_once = 1; _timed_once; \
+         _timed_once = 0, Serial.printf("[BOOT] TIMED %s: %uus\r\n", label, \
+                                        (unsigned)((uint32_t)esp_timer_get_time() - _timed_start)))
+
 void setup() {
     Serial.begin(115200);
     delay(100);
@@ -104,7 +113,7 @@ void setup() {
 
     // NVS init — must run before Preferences, Config, XP, or anything using NVS.
     // Recover automatically if the partition has stale data from a previous flash layout.
-    {
+    TIMED_INIT("nvs_flash_init") {
         esp_err_t nvsErr = nvs_flash_init();
         if (nvsErr == ESP_ERR_NVS_NO_FREE_PAGES || nvsErr == ESP_ERR_NVS_NEW_VERSION_FOUND) {
             Serial.printf("[BOOT] NVS corrupt (0x%x), erasing and reinitializing...\r\n", nvsErr);
@@ -115,67 +124,70 @@ void setup() {
     }
 
     // Init hal_gpio_setup — configure pins (display, input, audio, etc.)
-    hal_gpio_setup();
+    TIMED_INIT("hal_gpio_setup") { hal_gpio_setup(); }
 
     // Init display early for boot messages
-    hal_display_init();
-    hal_display_setBrightness(200);  // Initial brightness using ESP-IDF LEDC API
+    TIMED_INIT("hal_display_init") {
+        hal_display_init();
+        hal_display_setBrightness(200);  // Initial brightness using ESP-IDF LEDC API
+    }
 
-    // Init NeoPixel
-    hal_neopixel_init();
-
-    // Init battery ADC
-    hal_battery_init();
-
-    // Init audio early (piezo on GPIO 7)
-    hal_audio_init();
+    TIMED_INIT("hal_neopixel_init") { hal_neopixel_init(); }
+    TIMED_INIT("hal_battery_init") { hal_battery_init(); }
+    TIMED_INIT("hal_audio_init") { hal_audio_init(); }
 
     // Start the 1 Hz checkpoint sampler. Stored snapshots from prior boots
     // have already been printed above; this just enables future capture.
-    PCSnapshot::init();
+    TIMED_INIT("PCSnapshot::init") { PCSnapshot::init(); }
 
     // Reservation fence: push WiFi driver allocations high in heap, then free
     // the fence to leave large contiguous space at the bottom.
-    setupHeapLayout();
+    TIMED_INIT("setupHeapLayout") { setupHeapLayout(); }
 
     // Load configuration from SD
-    if (!Config::init()) {
-        Serial.println("[MAIN] Config init failed, using defaults");
+    TIMED_INIT("Config::init") {
+        if (!Config::init()) {
+            Serial.println("[MAIN] Config init failed, using defaults");
+        }
     }
 
     // Init SD logging (will be enabled via settings if user wants)
-    SDLog::init();
+    TIMED_INIT("SDLog::init") { SDLog::init(); }
 
     // Load previous session watermarks before resetting peaks
-    HeapHealth::loadPreviousSession();
+    TIMED_INIT("HeapHealth::loadPreviousSession") { HeapHealth::loadPreviousSession(); }
 
     // TLS reserve disabled: browser handles TLS, keep heap for UI/file transfer.
 
     // Init display system
-    Display::init();
+    TIMED_INIT("Display::init") { Display::init(); }
 
     // Init audio early so boot sound plays
-    SFX::init();
+    TIMED_INIT("SFX::init") { SFX::init(); }
 
     // Show boot splash (3 screens: OINK OINK, MY NAME IS, PORKCHOP)
-    Display::showBootSplash();
+    TIMED_INIT("Display::showBootSplash") { Display::showBootSplash(); }
 
     // Apply saved brightness
-    hal_display_setBrightness(Config::personality().brightness * 255 / 100);
+    TIMED_INIT("hal_display_setBrightness") {
+        hal_display_setBrightness(Config::personality().brightness * 255 / 100);
+    }
 
     // Initialize piglet personality
-    Avatar::init();
-    Mood::init();
+    TIMED_INIT("Avatar::init") { Avatar::init(); }
+    TIMED_INIT("Mood::init") { Mood::init(); }
 
     // Initialize GPS (if enabled)
-    if (Config::gps().enabled) {
-        GPS::init(PIN_GPS_TX, PIN_GPS_RX, Config::gps().baudRate);
+    TIMED_INIT("GPS::init") {
+        if (Config::gps().enabled) {
+            GPS::init(PIN_GPS_TX, PIN_GPS_RX, Config::gps().baudRate);
+        }
     }
 
     // Initialize modes
-    OinkMode::init();
-    WarhogMode::init();
-    porkchop.init();
+    TIMED_INIT("OinkMode::init") { OinkMode::init(); }
+    TIMED_INIT("WarhogMode::init") { WarhogMode::init(); }
+    TIMED_INIT("porkchop.init") { porkchop.init(); }
 
     Serial.println("=== PORKCHOP READY ===");
     Serial.printf("Piglet: %s\r\n", Config::personality().name);
