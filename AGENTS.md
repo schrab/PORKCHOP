@@ -223,6 +223,11 @@ promiscuous packet callback (one at a time).
   The callback is a PURE ENQUEUER — copies raw frame data to `pendingHsPool[]`,
   no vector iteration. Core 1 dequeue does all vector lookups and writes.
 
+**Manual channel lock**:
+- `setManualChannelLock(ch)` pins WiFi to a user-selected channel (1–13).
+  All mode `lockChannel()`/`unlockChannel()` calls become no-ops until cleared.
+- Activated by UP/DOWN in OINK/DNH modes. Cleared on mode exit (`stop()`).
+
 ### SD Format (`core/sd_format.h/.cpp`)
 SD card format utility. Provides UI and logic for formatting the SD card.
 Called from the FORMATSD system menu.

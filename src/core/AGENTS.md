@@ -48,6 +48,10 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
 - `getCore0PacketCount()` returns an atomic packet counter incremented in
   the promiscuous callback. Used by OINK diag as `c0pkt=N` delta to detect
   Core 0 heartbeat stalls (PSRAM bus stall / IDLE starvation).
+- **Manual channel lock**: `setManualChannelLock(ch)` overrides all mode-driven
+  `lockChannel()`/`unlockChannel()` calls (they become no-ops). User-initiated
+  via UP/DOWN in OINK/DNH. Cleared on `stop()` (mode exit). `isChannelLocked()`
+  returns true when either manual or mode lock is active.
 
 ### WarTales flush cadence
 - Open file handle per session. Flush every 10 events or 10s.

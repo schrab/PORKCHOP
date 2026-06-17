@@ -174,16 +174,18 @@ int findNetworkIndex(const uint8_t* bssid);
 /**
  * @brief Lock to specific channel (for targeted operations)
  * Disables channel hopping until unlocked
+ * @note No-op when manual channel lock is active (see setManualChannelLock)
  */
 void lockChannel(uint8_t channel);
 
 /**
  * @brief Unlock channel and resume hopping
+ * @note No-op when manual channel lock is active
  */
 void unlockChannel();
 
 /**
- * @brief Check if channel is locked
+ * @brief Check if channel is locked (by mode or manual)
  */
 bool isChannelLocked();
 
@@ -191,6 +193,32 @@ bool isChannelLocked();
  * @brief Manually set channel (temporary, hopping will override unless locked)
  */
 void setChannel(uint8_t channel);
+
+// ============================================================================
+// Manual Channel Lock (user-initiated, overrides mode auto-lock)
+// ============================================================================
+
+/**
+ * @brief Lock channel from user input. Overrides all mode lockChannel/unlockChannel
+ * calls until cleared. Used by OINK/DNH UP/DOWN joystick control.
+ * @param channel WiFi channel 1-13
+ */
+void setManualChannelLock(uint8_t channel);
+
+/**
+ * @brief Clear manual lock, restore normal mode-driven channel control
+ */
+void clearManualChannelLock();
+
+/**
+ * @brief Check if manual (user) channel lock is active
+ */
+bool isManualChannelLocked();
+
+/**
+ * @brief Get the manually-locked channel (0 if not manually locked)
+ */
+uint8_t getManualLockedChannel();
 
 // ============================================================================
 // Mode-Specific Callbacks

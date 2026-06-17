@@ -826,6 +826,28 @@ void Porkchop::handleInput() {
             return;
         }
     }
+
+    // Manual channel lock — UP/DOWN in OINK and DNH modes
+    if (currentMode == PorkchopMode::OINK_MODE || currentMode == PorkchopMode::DNH_MODE) {
+        if (hal_input_wasPressed(KEY_UP) || hal_input_wasPressed(KEY_DOWN)) {
+            uint8_t ch;
+            if (NetworkRecon::isManualChannelLocked()) {
+                ch = NetworkRecon::getManualLockedChannel();
+                if (hal_input_wasPressed(KEY_UP)) {
+                    ch = (ch >= 13) ? 1 : ch + 1;
+                } else {
+                    ch = (ch <= 1) ? 13 : ch - 1;
+                }
+            } else {
+                ch = NetworkRecon::getCurrentChannel();
+                if (ch < 1 || ch > 13) ch = 1;
+            }
+            NetworkRecon::setManualChannelLock(ch);
+            char buf[24];
+            snprintf(buf, sizeof(buf), "CH LOCK: %d", ch);
+            Display::showToast(buf, 1500);
+        }
+    }
     
     // WARHOG mode - ESC returns to idle globally
     if (currentMode == PorkchopMode::WARHOG_MODE) {

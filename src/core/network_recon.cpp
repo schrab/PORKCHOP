@@ -29,6 +29,8 @@ static bool channelLockedBeforePause = false;  // [BUG4 FIX] Save state for paus
 static uint8_t lockedChannel = 0;
 static uint8_t currentChannel = 1;
 static uint8_t currentChannelIndex = 0;
+static bool manualChannelLock = false;
+static uint8_t manualLockedChannel = 0;
 static uint32_t lastHopTime = 0;
 static uint32_t lastCleanupTime = 0;
 static uint32_t startTime = 0;
@@ -885,6 +887,8 @@ void stop() {
     
     running = false;
     paused = false;
+    manualChannelLock = false;
+    manualLockedChannel = 0;
     
     WiFiUtils::stopPromiscuous();
     
@@ -1121,6 +1125,7 @@ int findNetworkIndex(const uint8_t* bssid) {
 }
 
 void lockChannel(uint8_t channel) {
+    if (manualChannelLock) return;  // User lock has priority
     if (channel < 1 || channel > 14) return;
 
     lockedChannel = channel;
@@ -1134,11 +1139,13 @@ void lockChannel(uint8_t channel) {
 }
 
 void unlockChannel() {
+    if (manualChannelLock) return;  // User lock has priority
     channelLocked.store(false, std::memory_order_release);
     Serial.println("[RECON] Channel unlocked, resuming hopping");
 }
 
 bool isChannelLocked() {
+    if (manualChannelLock) return true;
     return channelLocked.load(std::memory_order_acquire);
 }
 
@@ -1150,6 +1157,35 @@ void setChannel(uint8_t channel) {
     const uint32_t dt = (uint32_t)esp_timer_get_time() - t0;
     Serial.printf("[RECON] setChannel ch=%d err=%d dt=%uus\r\n",
                   channel, (int)err, (unsigned)dt);
+}
+
+void setManualChannelLock(uint8_t channel) {
+    if (channel < 1 || channel > 13) return;
+    manualChannelLock = true;
+    manualLockedChannel = channel;
+    currentChannel = channel;
+    channelLocked.store(true, std::memory_order_release);
+    const uint32_t t0 = (uint32_t)esp_timer_get_time();
+    esp_err_t err = esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    const uint32_t dt = (uint32_t)esp_timer_get_time() - t0;
+    Serial.printf("[RECON] Manual channel lock: CH %d (set_channel err=%d dt=%uus)\r\n",
+                  channel, (int)err, (unsigned)dt);
+}
+
+void clearManualChannelLock() {
+    if (!manualChannelLock) return;
+    manualChannelLock = false;
+    manualLockedChannel = 0;
+    channelLocked.store(false, std::memory_order_release);
+    Serial.println("[RECON] Manual channel lock cleared, resuming hopping");
+}
+
+bool isManualChannelLocked() {
+    return manualChannelLock;
+}
+
+uint8_t getManualLockedChannel() {
+    return manualLockedChannel;
 }
 
 void setPacketCallback(PacketCallback callback) {

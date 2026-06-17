@@ -1278,8 +1278,8 @@ void OinkMode::update() {
                     
                     uint8_t broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
-                    // Skip channel verification if NetworkRecon is paused (WiFi state unstable during pause/resume)
-                    if (!NetworkRecon::isPaused()) {
+                    // Skip channel verification if NetworkRecon is paused or manual channel lock active
+                    if (!NetworkRecon::isPaused() && !NetworkRecon::isManualChannelLocked()) {
                         uint8_t actualCh = 0;
                         wifi_second_chan_t secondCh = WIFI_SECOND_CHAN_NONE;
                         esp_wifi_get_channel(&actualCh, &secondCh);

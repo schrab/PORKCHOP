@@ -80,6 +80,10 @@
 - Modes use `hal_input_wasPressed()` for discrete presses.
 - `hal_input_shouldExit()` checks ESC pressed.
 - LEFT/RIGHT for tier/category cycling. UP/DOWN for list navigation.
+- **OINK/DNH UP/DOWN**: manual channel lock. First press locks current channel
+  (shows toast `CH LOCK: X`). Subsequent UP/DOWN cycles 1–13 with wrap.
+  Lock persists until mode exit (ESC). While active, mode `lockChannel()`/
+  `unlockChannel()` are no-ops. OINK channel mismatch check suppressed.
 - ENTER/SELECT for primary action.
 - SPECTRUM uses long-press: `hal_input_isLongUp()` (enter attack mode), `hal_input_isLongRight()` (filter cycle), `hal_input_isLongEnter()` (reveal mode). Long-press checks must run **before** short-press one-shot guards.
 
