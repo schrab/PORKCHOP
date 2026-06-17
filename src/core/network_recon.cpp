@@ -910,8 +910,6 @@ void pause() {
     
     Serial.println("[RECON] Pausing promiscuous mode...");
     
-    paused = true;
-    
     // [BUG4 FIX] Save and clear channel lock - will restore on resume if mode still active
     channelLockedBeforePause = channelLocked.load(std::memory_order_acquire);
     if (channelLockedBeforePause) {
@@ -922,6 +920,8 @@ void pause() {
     // Disable promiscuous but keep WiFi STA active
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(nullptr);
+    
+    paused = true;  // Set AFTER disabling promiscuous to prevent Core 0 callback race
     
     Serial.println("[RECON] Paused (WiFi STA still active)");
 }
