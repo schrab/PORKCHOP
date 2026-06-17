@@ -2509,6 +2509,9 @@ bool OinkMode::savePMKID22000(const CapturedPMKID& p, const char* path) {
         sprintf(essidHex + i*2, "%02x", (uint8_t)p.ssid[i]);
     }
     essidHex[ssidLen * 2] = 0;
+    // Pad to 20 bytes (40 hex) minimum — hashcat 22000 requires it
+    for (int i = ssidLen * 2; i < 40; i++) essidHex[i] = '0';
+    if (ssidLen * 2 < 40) essidHex[40] = 0;
     
     // Write: WPA*01*PMKID*MAC_AP*MAC_CLIENT*ESSID***01
     // MESSAGEPAIR 01 = PMKID taken from AP
@@ -2586,6 +2589,9 @@ bool OinkMode::saveHandshake22000(const CapturedHandshake& hs, const char* path)
         sprintf(essidHex + i*2, "%02x", (uint8_t)hs.ssid[i]);
     }
     essidHex[ssidLen * 2] = 0;
+    // Pad to 20 bytes (40 hex) minimum — hashcat 22000 requires it
+    for (int i = ssidLen * 2; i < 40; i++) essidHex[i] = '0';
+    if (ssidLen * 2 < 40) essidHex[40] = 0;
     
     // ANonce from M1 or M3 (offset 17, 32 bytes)
     char nonceHex[65];

@@ -80,6 +80,11 @@
 - SPECTRUM attack mode: PMKIDs + full 4-way handshakes (PCAP + hashcat 22000) saved to SD (same dir as OINK)
 - WARHOG: GPS + network CSV to SD (`/porkchop/wardriving/`)
 - Captures are low-frequency SD writes (acceptable)
+- **Hashcat 22000 ESSID padding**: The ESSID hex field must be zero-padded to at
+  least 20 bytes (40 hex chars). Hashcat rejects shorter fields with
+  "Separator unmatched". All 6 save sites (oink/donoham/spectrum) pad after
+  encoding. Confirmed by cracking RAINY HOÚE HOTEL T6 (20-byte SSID worked)
+  while PONTIFEX (8-byte SSID) failed until padded.
 
 ## Verification
 
