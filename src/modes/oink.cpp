@@ -41,9 +41,9 @@
 // synchronization to prevent race conditions on networks/handshakes vectors
 static volatile bool oinkBusy = false;
 
-// Autosave worker task. Pinned to Core 0 (the WiFi core) so SD I/O
-// never blocks the loop task on Core 1, which is what Core 1's IDLE
-// needs to run to feed the TG1WDT. Created in OinkMode::init(),
+// Autosave worker task. Pinned to Core 1 at priority 2 (above loop)
+// so SD I/O preempts the loop but leaves Core 0 untouched — WiFi task
+// and IDLE0 always run, feeding the IWDT. Created in OinkMode::init(),
 // deleted in OinkMode::stop(). Triggered by xTaskNotifyGive().
 static TaskHandle_t s_autosaveTaskHandle = nullptr;
 
@@ -74,6 +74,11 @@ static uint8_t pendingDeauthStation[6] = {0};
 static volatile bool pendingHandshakeComplete = false;
 static char pendingHandshakeSSID[33] = {0};
 static volatile bool pendingAutoSave = false;  // Trigger autoSaveCheck from main loop
+
+// Mutex protecting handshakes[] and pmkids[] vectors.
+// autoSaveCheck iterates for SD writes; findOrCreateHandshakeSafe
+// (dequeue) pushes new elements. Defensive — both now on Core 1.
+static SemaphoreHandle_t s_hsMux = nullptr;
 
 static volatile bool pendingPMKIDCapture = false;
 static char pendingPMKIDSSID[33] = {0};
@@ -415,14 +420,20 @@ void OinkMode::init() {
     // Load BOAR BROS exclusion list
     loadBoarBros();
 
-    // Create the autosave worker task. Pinned to Core 0 so its SD I/O
-    // never blocks the loop task on Core 1, which is what Core 1's IDLE
-    // task needs to run to feed the TWDT. Stack 4 KB is enough —
-    // autoSaveCheck uses small locals only.
+    // Create mutex for cross-core handshake/pmkid vector protection.
+    if (s_hsMux == nullptr) {
+        s_hsMux = xSemaphoreCreateMutex();
+    }
+
+    // Create the autosave worker task. Pinned to Core 1 at priority 2
+    // (above main loop's priority 1) so it preempts the loop during SD I/O.
+    // Core 0 is untouched — WiFi task + IDLE0 always run, feeding the IWDT.
+    // pause()/resume() called directly from Core 1 (DONOHAM proven pattern).
+    // Stack 4 KB is enough — autoSaveCheck uses small locals only.
     if (s_autosaveTaskHandle == nullptr) {
         xTaskCreatePinnedToCore(autosaveTask, "oinkAuto", 4096, nullptr,
-                                0 /* priority: below loop */,
-                                &s_autosaveTaskHandle, 0 /* core 0 */);
+                                2 /* priority: above loop */,
+                                &s_autosaveTaskHandle, 1 /* core 1 */);
     }
 }
 
@@ -501,7 +512,6 @@ void OinkMode::stop() {
         vTaskDelete(s_autosaveTaskHandle);
         s_autosaveTaskHandle = nullptr;
     }
-
     // Clear our callbacks (NetworkRecon keeps running)
     NetworkRecon::setPacketCallback(nullptr);
     NetworkRecon::setNewNetworkCallback(nullptr);
@@ -2101,25 +2111,29 @@ void OinkMode::processEAPOL(const uint8_t* payload, uint16_t len,
 // Safe versions for main thread use (Core 1 only — no spinlock needed since callback
 // never touches handshakes[]/pmkids[] vectors)
 int OinkMode::findOrCreateHandshakeSafe(const uint8_t* bssid, const uint8_t* station) {
-    // Core 1 only — callback never touches handshakes[], no spinlock needed
+    // Core 1 only — but must lock s_hsMux against Core 0 autoSaveCheck.
+    if (s_hsMux) xSemaphoreTake(s_hsMux, portMAX_DELAY);
+
+    int result = -1;
     // Look for existing
     for (int i = 0; i < (int)handshakes.size(); i++) {
         if (memcmp(handshakes[i].bssid, bssid, 6) == 0 &&
             memcmp(handshakes[i].station, station, 6) == 0) {
-            return i;
+            result = i;
+            goto unlock_hs;
         }
     }
     
     // Limit check
-    if (handshakes.size() >= MAX_HANDSHAKES) return -1;
+    if (handshakes.size() >= MAX_HANDSHAKES) goto unlock_hs;
     // Pressure gate: block new handshakes at Warning+ (aggressive shedding)
-    if (HeapHealth::getPressureLevel() >= HeapPressureLevel::Warning) return -1;
-    if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForHandshakeAdd) return -1;
+    if (HeapHealth::getPressureLevel() >= HeapPressureLevel::Warning) goto unlock_hs;
+    if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForHandshakeAdd) goto unlock_hs;
     if (handshakes.size() >= handshakes.capacity()) {
-        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForHandshakeAdd) return -1;
+        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForHandshakeAdd) goto unlock_hs;
     }
     
-    // Create new entry
+    { // Create new entry
     CapturedHandshake hs = {0};
     memcpy(hs.bssid, bssid, 6);
     memcpy(hs.station, station, 6);
@@ -2127,7 +2141,7 @@ int OinkMode::findOrCreateHandshakeSafe(const uint8_t* bssid, const uint8_t* sta
     hs.firstSeen = millis();
     hs.lastSeen = millis();
     hs.saved = false;
-    hs.saveAttempts = 0;  // Start with no attempts
+    hs.saveAttempts = 0;
     hs.beaconData = nullptr;
     hs.beaconLen = 0;
     
@@ -2145,37 +2159,44 @@ int OinkMode::findOrCreateHandshakeSafe(const uint8_t* bssid, const uint8_t* sta
     
     try {
         handshakes.push_back(hs);
+        result = handshakes.size() - 1;
     } catch (const std::bad_alloc&) {
         if (hs.beaconData) {
             free(hs.beaconData);
             hs.beaconData = nullptr;
         }
         SDLog::log("OINK", "Failed to create handshake: out of memory");
-        return -1;
     }
-    int idx = handshakes.size() - 1;
-    return idx;
+    } // end CapturedHandshake scope
+
+unlock_hs:
+    if (s_hsMux) xSemaphoreGive(s_hsMux);
+    return result;
 }
 
 int OinkMode::findOrCreatePMKIDSafe(const uint8_t* bssid, const uint8_t* station) {
-    // Core 1 only — callback never touches pmkids[], no spinlock needed
+    // Core 1 only — but must lock s_hsMux against Core 0 autoSaveCheck.
+    if (s_hsMux) xSemaphoreTake(s_hsMux, portMAX_DELAY);
+
+    int result = -1;
     // Look for existing
     for (int i = 0; i < (int)pmkids.size(); i++) {
         if (memcmp(pmkids[i].bssid, bssid, 6) == 0 &&
             memcmp(pmkids[i].station, station, 6) == 0) {
-            return i;
+            result = i;
+            goto unlock_pmkid;
         }
     }
     
     // Limit check
-    if (pmkids.size() >= MAX_PMKIDS) return -1;
+    if (pmkids.size() >= MAX_PMKIDS) goto unlock_pmkid;
     // Pressure gate: block new PMKIDs at Warning+ (aggressive shedding)
-    if (HeapHealth::getPressureLevel() >= HeapPressureLevel::Warning) return -1;
+    if (HeapHealth::getPressureLevel() >= HeapPressureLevel::Warning) goto unlock_pmkid;
     if (pmkids.size() >= pmkids.capacity()) {
-        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForOinkNetworkAdd) return -1;
+        if (ESP.getFreeHeap() < HeapPolicy::kMinHeapForOinkNetworkAdd) goto unlock_pmkid;
     }
     
-    // Create new entry
+    { // Create new entry
     CapturedPMKID p = {0};
     memcpy(p.bssid, bssid, 6);
     memcpy(p.station, station, 6);
@@ -2185,12 +2206,15 @@ int OinkMode::findOrCreatePMKIDSafe(const uint8_t* bssid, const uint8_t* station
     
     try {
         pmkids.push_back(p);
+        result = pmkids.size() - 1;
     } catch (const std::bad_alloc&) {
         SDLog::log("OINK", "Failed to create PMKID: out of memory");
-        return -1;
     }
-    int idx = pmkids.size() - 1;
-    return idx;
+    }
+
+unlock_pmkid:
+    if (s_hsMux) xSemaphoreGive(s_hsMux);
+    return result;
 }
 
 uint16_t OinkMode::getCompleteHandshakeCount() {
@@ -2222,20 +2246,23 @@ bool OinkMode::isTargetHidden() {
     return targetCacheValid ? targetHiddenCache : false;
 }
 
-// Autosave worker task body. Runs on Core 0 at priority 0 (below
-// the WiFi task which is priority 1). Waits on a notification
-// from the loop, then calls autoSaveCheck() to do the SD I/O.
-// The loop task never blocks on SD I/O — it only sends a
-// notification. This fixes TG1WDT by letting Core 1's IDLE
-// task run during the SD work (the actual starved task).
+// Autosave worker task body. Runs on Core 1 at priority 2 (above main loop).
+// Preempts the loop during SD I/O but leaves Core 0 untouched — WiFi task
+// and IDLE0 always run, feeding the IWDT. pause()/resume() called directly
+// from Core 1 (proven safe — DONOHAM pattern). No cross-core handshake.
 static void autosaveTask(void* /*arg*/) {
     for (;;) {
         // Block until the loop sets pendingAutoSave.
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        // Hand off to the existing autoSaveCheck body. It already
-        // uses vTaskDelay(1) between SD writes to let Core 1 IDLE
-        // run while we do the cluster allocation / file writes.
+
+        // Pause promiscuous from Core 1 — safe (DONOHAM proven).
+        // WiFi task on Core 0 keeps running; IDLE0 feeds the IWDT.
+        NetworkRecon::pause();
+
         OinkMode::autoSaveCheck();
+
+        // Resume promiscuous mode.
+        NetworkRecon::resume();
     }
 }
 
@@ -2244,13 +2271,13 @@ void OinkMode::autoSaveCheck() {
         return;
     }
 
-    // Reset the task watchdog for the calling task (loop task) at the start.
-    // The loop task is auto-subscribed to TWDT on ESP-IDF Arduino (confirmed
-    // by src/core/sd_format.cpp:306,357,366 which already calls
-    // esp_task_wdt_reset() from the loop task). This guarantees the watchdog
-    // is fed before any potentially-long SD I/O begins, even if the
-    // IDLE task's reset hook is starved while we hold oinkBusy.
+    // Reset the task watchdog for the calling task (autosaveTask on Core 1).
+    // The task is auto-subscribed to TWDT on ESP-IDF Arduino.
+    // This guarantees the watchdog is fed before any potentially-long SD I/O.
     esp_task_wdt_reset();
+
+    // Lock handshakes/pmkids vectors — defensive mutex, both tasks on Core 1.
+    if (s_hsMux) xSemaphoreTake(s_hsMux, portMAX_DELAY);
 
     // Check if there's anything to save before pausing promiscuous
     bool hasUnsavedHS = false;
@@ -2270,6 +2297,7 @@ void OinkMode::autoSaveCheck() {
     }
 
     if (!hasUnsavedHS && !hasUnsavedPMKID) {
+        if (s_hsMux) xSemaphoreGive(s_hsMux);
         return;  // Nothing to save, skip promiscuous pause
     }
 
@@ -2279,17 +2307,9 @@ void OinkMode::autoSaveCheck() {
                   (unsigned)pmkids.size(),
                   (unsigned)millis());
 
-    // Pause promiscuous mode during SD writes to prevent Core 0 WiFi task
-    // from starving the TG1 interrupt handler while blocking on SPI I/O.
-    // Same proven pattern as DONOHAM (see donoham.cpp:484-495, 616-626,
-    // 766-775). The previous attempt at this used WiFi.disconnect(true,true)
-    // in resume() which corrupted the TX buffer pool — fixed by BUG4
-    // (WiFi.disconnect(false,false) in NetworkRecon::resume()).
-    bool pausedByUs = false;
-    if (NetworkRecon::isRunning()) {
-        NetworkRecon::pause();
-        pausedByUs = true;
-    }
+    // Pause/resume is handled by autosaveTask (Core 1) — calls
+    // NetworkRecon::pause() before autoSaveCheck and resume() after.
+    // Core 0 untouched: WiFi task + IDLE0 always run, feeding IWDT.
 
     // Save any unsaved complete handshakes
     for (auto& hs : handshakes) {
@@ -2365,16 +2385,11 @@ void OinkMode::autoSaveCheck() {
     const uint32_t pmkidDt = (uint32_t)esp_timer_get_time() - pmkidStart;
     Serial.printf("[OINK] save pmkid dt=%uus\r\n", (unsigned)pmkidDt);
 
-    // Resume promiscuous mode after SD writes complete.
-    // Core 0 WiFi task can now process packets again without
-    // contention with blocking SPI I/O.
-    if (pausedByUs) {
-        NetworkRecon::resume();
-    }
-
     const uint32_t autosaveDt = (uint32_t)esp_timer_get_time() - autosaveStart;
     Serial.printf("[OINK] autosave exit dt=%uus t=%u\r\n",
                   (unsigned)autosaveDt, (unsigned)millis());
+
+    if (s_hsMux) xSemaphoreGive(s_hsMux);
 }
 
 // PCAP file format structures

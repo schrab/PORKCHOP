@@ -43,11 +43,41 @@ def patch_wifi_buffers():
         # Non-fatal: don't break the build over a framework patch
         print(f"[pre_build] patch_wifi_buffers failed: {e}", file=sys.stderr)
 
+def patch_int_wdt():
+    """Bump Interrupt Watchdog timeout from 300ms to 5000ms.
+
+    The Arduino framework ships pre-built libesp_system.a with
+    CONFIG_ESP_INT_WDT_TIMEOUT_MS=300 in sdkconfig.h. board_build.sdkconfig
+    is IGNORED for pre-built libs. OINK autosave SD I/O + WiFi driver state
+    changes can block interrupts >300ms, triggering TG1WDT_SYS_RST.
+    Patches the framework sdkconfig.h directly. Idempotent.
+    """
+    from pathlib import Path
+    candidates = [
+        Path.home() / ".platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_qspi/include/sdkconfig.h",
+        Path.home() / ".platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_opi/include/sdkconfig.h",
+    ]
+    for p in candidates:
+        if not p.exists():
+            continue
+        text = p.read_text(encoding="utf-8")
+        old = "#define CONFIG_ESP_INT_WDT_TIMEOUT_MS 300"
+        new = "#define CONFIG_ESP_INT_WDT_TIMEOUT_MS 5000 /* PORKCHOP: 300->5000 for OINK autosave */"
+        if "5000" in text and "INT_WDT_TIMEOUT_MS" in text:
+            print(f"[patch_int_wdt] already patched: {p}")
+            return
+        if old in text:
+            p.write_text(text.replace(old, new, 1), encoding="utf-8")
+            print(f"[patch_int_wdt] patched 300->5000: {p}")
+        else:
+            print(f"[patch_int_wdt] WARNING: original value not found in {p}", file=sys.stderr)
+
 # Apply framework patches IMMEDIATELY at SCons environment setup, so the patched
 # framework sources are compiled when the framework's own build runs (not after).
 # 2026-06-16: minimal patch — only dynamic TX 32→64. Earlier broader patch
 # (also bumping RX) added ~13KB internal RAM that broke the display sprite.
 patch_wifi_buffers()
+patch_int_wdt()
 
 def pre_build_callback(source, target, env):
     """Generate build info header"""

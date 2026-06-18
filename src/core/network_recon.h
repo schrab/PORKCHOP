@@ -66,6 +66,21 @@ void pause();
 void resume();
 
 /**
+ * @brief Suspend the promiscuous RX callback without disabling promiscuous mode.
+ * Lightweight, non-blocking: just sets esp_wifi_set_promiscuous_rx_cb(nullptr).
+ * The WiFi task continues running (TG1 ISR stays alive) but no callbacks fire.
+ * Safe from Core 0 contexts where pause() would block the WiFi driver → TG1WDT.
+ * @warning Caller MUST call restoreRxCallback() after the critical section.
+ */
+void suspendRxCallback();
+
+/**
+ * @brief Restore the promiscuous RX callback after suspendRxCallback().
+ * Re-registers NetworkRecon's promiscuousCallback with the WiFi driver.
+ */
+void restoreRxCallback();
+
+/**
  * @brief Called every loop iteration
  * Handles channel hopping, stale network cleanup, deferred event processing
  */

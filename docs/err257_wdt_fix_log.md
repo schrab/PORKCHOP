@@ -186,3 +186,27 @@ at donoham.cpp:484-495). `NetworkRecon::pause()` stops promiscuous RX — the
 callback returns immediately, Core 0 SD writes finish without WiFi contention.
 `NetworkRecon::resume()` after saves re-enables with `WiFi.disconnect(false,false)`
 (BUG4 fix — safe). Logged as `[OINK] autosave enter / exit` timing lines.
+
+**Update (2026-06-18): Cross-core pause handshake + IWDT bump + vector mutex.**
+Both `NetworkRecon::pause()` and `suspendRxCallback()` from Core 0's autosaveTask
+caused TG1WDT (debug_TG1WDT-6.txt PC:0x4207653f, suspend attempt PC:0x4207656f).
+Even cross-core pause from Core 1 still crashed (PC:0x4207668b) — root cause:
+`CONFIG_ESP_INT_WDT_TIMEOUT_MS=300` in pre-built `libesp_system.a` (framework ships
+hardcoded .a files, `board_build.sdkconfig` is IGNORED). The cross-core spin-wait
+on Core 0 starved IDLE0 because the WiFi task (priority 1) always preempted it.
+Also found cross-core data race: `handshakes[]` vector iterated by Core 0 while
+Core 1 dequeue pushes new elements (push_back reallocation → use-after-free).
+
+**Update (2026-06-18): FINAL FIX — autosaveTask moved to Core 1.**
+All previous approaches failed because any SD I/O or WiFi API call from Core 0
+starves IDLE0 (WiFi task + spin-wait contention). The definitive fix:
+
+- `autosaveTask` pinned to **Core 1** at priority 2 (above main loop).
+- `NetworkRecon::pause()` / `resume()` called directly from Core 1 (DONOHAM proven pattern).
+- Core 0 untouched — WiFi task + IDLE0 always run, feeding IWDT naturally.
+- No cross-core handshake needed. No atomic flags. No spin-waits.
+- `s_hsMux` mutex kept as defensive measure (both tasks now on Core 1).
+- `scripts/pre_build.py::patch_int_wdt()` patches framework `sdkconfig.h`
+  (300ms→5000ms) as defense-in-depth. Idempotent, auto-applied on every build.
+- `sdkconfig.esp32s3_mini` also sets `CONFIG_ESP_INT_WDT_TIMEOUT_MS=5000`
+  (documentation/future-proofing — currently ignored by pre-built libs).

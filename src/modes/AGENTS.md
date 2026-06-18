@@ -48,18 +48,18 @@
   (safe on Core 1) with `oinkBusy=true` to gate Core 0 callbacks.
 - SSID lookups from `networks[]` are **deferred** from Core 0 to Core 1 dequeue handlers.
 
-### OINK autosave: pause promiscuous during SD writes
-- `autoSaveCheck()` (via `autosaveTask` on Core 0) pauses promiscuous mode before
-  blocking SD I/O. Matches DONOHAM's proven pattern (donoham.cpp:484-495, 616-626,
-  766-775). Without this pause, the Core 0 WiFi task processes RX packets during
-  the full PCAP + 22000 + PMKID write sequence, starving the TG1 interrupt
-  handler → TG1WDT_SYS_RST.
-- `NetworkRecon::pause()` stops promiscuous RX (`esp_wifi_set_promiscuous(false)`)
-  and clears the WiFi-level callback. `resume()` re-enables with `WiFi.disconnect
-  (false,false)` (BUG4 fix — safe TX buffer pool, no state corruption).
-- The previous attempt to pause during autosave (before BUG4) used
-  `WiFi.disconnect(true,true)` which reset the TX descriptor pool → TG1WDT on
-  resume. The current `resume()` avoids this.
+### OINK autosave: Core 1 task + vector mutex
+- `autoSaveCheck()` runs via `autosaveTask` on **Core 1** (priority 2, above main loop).
+- Core 0 is untouched — WiFi task + IDLE0 always run, feeding the IWDT.
+- `pause()`/`resume()` called directly from Core 1 (DONOHAM proven pattern).
+- Previous cross-core approaches (Core 0 task, handshake flags, suspendRxCallback)
+  all crashed with TG1WDT because Core 0's IDLE was starved by WiFi task +
+  spin-wait contention. IWDT in pre-built framework is 300ms (baked into
+  `libesp_system.a`, not overridable via sdkconfig).
+- `scripts/pre_build.py` patches framework `sdkconfig.h` to 5000ms as defense-in-depth.
+- `s_hsMux` mutex (defensive) protects `handshakes`/`pmkids` vectors.
+  Both autoSaveCheck and dequeue run on Core 1 so no true cross-core race,
+  but mutex guards against future task pinning changes.
 
 ### OINK BORED state lock throttle
 - `getNextTarget()` iterates all ~60 networks under `vectorMux` to score targets.

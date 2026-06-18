@@ -955,6 +955,20 @@ void resume() {
     Serial.printf("[RECON] Resumed on channel %d\r\n", currentChannel);
 }
 
+void suspendRxCallback() {
+    if (!running) return;
+    // Lightweight: just clear the WiFi-level callback pointer.
+    // Does NOT call esp_wifi_set_promiscuous(false) — that blocks the WiFi
+    // driver on Core 0 → TG1WDT when called from autosaveTask (same core).
+    // WiFi task keeps running (TG1 ISR alive) but no callbacks fire.
+    esp_wifi_set_promiscuous_rx_cb(nullptr);
+}
+
+void restoreRxCallback() {
+    if (!running) return;
+    esp_wifi_set_promiscuous_rx_cb(promiscuousCallback);
+}
+
 void update() {
     if (!running || paused) return;
     

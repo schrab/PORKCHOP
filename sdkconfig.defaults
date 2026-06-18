@@ -9,9 +9,12 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_PEER_CERT=y
 CONFIG_MBEDTLS_DYNAMIC_FREE_CONFIG_DATA=y
 
-# Increase IWDT timeout to 1000ms for OINK mode operation
-# (callback path should be microsecond-fast, diagnostic increase)
-CONFIG_ESP_INT_WDT_TIMEOUT_MS=1000
+# IWDT timeout: 5s for OINK mode autosave SD writes.
+# 1000ms was too short — TG1WDT fired during autoSaveCheck SPI I/O
+# even with promiscuous fully paused from Core 1 (cross-core handshake).
+# SPI polling + WiFi driver state changes can block interrupts briefly.
+# The cross-core handshake itself adds a spin-wait window.
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=5000
 
 # WiFi buffers: tuned for packet capture (original proven values)
 CONFIG_ESP32_WIFI_STATIC_RX_BUFFER_NUM=4
