@@ -1395,9 +1395,11 @@ void OinkMode::update() {
                 if (pendingFlagCount > 0) {
                     NetworkRecon::enterCritical();
                     for (uint8_t k = 0; k < pendingFlagCount; k++) {
-                        int idx = NetworkRecon::findNetworkIndex(pendingFlags[k].bssid);
-                        if (idx >= 0) {
-                            networks()[idx].hasHandshake = true;
+                        for (auto& net : networks()) {
+                            if (memcmp(net.bssid, pendingFlags[k].bssid, 6) == 0) {
+                                net.hasHandshake = true;
+                                break;
+                            }
                         }
                     }
                     NetworkRecon::exitCritical();
@@ -1484,18 +1486,27 @@ void OinkMode::update() {
                     checkedForPendingHandshake = true;
                     hasPendingHandshake = false;
                     if (targetIndex >= 0 && targetIndex < (int)networks().size()) {
+                        uint8_t waitingTargetBssid[6] = {0};
+                        bool haveWaitingTargetBssid = false;
                         const bool wasBusy = oinkBusy;
                         oinkBusy = true;
                         NetworkRecon::enterCritical();
-                        for (const auto& hs : handshakes) {
-                            if (memcmp(hs.bssid, networks()[targetIndex].bssid, 6) == 0 && 
-                                hs.hasM1() && !hs.hasM2()) {
-                                hasPendingHandshake = true;
-                                break;
-                            }
+                        if (targetIndex >= 0 && targetIndex < (int)networks().size()) {
+                            memcpy(waitingTargetBssid, networks()[targetIndex].bssid, 6);
+                            haveWaitingTargetBssid = true;
                         }
                         NetworkRecon::exitCritical();
                         oinkBusy = wasBusy;
+
+                        if (haveWaitingTargetBssid) {
+                            for (const auto& hs : handshakes) {
+                                if (memcmp(hs.bssid, waitingTargetBssid, 6) == 0 && 
+                                    hs.hasM1() && !hs.hasM2()) {
+                                    hasPendingHandshake = true;
+                                    break;
+                                }
+                            }
+                        }
                     }
                 }
                 
@@ -2737,12 +2748,19 @@ bool OinkMode::saveAllPMKIDs() {
         // beacon, so SSID lookup fails at capture time. Try again before saving.
         // SSID is REQUIRED for PMKID cracking - it's the salt for PBKDF2(passphrase, SSID).
         if (p.ssid[0] == 0) {
+            char ssidBackfill[33] = {0};
+            NetworkRecon::enterCritical();
             for (const auto& net : networks()) {
                 if (memcmp(net.bssid, p.bssid, 6) == 0 && net.ssid[0] != 0) {
-                    strncpy(p.ssid, net.ssid, 32);
-                    p.ssid[32] = 0;
+                    strncpy(ssidBackfill, net.ssid, 32);
+                    ssidBackfill[32] = 0;
                     break;
                 }
+            }
+            NetworkRecon::exitCritical();
+            if (ssidBackfill[0] != 0) {
+                strncpy(p.ssid, ssidBackfill, 32);
+                p.ssid[32] = 0;
             }
         }
         
