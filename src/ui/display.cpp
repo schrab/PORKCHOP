@@ -959,14 +959,13 @@ void Display::drawBottomBar() {
         statsBuf[sizeof(statsBuf) - 1] = '\0';
         statsStr = statsBuf;
     } else if (mode == PorkchopMode::DNH_MODE) {
-        // DNH: Networks, PMKIDs, Handshakes (complete/total), Channel
+        // DNH: Networks, PMKIDs, Handshakes, Channel
         uint16_t netCount = DoNoHamMode::getNetworkCount();
         uint16_t pmkidCount = DoNoHamMode::getPMKIDCount();
-        uint16_t hsTotal = DoNoHamMode::getHandshakeCount();
-        uint16_t hsComplete = DoNoHamMode::getCompleteHandshakeCount();
+        uint16_t hsCount = DoNoHamMode::getHandshakeCount();
         uint8_t channel = DoNoHamMode::getCurrentChannel();
         char buf[48];
-        snprintf(buf, sizeof(buf), "N:%03d P:%02d HS:%02d/%02d CH:%02d", netCount, pmkidCount, hsComplete, hsTotal, channel);
+        snprintf(buf, sizeof(buf), "N:%03d P:%02d HS:%02d CH:%02d", netCount, pmkidCount, hsCount, channel);
         strncpy(statsBuf, buf, sizeof(statsBuf) - 1);
         statsBuf[sizeof(statsBuf) - 1] = '\0';
         statsStr = statsBuf;

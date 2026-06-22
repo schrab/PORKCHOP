@@ -315,35 +315,6 @@ namespace Profile {
 }
 #endif
 
-// ============================================================================
-// SSID Cache (BSSID→SSID, persists beyond networks[] cleanup)
-// ============================================================================
-
-#define SSID_CACHE_SIZE 64
-
-struct SsidCacheEntry {
-    uint8_t bssid[6];
-    char ssid[33];
-    uint32_t lastSeen;
-};
-
-/**
- * @brief Update the SSID cache with a BSSID→SSID mapping
- * Thread-safe on Core 1. Will evict oldest entry on overflow.
- * @param bssid 6-byte BSSID
- * @param ssid SSID string (null-terminated, up to 32 chars)
- */
-void updateSsidCache(const uint8_t* bssid, const char* ssid);
-
-/**
- * @brief Look up an SSID by BSSID in the cache
- * @param bssid 6-byte BSSID to look up
- * @param ssidOut Output buffer (must be >= 33 bytes)
- * @param maxLen Size of ssidOut buffer
- * @return true if found, false otherwise
- */
-bool lookupSsidCache(const uint8_t* bssid, char* ssidOut, size_t maxLen);
-
 /**
  * @brief RAII wrapper for critical section
  */
