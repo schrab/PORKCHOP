@@ -48,12 +48,6 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
 - `getCore0PacketCount()` returns an atomic packet counter incremented in
   the promiscuous callback. Used by OINK diag as `c0pkt=N` delta to detect
   Core 0 heartbeat stalls (PSRAM bus stall / IDLE starvation).
-- **SSID cache** (`SSID_CACHE_SIZE=64`, LRU eviction): BSSID→SSID mapping
-  that persists after `networks[]` cleanup. Populated from `processDeferredEvents()`
-  (new network adds) and mode beacon dequeue (DNH `update()`). Core 1 only — no
-  spinlock needed (single-core access pattern). `updateSsidCache()` / `lookupSsidCache()`
-  called by OINK and DNH save paths as third-tier SSID backfill after `networks[]`
-  and beacon data extraction.
 - **Manual channel lock**: `setManualChannelLock(ch)` overrides all mode-driven
   `lockChannel()`/`unlockChannel()` calls (they become no-ops). User-initiated
   via UP/DOWN in OINK/DNH. Cleared on `stop()` (mode exit). `isChannelLocked()`
