@@ -509,7 +509,16 @@ void OinkMode::stop() {
     // task. vTaskDelete kills the task synchronously — if the user exits
     // OINK before the task wakes from its notification, unsaved handshakes
     // are lost with no file written and no retry.
+    // Clear backoff timers first: autoSaveCheck respects saveAttempts
+    // backoff (2000ms/5000ms), but on stop we are about to clear the
+    // vector anyway so there is no point waiting.
     if (Config::isSDAvailable()) {
+        for (auto& hs : handshakes) {
+            if (hs.isComplete() && !hs.saved) hs.saveAttempts = 0;
+        }
+        for (auto& p : pmkids) {
+            if (!p.saved) p.saveAttempts = 0;
+        }
         NetworkRecon::pause();
         autoSaveCheck();
         NetworkRecon::resume();
