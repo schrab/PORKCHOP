@@ -225,8 +225,8 @@ float getKnuthRatio() {
 }
 
 void resetPeaks(bool suppressToast) {
-    peakFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-    peakLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    peakFree = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+    peakLargest = peakFree;
     // NOTE: Do NOT reset minFree/minLargest here. Session watermarks must track
     // the true session-worst values. Resetting them mid-brew would corrupt them
     // with transient values (WiFi buffers eat 35KB during conditioning).
