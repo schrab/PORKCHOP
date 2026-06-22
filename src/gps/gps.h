@@ -39,6 +39,9 @@ public:
     static void getTimeString(char* out, size_t len);
     static bool getLocationString(char* out, size_t len);
     
+    // Time persistence (NVS)
+    static uint32_t getSavedUnixTime();  // Restore saved time from NVS, returns 0 if none
+    
     // Power management
     static void setPowerMode(bool active);
     static bool isActive();
@@ -61,6 +64,10 @@ private:
     static uint32_t lastFixTime;
     static uint32_t lastUpdateTime;
     static SemaphoreHandle_t mutex;
+    
+    // NVS time persistence
+    static uint32_t lastNvsTimeSave;       // ms throttle (only save every 60s)
+    static void saveTimeToNVS(uint32_t unixTime);
     
     // NMEA ring buffer
     static char nmeaRing[NMEA_RING_LINES][NMEA_LINE_MAX];

@@ -22,3 +22,8 @@ void hal_rtc_getDateTime(hal_rtc_datetime_t* dt) {
 uint32_t hal_rtc_getUnixTime() {
     return (uint32_t)time(nullptr);
 }
+
+void hal_rtc_setUnixTime(uint32_t unixTime) {
+    struct timeval tv = { .tv_sec = (time_t)unixTime, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+}

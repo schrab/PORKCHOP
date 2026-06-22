@@ -13,3 +13,4 @@ struct hal_rtc_datetime_t {
 void hal_rtc_init();
 void hal_rtc_getDateTime(hal_rtc_datetime_t* dt);
 uint32_t hal_rtc_getUnixTime();
+void hal_rtc_setUnixTime(uint32_t unixTime);

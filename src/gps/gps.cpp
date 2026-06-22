@@ -5,6 +5,9 @@
 #include "../core/sdlog.h"
 #include "../piglet/mood.h"
 #include "../ui/display.h"
+#include "../hal/hal_rtc.h"
+#include <nvs_flash.h>
+#include <time.h>
 
 // Static members
 TinyGPSPlus GPS::gps;
@@ -14,6 +17,7 @@ GPSData GPS::currentData = {0};
 uint32_t GPS::fixCount = 0;
 uint32_t GPS::lastFixTime = 0;
 uint32_t GPS::lastUpdateTime = 0;
+uint32_t GPS::lastNvsTimeSave = 0;
 SemaphoreHandle_t GPS::mutex = nullptr;
 
 // NMEA ring buffer
@@ -180,6 +184,48 @@ void GPS::updateData() {
         Display::setGPSStatus(false);
         Serial.println("[GPS] Fix lost");
         SDLog::log("GPS", "Fix lost");
+    }
+
+    // Set system clock from GPS time and persist to NVS
+    if (fix && date != 0 && time != 0) {
+        // Convert GPS date (DDMMYY) and time (HHMMSSCC) to Unix timestamp
+        // Manual UTC conversion avoids timegm() which isn't in ESP32 Arduino
+        static const uint8_t daysInMonth[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+        int gpsYear  = (date % 100) + 2000;
+        int gpsMonth = ((date / 100) % 100);
+        int gpsDay   = date / 10000;
+        int gpsHour  = time / 1000000;
+        int gpsMin   = (time / 10000) % 100;
+        int gpsSec   = (time / 100) % 100;
+
+        if (gpsMonth >= 1 && gpsMonth <= 12 && gpsYear >= 2020) {
+            uint32_t utc = 0;
+            for (int y = 1970; y < gpsYear; y++) {
+                utc += 365;
+                if ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) utc++;
+            }
+            for (int m = 1; m < gpsMonth; m++) {
+                utc += daysInMonth[m - 1];
+                if (m == 2 && ((gpsYear % 4 == 0 && gpsYear % 100 != 0) || gpsYear % 400 == 0)) utc++;
+            }
+            utc += gpsDay - 1;
+            time_t gpsUnix = (time_t)utc * 86400 + gpsHour * 3600 + gpsMin * 60 + gpsSec;
+            if (gpsUnix > 0) {
+                // Set system clock if more than 2s off
+                time_t now = ::time(nullptr);
+                int32_t diff = (int32_t)(gpsUnix - now);
+                if (diff > 2 || diff < -2) {
+                    hal_rtc_setUnixTime((uint32_t)gpsUnix);
+                }
+
+                // Save to NVS throttled to 60s
+                uint32_t nowMs = millis();
+                if (nowMs - lastNvsTimeSave > 60000) {
+                    saveTimeToNVS((uint32_t)gpsUnix);
+                    lastNvsTimeSave = nowMs;
+                }
+            }
+        }
     }
 }
 
@@ -350,4 +396,23 @@ const char* GPS::getNmeaLine(uint8_t index) {
 
 uint32_t GPS::getTotalBytesProcessed() {
     return totalBytesProcessed;
+}
+
+void GPS::saveTimeToNVS(uint32_t unixTime) {
+    nvs_handle_t handle;
+    if (nvs_open("porkgps", NVS_READWRITE, &handle) == ESP_OK) {
+        nvs_set_u32(handle, "unixtime", unixTime);
+        nvs_commit(handle);
+        nvs_close(handle);
+    }
+}
+
+uint32_t GPS::getSavedUnixTime() {
+    nvs_handle_t handle;
+    uint32_t saved = 0;
+    if (nvs_open("porkgps", NVS_READONLY, &handle) == ESP_OK) {
+        nvs_get_u32(handle, "unixtime", &saved);
+        nvs_close(handle);
+    }
+    return saved;
 }

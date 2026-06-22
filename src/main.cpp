@@ -7,6 +7,7 @@
 #include "hal/hal_battery.h"
 #include "hal/hal_neopixel.h"
 #include "hal/hal_pins.h"
+#include "hal/hal_rtc.h"
 #include <SD.h>
 #include <WiFi.h>              // <-- PATCH: init WiFi early (before heap fragmentation)
 #include <esp_heap_caps.h>     // For heap conditioning
@@ -121,6 +122,18 @@ void setup() {
             nvsErr = nvs_flash_init();
         }
         Serial.printf("[BOOT] NVS init: %s\r\n", nvsErr == ESP_OK ? "OK" : esp_err_to_name(nvsErr));
+    }
+
+    // Restore last known GPS time from NVS (+60s for boot duration approximation)
+    // so file timestamps are reasonable before GPS acquires a fix.
+    {
+        uint32_t savedTime = GPS::getSavedUnixTime();
+        if (savedTime > 1600000000) {
+            hal_rtc_setUnixTime(savedTime + 60);
+            Serial.printf("[BOOT] Time restored from GPS NVS: %u (+60s)\r\n", savedTime);
+        } else {
+            Serial.println("[BOOT] No valid GPS time in NVS, clock starts at epoch");
+        }
     }
 
     // Init hal_gpio_setup — configure pins (display, input, audio, etc.)

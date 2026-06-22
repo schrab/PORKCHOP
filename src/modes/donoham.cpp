@@ -4,6 +4,8 @@
 
 #include "donoham.h"
 #include "../hal/hal_display.h"
+#include "../hal/hal_rtc.h"
+#include "../gps/gps.h"
 #include <WiFi.h>
 #include <NimBLEDevice.h>  // For BLE coexistence check
 #include "../core/config.h"
@@ -1285,6 +1287,23 @@ void DoNoHamMode::saveAllHandshakes() {
             }
             
             pcapFile.close();
+        }
+
+        // Save GPS coord sidecar (.coord = lat,lon,unixtime)
+        {
+            GPSData gpsData = GPS::getData();
+            if (gpsData.fix) {
+                char coordFile[64];
+                SDLayout::buildCaptureFilename(coordFile, sizeof(coordFile),
+                                               handshakesDir, hs.ssid, hs.bssid, ".coord");
+                File cf = SD.open(coordFile, FILE_WRITE);
+                if (cf) {
+                    cf.printf("%.6f,%.6f,%lu\n",
+                              gpsData.latitude, gpsData.longitude,
+                              (unsigned long)hal_rtc_getUnixTime());
+                    cf.close();
+                }
+            }
         }
         
         hs.saved = true;

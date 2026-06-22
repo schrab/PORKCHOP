@@ -4,6 +4,8 @@
 #include "oink.h"
 #include "../core/config.h"
 #include "../hal/hal_imu.h"
+#include "../hal/hal_rtc.h"
+#include "../gps/gps.h"
 #include "../audio/sfx.h"
 #include "../core/network_recon.h"
 #include "../core/oui.h"
@@ -3272,6 +3274,22 @@ void SpectrumMode::autoSaveCaptures() {
             p.saveAttempts++;
             if (p.saveAttempts >= 3) p.saved = true;  // Give up
         }
+        // Save GPS coord sidecar (.coord = lat,lon,unixtime)
+        {
+            GPSData gpsData = GPS::getData();
+            if (gpsData.fix) {
+                char coordFile[64];
+                SDLayout::buildCaptureFilename(coordFile, sizeof(coordFile),
+                                               handshakesDir, p.ssid, p.bssid, ".coord");
+                File cf = SD.open(coordFile, FILE_WRITE);
+                if (cf) {
+                    cf.printf("%.6f,%.6f,%lu\n",
+                              gpsData.latitude, gpsData.longitude,
+                              (unsigned long)hal_rtc_getUnixTime());
+                    cf.close();
+                }
+            }
+        }
         delay(1);
     }
     
@@ -3294,6 +3312,22 @@ void SpectrumMode::autoSaveCaptures() {
         bool hs22kOk = saveHandshake22000(hs, hs22kFile);
         
         if (pcapOk || hs22kOk) {
+            // Save GPS coord sidecar (.coord = lat,lon,unixtime)
+            {
+                GPSData gpsData = GPS::getData();
+                if (gpsData.fix) {
+                    char coordFile[64];
+                    SDLayout::buildCaptureFilename(coordFile, sizeof(coordFile),
+                                                   handshakesDir, hs.ssid, hs.bssid, ".coord");
+                    File cf = SD.open(coordFile, FILE_WRITE);
+                    if (cf) {
+                        cf.printf("%.6f,%.6f,%lu\n",
+                                  gpsData.latitude, gpsData.longitude,
+                                  (unsigned long)hal_rtc_getUnixTime());
+                        cf.close();
+                    }
+                }
+            }
             hs.saved = true;
             anySaved = true;
             SDLog::log("SPECTRUM", "Handshake saved: %s (pcap:%s 22k:%s)",

@@ -18,6 +18,8 @@
 #include "../piglet/mood.h"
 #include "../piglet/avatar.h"
 #include "../ui/swine_stats.h"
+#include "../hal/hal_rtc.h"
+#include "../gps/gps.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <NimBLEDevice.h>  // For BLE coexistence check
@@ -2396,6 +2398,23 @@ void OinkMode::autoSaveCheck() {
             bool hs22kOk = saveHandshake22000(hs, filename22000);
             const uint32_t h22Dt = (uint32_t)esp_timer_get_time() - h22Start;
             yield();  // Feed watchdog after 22000 write
+
+            // Save GPS coord sidecar (.coord = lat,lon,unixtime)
+            {
+                GPSData gpsData = GPS::getData();
+                if (gpsData.fix) {
+                    char coordFile[64];
+                    SDLayout::buildCaptureFilename(coordFile, sizeof(coordFile),
+                                                   handshakesDir, hs.ssid, hs.bssid, ".coord");
+                    File cf = SD.open(coordFile, FILE_WRITE);
+                    if (cf) {
+                        cf.printf("%.6f,%.6f,%lu\n",
+                                  gpsData.latitude, gpsData.longitude,
+                                  (unsigned long)hal_rtc_getUnixTime());
+                        cf.close();
+                    }
+                }
+            }
 
             Serial.printf("[OINK] save hs '%s' pcap=%s dt=%uus 22000=%s dt=%uus total=%uus\r\n",
                           hs.ssid,
