@@ -2730,7 +2730,7 @@ void Display::drawAboutScreen(DisplayCanvas& canvas) {
     // Title
     canvas.setTextSize(2);
     canvas.setTextColor(COLOR_ACCENT);
-    canvas.drawString("M5PORKCHOP", DISPLAY_W / 2, 5);
+    canvas.drawString("PORKCHOP", DISPLAY_W / 2, 5);
     
     // Version
     canvas.setTextSize(1);
@@ -2741,7 +2741,7 @@ void Display::drawAboutScreen(DisplayCanvas& canvas) {
     canvas.drawString("BY 0ct0", DISPLAY_W / 2, 38);
     
     // GitHub
-    canvas.drawString("GITHUB.COM/0CT0SEC/M5PORKCHOP", DISPLAY_W / 2, 50);
+    canvas.drawString("GITHUB.COM/0CT0SEC/PORKCHOP", DISPLAY_W / 2, 50);
     
     // Commit hash, uppercase the value
     canvas.setTextColor(COLOR_ACCENT);

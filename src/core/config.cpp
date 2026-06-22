@@ -295,13 +295,12 @@ bool Config::init() {
 
     // Retry with progressive SPI speeds for reliability
     sdAvailable = false;
-    const int maxRetries = 5;
+    const int maxRetries = 4;
     const uint32_t speeds[] = {
-        20000000, // 20 MHz
-        10000000, // 10 MHz
-        8000000,  // 8 MHz
-        4000000,  // 4 MHz
-        1000000   // 1 MHz
+        40000000, // 40 MHz
+        35000000, // 35 MHz
+        30000000, // 30 MHz
+        25000000, // 25 MHz
     };
 
     for (int attempt = 0; attempt < maxRetries && !sdAvailable; attempt++) {
@@ -435,13 +434,12 @@ bool Config::reinitSD() {
 
     // Retry with progressive SPI speeds
     sdAvailable = false;
-    const int maxRetries = 5;
+    const int maxRetries = 4;
     const uint32_t speeds[] = {
-        20000000,
-        10000000,
-        8000000,
-        4000000,
-        1000000
+        40000000,
+        35000000,
+        30000000,
+        25000000,
     };
 
     for (int attempt = 0; attempt < maxRetries && !sdAvailable; attempt++) {

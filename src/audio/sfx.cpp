@@ -464,7 +464,7 @@ bool update() {
                 }
                 break;
             case BOOT:
-                startSequence(SND_MODEM);
+                startSequence(SND_BOOT);
                 break;
             case PIGSYNC_BOOT:
                 startSequence(SND_PIGSYNC_BOOT);
