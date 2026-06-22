@@ -43,6 +43,11 @@ static bool heapStabilized = false;
 static std::atomic<uint32_t> s_core0PktCount{0};
 // shrinkDeferCount removed — shrink_to_fit no longer runs during operation
 
+// SSID cache: dynamically allocated from internal RAM in start(), freed in stop().
+// Must be in internal RAM (not PSRAM) to avoid TG1WDT from dual-core bus contention.
+// Declared here (before start()/stop() use it).
+static SsidCacheEntry* s_ssidCache = nullptr;
+
 // Channel hop order (most common channels first for faster discovery)
 static const uint8_t CHANNEL_HOP_ORDER[RECON_CHANNEL_COUNT] = {
     1, 6, 11, 2, 3, 4, 5, 7, 8, 9, 10, 12, 13
@@ -702,6 +707,10 @@ static void processDeferredEvents() {
         }
         
         if (inserted || replaced) {
+            // Populate SSID cache so handshakes can find SSID after networks[] cleanup
+            if (pending.ssid[0] != 0) {
+                updateSsidCache(pending.bssid, pending.ssid);
+            }
             // Notify mode of new network discovery (for XP events)
             // Called OUTSIDE critical section - safe for Mood/XP calls
             if (newNetworkCallback) {
@@ -812,6 +821,13 @@ void start() {
         return;
     }
 
+    // Allocate SSID cache from internal RAM (PSRAM access causes TG1WDT
+    // during dual-core operation — WiFi promiscuous callback on Core 0
+    // contends with main loop on Core 1).
+    if (!s_ssidCache) {
+        s_ssidCache = (SsidCacheEntry*)heap_caps_calloc(SSID_CACHE_SIZE, sizeof(SsidCacheEntry), MALLOC_CAP_INTERNAL);
+    }
+
     Serial.printf("[RECON] Starting background scan... free=%u\r\n",
                   ESP.getFreeHeap());
     
@@ -891,6 +907,12 @@ void stop() {
     manualLockedChannel = 0;
     
     WiFiUtils::stopPromiscuous();
+    
+    // Free SSID cache (internal RAM, allocated in start())
+    if (s_ssidCache) {
+        free(s_ssidCache);
+        s_ssidCache = nullptr;
+    }
     
     // Don't clear networks - they persist for mode reuse
     
@@ -1243,6 +1265,45 @@ void exitCritical() {
         s_lockProfileInLock.store(0, std::memory_order_relaxed);
     }
 #endif
+}
+
+// ============================================================================
+// SSID Cache
+// ============================================================================
+
+void updateSsidCache(const uint8_t* bssid, const char* ssid) {
+    if (!s_ssidCache || !bssid || !ssid || ssid[0] == 0) return;
+    uint32_t now = millis();
+    int oldestIdx = 0;
+    uint32_t oldestTime = UINT32_MAX;
+    for (int i = 0; i < SSID_CACHE_SIZE; i++) {
+        if (memcmp(s_ssidCache[i].bssid, bssid, 6) == 0) {
+            strncpy(s_ssidCache[i].ssid, ssid, 32);
+            s_ssidCache[i].ssid[32] = 0;
+            s_ssidCache[i].lastSeen = now;
+            return;
+        }
+        if (s_ssidCache[i].lastSeen < oldestTime) {
+            oldestTime = s_ssidCache[i].lastSeen;
+            oldestIdx = i;
+        }
+    }
+    memcpy(s_ssidCache[oldestIdx].bssid, bssid, 6);
+    strncpy(s_ssidCache[oldestIdx].ssid, ssid, 32);
+    s_ssidCache[oldestIdx].ssid[32] = 0;
+    s_ssidCache[oldestIdx].lastSeen = now;
+}
+
+bool lookupSsidCache(const uint8_t* bssid, char* ssidOut, size_t maxLen) {
+    if (!s_ssidCache || !bssid || !ssidOut || maxLen == 0) return false;
+    for (int i = 0; i < SSID_CACHE_SIZE; i++) {
+        if (s_ssidCache[i].lastSeen > 0 && memcmp(s_ssidCache[i].bssid, bssid, 6) == 0) {
+            strncpy(ssidOut, s_ssidCache[i].ssid, maxLen - 1);
+            ssidOut[maxLen - 1] = 0;
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace NetworkRecon

@@ -316,6 +316,21 @@ namespace Profile {
 #endif
 
 /**
+ * @brief SSID Cache — BSSID→SSID mapping that persists after networks[] cleanup.
+ * Core 1 only (no spinlock needed). LRU eviction at SSID_CACHE_SIZE entries.
+ */
+#define SSID_CACHE_SIZE 64
+
+struct SsidCacheEntry {
+    uint8_t bssid[6];
+    char ssid[33];
+    uint32_t lastSeen;
+};
+
+void updateSsidCache(const uint8_t* bssid, const char* ssid);
+bool lookupSsidCache(const uint8_t* bssid, char* ssidOut, size_t maxLen);
+
+/**
  * @brief RAII wrapper for critical section
  */
 class CriticalSection {

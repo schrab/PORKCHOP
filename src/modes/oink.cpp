@@ -2352,6 +2352,20 @@ void OinkMode::autoSaveCheck() {
                 continue;  // Wait for backoff period
             }
 
+            // Backfill SSID if missing
+            if (hs.ssid[0] == 0) {
+                int netIdx = NetworkRecon::findNetworkIndex(hs.bssid);
+                NetworkRecon::enterCritical();
+                if (netIdx >= 0 && netIdx < (int)networks().size() && networks()[netIdx].ssid[0] != 0) {
+                    strncpy(hs.ssid, networks()[netIdx].ssid, 32);
+                    hs.ssid[32] = 0;
+                }
+                NetworkRecon::exitCritical();
+            }
+            if (hs.ssid[0] == 0) {
+                NetworkRecon::lookupSsidCache(hs.bssid, hs.ssid, 33);
+            }
+
             const char* handshakesDir = SDLayout::handshakesDir();
 
             // Generate filename: SSID_BSSID.pcap

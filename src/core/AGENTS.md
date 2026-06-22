@@ -52,6 +52,11 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
   `lockChannel()`/`unlockChannel()` calls (they become no-ops). User-initiated
   via UP/DOWN in OINK/DNH. Cleared on `stop()` (mode exit). `isChannelLocked()`
   returns true when either manual or mode lock is active.
+- **SSID cache allocation**: 64-entry BSSID→SSID cache (2.75KB) dynamically
+  allocated from internal heap in `start()`, freed in `stop()`. Must be internal
+  RAM (not PSRAM) to avoid dual-core PSRAM bus stall TG1WDT. Static `.dram0.bss`
+  reduces free heap below sprite allocation threshold. See root AGENTS.md for
+  the full PSRAM/bus-stall analysis.
 
 ### WarTales flush cadence
 - Open file handle per session. Flush every 10 events or 10s.

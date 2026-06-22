@@ -1081,6 +1081,10 @@ void DoNoHamMode::saveAllHandshakes() {
             }
             NetworkRecon::exitCritical();
         }
+        // Fallback: SSID cache (catches networks pruned from networks[])
+        if (hs.ssid[0] == 0) {
+            NetworkRecon::lookupSsidCache(hs.bssid, hs.ssid, 33);
+        }
         
         // Try to backfill SSID from stored beacon data
         if (hs.ssid[0] == 0 && hs.hasBeacon() && hs.beaconLen > 36) {
