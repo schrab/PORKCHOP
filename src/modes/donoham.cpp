@@ -402,6 +402,27 @@ void DoNoHamMode::update() {
     taskEXIT_CRITICAL(&pendingBeaconMux);
 
     if (hasPendingBeacon) {
+        // Extract SSID from beacon data for cache and handshake backfill
+        char beaconSsid[33] = {0};
+        if (pendingBeaconLenLocal > 36) {
+            uint16_t off = 36;
+            while (off + 2 < pendingBeaconLenLocal) {
+                uint8_t ieType = pendingBeaconDataLocal[off];
+                uint8_t ieLen = pendingBeaconDataLocal[off + 1];
+                if (off + 2 + ieLen > pendingBeaconLenLocal) break;
+                if (ieType == 0 && ieLen > 0 && ieLen <= 32) {
+                    memcpy(beaconSsid, pendingBeaconDataLocal + off + 2, ieLen);
+                    beaconSsid[ieLen] = 0;
+                    break;
+                }
+                off += 2 + ieLen;
+            }
+        }
+        // Populate SSID cache (persists after networks[] cleanup)
+        if (beaconSsid[0] != 0) {
+            NetworkRecon::updateSsidCache(pendingBeaconBssidLocal, beaconSsid);
+        }
+
         for (auto& hs : handshakes) {
             if (!hs.saved && hs.beaconData == nullptr && memcmp(hs.bssid, pendingBeaconBssidLocal, 6) == 0) {
                 if (pendingBeaconLenLocal == 0) {
@@ -411,20 +432,10 @@ void DoNoHamMode::update() {
                 if (hs.beaconData) {
                     memcpy(hs.beaconData, pendingBeaconDataLocal, pendingBeaconLenLocal);
                     hs.beaconLen = pendingBeaconLenLocal;
-                    // Extract SSID from beacon data if not already known
-                    if (hs.ssid[0] == 0 && pendingBeaconLenLocal > 36) {
-                        uint16_t off = 36;
-                        while (off + 2 < pendingBeaconLenLocal) {
-                            uint8_t ieType = pendingBeaconDataLocal[off];
-                            uint8_t ieLen = pendingBeaconDataLocal[off + 1];
-                            if (off + 2 + ieLen > pendingBeaconLenLocal) break;
-                            if (ieType == 0 && ieLen > 0 && ieLen <= 32) {
-                                memcpy(hs.ssid, pendingBeaconDataLocal + off + 2, ieLen);
-                                hs.ssid[ieLen] = 0;
-                                break;
-                            }
-                            off += 2 + ieLen;
-                        }
+                    // Backfill SSID from beacon data
+                    if (hs.ssid[0] == 0 && beaconSsid[0] != 0) {
+                        strncpy(hs.ssid, beaconSsid, 32);
+                        hs.ssid[32] = 0;
                     }
                 }
                 break;  // One beacon per handshake is enough
@@ -608,6 +619,14 @@ void DoNoHamMode::update() {
                     hs.ssid[32] = 0;
                 }
                 NetworkRecon::exitCritical();
+            }
+            // Try SSID cache (persists after networks[] cleanup)
+            if (hs.ssid[0] == 0) {
+                char cachedSsid[33];
+                if (NetworkRecon::lookupSsidCache(hs.bssid, cachedSsid, sizeof(cachedSsid))) {
+                    strncpy(hs.ssid, cachedSsid, 32);
+                    hs.ssid[32] = 0;
+                }
             }
             
             // Check if we just completed a valid pair
@@ -1098,6 +1117,15 @@ void DoNoHamMode::saveAllHandshakes() {
             }
         }
 
+        // Try to backfill SSID from cache (persists after networks[] cleanup)
+        if (hs.ssid[0] == 0) {
+            char cachedSsid[33];
+            if (NetworkRecon::lookupSsidCache(hs.bssid, cachedSsid, sizeof(cachedSsid))) {
+                strncpy(hs.ssid, cachedSsid, 32);
+                hs.ssid[32] = 0;
+            }
+        }
+
         // Try to backfill SSID from companion txt file (cross-mode compatibility)
         if (hs.ssid[0] == 0) {
             char txtPath[64];
@@ -1121,7 +1149,54 @@ void DoNoHamMode::saveAllHandshakes() {
         }
 
         // Can only save if we have SSID (don't count as attempt - will retry when SSID arrives)
-        if (hs.ssid[0] == 0) continue;
+        if (hs.ssid[0] == 0) {
+            // PCAP-only fallback with BSSID filename — no SSID means hashcat
+            // 22000 format is impossible, but raw PCAP still works with WPA-SEC,
+            // Wireshark, and aircrack-ng. Better than silent loss.
+            hs.saveAttempts++;
+            char pcapFilename[64];
+            snprintf(pcapFilename, sizeof(pcapFilename), "%s/%02X%02X%02X%02X%02X%02X.pcap",
+                     handshakesDir,
+                     hs.bssid[0], hs.bssid[1], hs.bssid[2],
+                     hs.bssid[3], hs.bssid[4], hs.bssid[5]);
+            if (!SD.exists(handshakesDir)) SD.mkdir(handshakesDir);
+            File pcapFile = SD.open(pcapFilename, FILE_WRITE);
+            if (pcapFile) {
+                DNH_PCAPHeader hdr = {0xA1B2C3D4, 2, 4, 0, 0, 65535, 127};
+                pcapFile.write((uint8_t*)&hdr, sizeof(hdr));
+                if (hs.hasBeacon()) {
+                    uint32_t beaconTotalLen = sizeof(DNH_RADIOTAP_HEADER) + hs.beaconLen;
+                    DNH_PCAPPacketHeader bpkt = {
+                        .ts_sec = hs.firstSeen / 1000,
+                        .ts_usec = (hs.firstSeen % 1000) * 1000,
+                        .incl_len = beaconTotalLen,
+                        .orig_len = beaconTotalLen
+                    };
+                    pcapFile.write((uint8_t*)&bpkt, sizeof(bpkt));
+                    pcapFile.write(DNH_RADIOTAP_HEADER, sizeof(DNH_RADIOTAP_HEADER));
+                    pcapFile.write(hs.beaconData, hs.beaconLen);
+                }
+                for (int i = 0; i < 4; i++) {
+                    if (!(hs.capturedMask & (1 << i))) continue;
+                    const EAPOLFrame& frame = hs.frames[i];
+                    if (frame.len == 0 || frame.fullFrameLen == 0 || frame.fullFrameLen > 300) continue;
+                    uint32_t totalLen = sizeof(DNH_RADIOTAP_HEADER) + frame.fullFrameLen;
+                    DNH_PCAPPacketHeader pkt = {
+                        .ts_sec = frame.timestamp / 1000,
+                        .ts_usec = (frame.timestamp % 1000) * 1000,
+                        .incl_len = totalLen,
+                        .orig_len = totalLen
+                    };
+                    pcapFile.write((uint8_t*)&pkt, sizeof(pkt));
+                    pcapFile.write(DNH_RADIOTAP_HEADER, sizeof(DNH_RADIOTAP_HEADER));
+                    pcapFile.write(frame.fullFrame, frame.fullFrameLen);
+                }
+                pcapFile.close();
+                hs.saved = true;
+                SDLog::log("DNH", "Handshake saved (BSSID PCAP): %s", pcapFilename);
+            }
+            continue;  // Skip 22000 format — no SSID
+        }
         
         // Determine message pair
         uint8_t msgPair = hs.getMessagePair();
@@ -1791,4 +1866,12 @@ void DoNoHamMode::handleEAPOL(const uint8_t* frame, uint16_t len, int8_t rssi) {
         pendingIncompleteCount++;
     }
     taskEXIT_CRITICAL(&pendingIncompleteMux);
+}
+
+size_t DoNoHamMode::getCompleteHandshakeCount() {
+    size_t count = 0;
+    for (const auto& hs : handshakes) {
+        if (hs.hasValidPair()) count++;
+    }
+    return count;
 }

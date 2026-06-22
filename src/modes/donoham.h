@@ -71,6 +71,7 @@ public:
     static size_t getNetworkCount() { return NetworkRecon::getNetworkCount(); }
     static size_t getPMKIDCount() { return pmkids.size(); }
     static size_t getHandshakeCount() { return handshakes.size(); }
+    static size_t getCompleteHandshakeCount();
     
     // Packet callback for NetworkRecon
     static void promiscuousCallback(const wifi_promiscuous_pkt_t* pkt, wifi_promiscuous_pkt_type_t type);

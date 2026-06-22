@@ -857,6 +857,14 @@ void OinkMode::update() {
                 }
             }
             NetworkRecon::exitCritical();
+            // SSID cache fallback (persists after networks[] cleanup)
+            if (hs.ssid[0] == 0) {
+                char cachedSsid[33];
+                if (NetworkRecon::lookupSsidCache(frameLocal.bssid, cachedSsid, sizeof(cachedSsid))) {
+                    strncpy(hs.ssid, cachedSsid, 32);
+                    hs.ssid[32] = 0;
+                }
+            }
             yield();  // Break up the dequeue work between spinlock regions
 
             // Check if handshake is now complete
@@ -2354,6 +2362,15 @@ void OinkMode::autoSaveCheck() {
 
             const char* handshakesDir = SDLayout::handshakesDir();
 
+            // Backfill SSID from cache if still missing
+            if (hs.ssid[0] == 0) {
+                char cachedSsid[33];
+                if (NetworkRecon::lookupSsidCache(hs.bssid, cachedSsid, sizeof(cachedSsid))) {
+                    strncpy(hs.ssid, cachedSsid, 32);
+                    hs.ssid[32] = 0;
+                }
+            }
+
             // Generate filename: SSID_BSSID.pcap
             char filename[64];
             SDLayout::buildCaptureFilename(filename, sizeof(filename),
@@ -2780,6 +2797,14 @@ bool OinkMode::saveAllPMKIDs() {
             NetworkRecon::exitCritical();
             if (ssidBackfill[0] != 0) {
                 strncpy(p.ssid, ssidBackfill, 32);
+                p.ssid[32] = 0;
+            }
+        }
+        // SSID cache fallback (persists after networks[] cleanup)
+        if (p.ssid[0] == 0) {
+            char cachedSsid[33];
+            if (NetworkRecon::lookupSsidCache(p.bssid, cachedSsid, sizeof(cachedSsid))) {
+                strncpy(p.ssid, cachedSsid, 32);
                 p.ssid[32] = 0;
             }
         }

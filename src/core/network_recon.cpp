@@ -57,6 +57,9 @@ static const uint32_t CLEANUP_INTERVAL_MS = 5000;
 // Client activity decay (clear bitset after inactivity)
 static const uint32_t CLIENT_BITMAP_RESET_MS = 30000;
 
+// SSID cache
+static SsidCacheEntry s_ssidCache[SSID_CACHE_SIZE] = {};
+
 static uint32_t getHopIntervalMsInternal() {
     uint32_t overrideMs = hopIntervalOverrideMs.load();
     uint32_t interval = overrideMs > 0 ? overrideMs : Config::wifi().channelHopInterval;
@@ -702,6 +705,12 @@ static void processDeferredEvents() {
         }
         
         if (inserted || replaced) {
+            // Populate SSID cache so handshakes can find the SSID even after
+            // the network is cleaned from networks[].
+            if (pending.ssid[0] != 0) {
+                updateSsidCache(pending.bssid, pending.ssid);
+            }
+
             // Notify mode of new network discovery (for XP events)
             // Called OUTSIDE critical section - safe for Mood/XP calls
             if (newNetworkCallback) {
@@ -1243,6 +1252,45 @@ void exitCritical() {
         s_lockProfileInLock.store(0, std::memory_order_relaxed);
     }
 #endif
+}
+
+// ============================================================================
+// SSID Cache
+// ============================================================================
+
+void updateSsidCache(const uint8_t* bssid, const char* ssid) {
+    if (!bssid || !ssid || ssid[0] == 0) return;
+    uint32_t now = millis();
+    int oldestIdx = 0;
+    uint32_t oldestTime = UINT32_MAX;
+    for (int i = 0; i < SSID_CACHE_SIZE; i++) {
+        if (memcmp(s_ssidCache[i].bssid, bssid, 6) == 0) {
+            strncpy(s_ssidCache[i].ssid, ssid, 32);
+            s_ssidCache[i].ssid[32] = 0;
+            s_ssidCache[i].lastSeen = now;
+            return;
+        }
+        if (s_ssidCache[i].lastSeen < oldestTime) {
+            oldestTime = s_ssidCache[i].lastSeen;
+            oldestIdx = i;
+        }
+    }
+    memcpy(s_ssidCache[oldestIdx].bssid, bssid, 6);
+    strncpy(s_ssidCache[oldestIdx].ssid, ssid, 32);
+    s_ssidCache[oldestIdx].ssid[32] = 0;
+    s_ssidCache[oldestIdx].lastSeen = now;
+}
+
+bool lookupSsidCache(const uint8_t* bssid, char* ssidOut, size_t maxLen) {
+    if (!bssid || !ssidOut || maxLen == 0) return false;
+    for (int i = 0; i < SSID_CACHE_SIZE; i++) {
+        if (s_ssidCache[i].lastSeen > 0 && memcmp(s_ssidCache[i].bssid, bssid, 6) == 0) {
+            strncpy(ssidOut, s_ssidCache[i].ssid, maxLen - 1);
+            ssidOut[maxLen - 1] = 0;
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace NetworkRecon
