@@ -102,8 +102,8 @@ void update() {
     }
     lastSampleMs = now;
 
-    size_t freeHeap = ESP.getFreeHeap();
-    size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    size_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t largestBlock = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     if (peakFree == 0 || peakLargest == 0) {
         peakFree = freeHeap;
         peakLargest = largestBlock;
@@ -225,8 +225,8 @@ float getKnuthRatio() {
 }
 
 void resetPeaks(bool suppressToast) {
-    peakFree = ESP.getFreeHeap();
-    peakLargest = heap_caps_get_largest_free_block(MALLOC_CAP_8BIT);
+    peakFree = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    peakLargest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
     // NOTE: Do NOT reset minFree/minLargest here. Session watermarks must track
     // the true session-worst values. Resetting them mid-brew would corrupt them
     // with transient values (WiFi buffers eat 35KB during conditioning).
