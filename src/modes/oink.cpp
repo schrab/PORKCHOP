@@ -505,6 +505,16 @@ void OinkMode::stop() {
     // Stop grass animation
     Avatar::setGrassMoving(false);
 
+    // Flush any pending handshake saves before deleting the autosave
+    // task. vTaskDelete kills the task synchronously — if the user exits
+    // OINK before the task wakes from its notification, unsaved handshakes
+    // are lost with no file written and no retry.
+    if (Config::isSDAvailable()) {
+        NetworkRecon::pause();
+        autoSaveCheck();
+        NetworkRecon::resume();
+    }
+
     // Delete the autosave worker task before clearing the data
     // structures it reads. vTaskDelete is synchronous — the task
     // is guaranteed not running when this returns.
@@ -2279,6 +2289,7 @@ static void autosaveTask(void* /*arg*/) {
 
 void OinkMode::autoSaveCheck() {
     if (!Config::isSDAvailable()) {
+        Serial.println("[OINK] autosave SKIP: SD not available");
         return;
     }
 

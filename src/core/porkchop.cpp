@@ -829,11 +829,13 @@ void Porkchop::handleInput() {
 
     // Manual channel lock — UP/DOWN in OINK and DNH modes
     if (currentMode == PorkchopMode::OINK_MODE || currentMode == PorkchopMode::DNH_MODE) {
-        if (hal_input_wasPressed(KEY_UP) || hal_input_wasPressed(KEY_DOWN)) {
+        bool pressedUp = hal_input_wasPressed(KEY_UP);
+        bool pressedDown = hal_input_wasPressed(KEY_DOWN);
+        if (pressedUp || pressedDown) {
             uint8_t ch;
             if (NetworkRecon::isManualChannelLocked()) {
                 ch = NetworkRecon::getManualLockedChannel();
-                if (hal_input_wasPressed(KEY_UP)) {
+                if (pressedUp) {
                     ch = (ch >= 13) ? 1 : ch + 1;
                 } else {
                     ch = (ch <= 1) ? 13 : ch - 1;
@@ -843,6 +845,11 @@ void Porkchop::handleInput() {
                 if (ch < 1 || ch > 13) ch = 1;
             }
             NetworkRecon::setManualChannelLock(ch);
+            // Sync local channel display — setManualChannelLock only updates
+            // NetworkRecon::currentChannel, not the mode's local mirror.
+            if (currentMode == PorkchopMode::OINK_MODE) {
+                OinkMode::setChannel(ch);
+            }
             char buf[24];
             snprintf(buf, sizeof(buf), "CH LOCK: %d", ch);
             Display::showToast(buf, 1500);
