@@ -411,6 +411,21 @@ void DoNoHamMode::update() {
                 if (hs.beaconData) {
                     memcpy(hs.beaconData, pendingBeaconDataLocal, pendingBeaconLenLocal);
                     hs.beaconLen = pendingBeaconLenLocal;
+                    // Extract SSID from beacon data if not already known
+                    if (hs.ssid[0] == 0 && pendingBeaconLenLocal > 36) {
+                        uint16_t off = 36;
+                        while (off + 2 < pendingBeaconLenLocal) {
+                            uint8_t ieType = pendingBeaconDataLocal[off];
+                            uint8_t ieLen = pendingBeaconDataLocal[off + 1];
+                            if (off + 2 + ieLen > pendingBeaconLenLocal) break;
+                            if (ieType == 0 && ieLen > 0 && ieLen <= 32) {
+                                memcpy(hs.ssid, pendingBeaconDataLocal + off + 2, ieLen);
+                                hs.ssid[ieLen] = 0;
+                                break;
+                            }
+                            off += 2 + ieLen;
+                        }
+                    }
                 }
                 break;  // One beacon per handshake is enough
             }
@@ -1067,6 +1082,22 @@ void DoNoHamMode::saveAllHandshakes() {
             NetworkRecon::exitCritical();
         }
         
+        // Try to backfill SSID from stored beacon data
+        if (hs.ssid[0] == 0 && hs.hasBeacon() && hs.beaconLen > 36) {
+            uint16_t off = 36;
+            while (off + 2 < hs.beaconLen) {
+                uint8_t ieType = hs.beaconData[off];
+                uint8_t ieLen = hs.beaconData[off + 1];
+                if (off + 2 + ieLen > hs.beaconLen) break;
+                if (ieType == 0 && ieLen > 0 && ieLen <= 32) {
+                    memcpy(hs.ssid, hs.beaconData + off + 2, ieLen);
+                    hs.ssid[ieLen] = 0;
+                    break;
+                }
+                off += 2 + ieLen;
+            }
+        }
+
         // Try to backfill SSID from companion txt file (cross-mode compatibility)
         if (hs.ssid[0] == 0) {
             char txtPath[64];
