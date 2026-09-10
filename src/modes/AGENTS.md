@@ -43,7 +43,7 @@
 - `oinkQueueMux` ONLY protects `pendingHsPool[]` (the queue). Safe functions
   (`findOrCreateHandshakeSafe`/`findOrCreatePMKIDSafe`) do NOT use it — they run on
   Core 1 only where the callback never touches those vectors.
-- SPECTRUM uses `spectrumQueueMux` (or equivalent mode-owned spinlock) for its queue.
+- SPECTRUM uses `std::atomic<uint8_t>` for ring buffer indices (`attackPmkidWrite`/`Read`, `pendingHsWrite`/`Read`) ensuring cross-core memory visibility between Core 0 and Core 1.
 - Core 1 main thread code accesses `networks[]` via `NetworkRecon::enterCritical()`
   (safe on Core 1) with `oinkBusy=true` to gate Core 0 callbacks.
 - SSID lookups from `networks[]` are **deferred** from Core 0 to Core 1 dequeue handlers.

@@ -27,18 +27,15 @@ NEW_BLOCK = "\t    // PORKCHOP PATCH (2026-06-16): bump dynamic TX 32→128.\n  
 MARKER = "PORKCHOP PATCH"
 
 # Search paths for the framework WiFiGeneric.cpp
-CANDIDATES = [
-    Path.home() / ".platformio/packages/framework-arduinoespressif32/libraries/WiFi/src/WiFiGeneric.cpp",
-    Path.home() / ".platformio/packages/framework-arduinoespressif32@3.20017.241212/libraries/WiFi/src/WiFiGeneric.cpp",
-    Path.home() / ".platformio/packages/framework-arduinoespressif32@3.20016.0/libraries/WiFi/src/WiFiGeneric.cpp",
-    Path.home() / ".platformio/packages/framework-arduinoespressif32@3.20009.0/libraries/WiFi/src/WiFiGeneric.cpp",
-    Path.home() / ".platformio/packages/framework-arduinoespressif32@3.20006.221224/libraries/WiFi/src/WiFiGeneric.cpp",
-]
-
 def find_target() -> Path | None:
-    for p in CANDIDATES:
-        if p.exists():
-            return p
+    """Find WiFiGeneric.cpp in any installed framework-arduinoespressif32 version."""
+    base = Path.home() / ".platformio/packages"
+    if not base.exists():
+        return None
+    for pkg_dir in sorted(base.glob("framework-arduinoespressif32*"), reverse=True):
+        candidate = pkg_dir / "libraries/WiFi/src/WiFiGeneric.cpp"
+        if candidate.exists():
+            return candidate
     return None
 
 def main() -> int:

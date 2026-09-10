@@ -129,6 +129,56 @@ static PendingSSID pendingSsids[PENDING_SSID_SLOTS];
 static std::atomic<uint8_t> pendingSsidWrite{0};
 
 // ============================================================================
+// Deferred Network Updates (Core 0 → Core 1, spinlock-free on Core 0)
+// ============================================================================
+
+enum class PendingUpdateType : uint8_t {
+    BEACON,       // Update RSSI, lastSeen, beaconCount, PMF
+    PROBE_RESP,   // Update RSSI, lastSeen, reveal SSID
+    DATA_ACTIVITY // Update lastDataSeen, client bitset
+};
+
+struct PendingNetUpdate {
+    uint8_t bssid[6];
+    PendingUpdateType type;
+    int8_t rssi;
+    uint32_t timestamp;
+    bool hasPMF;          // BEACON only
+    char ssid[33];        // PROBE_RESP only
+    bool ssidValid;       // PROBE_RESP only
+    uint8_t clientHash;   // DATA_ACTIVITY only
+    bool hasClient;       // DATA_ACTIVITY only
+};
+
+static const uint8_t PENDING_UPDATE_SLOTS = 32;
+static PendingNetUpdate pendingUpdates[PENDING_UPDATE_SLOTS];
+static std::atomic<uint8_t> pendingUpdateWrite{0};
+static std::atomic<uint8_t> pendingUpdateRead{0};
+
+static bool enqueuePendingUpdate(const PendingNetUpdate& upd) {
+    uint8_t write = pendingUpdateWrite.load(std::memory_order_relaxed);
+    uint8_t next = (uint8_t)((write + 1) % PENDING_UPDATE_SLOTS);
+    uint8_t read = pendingUpdateRead.load(std::memory_order_acquire);
+    if (next == read) {
+        return false;  // Queue full, drop
+    }
+    pendingUpdates[write] = upd;
+    pendingUpdateWrite.store(next, std::memory_order_release);
+    return true;
+}
+
+static bool dequeuePendingUpdate(PendingNetUpdate& out) {
+    uint8_t read = pendingUpdateRead.load(std::memory_order_relaxed);
+    uint8_t write = pendingUpdateWrite.load(std::memory_order_acquire);
+    if (read == write) {
+        return false;
+    }
+    out = pendingUpdates[read];
+    pendingUpdateRead.store((uint8_t)((read + 1) % PENDING_UPDATE_SLOTS), std::memory_order_release);
+    return true;
+}
+
+// ============================================================================
 // Mode-Specific Callbacks
 // ============================================================================
 
@@ -211,22 +261,8 @@ static bool applyPendingSsid(DetectedNetwork& net) {
 static void revealSsidIfKnown(const uint8_t* bssid, const char* ssid) {
     if (!bssid || !ssid || ssid[0] == 0) return;
 
-    // Try to apply to existing network first
-    enterCritical();
-    int idx = findNetworkInternal(bssid);
-    if (idx >= 0 && idx < (int)networks.size()) {
-        if (networks[idx].ssid[0] == 0 || networks[idx].isHidden) {
-            strncpy(networks[idx].ssid, ssid, 32);
-            networks[idx].ssid[32] = 0;
-            networks[idx].isHidden = false;
-            networks[idx].lastSeen = millis();
-        }
-        exitCritical();
-        return;
-    }
-    exitCritical();
-
-    // Otherwise, store for when the network is added
+    // Store for Core 1 to apply during processDeferredEvents/processDeferredUpdates.
+    // Cannot acquire spinlock here — may be called from Core 0 callback context.
     storePendingSsid(bssid, ssid);
 }
 
@@ -332,149 +368,136 @@ static void processBeacon(const uint8_t* payload, uint16_t len, int8_t rssi) {
     PmfResult pmf = detectPMF(payload, len);
     uint32_t now = millis();
     
-    // [BUG1 FIX] Lookup under spinlock - vector can be modified by cleanupStaleNetworks()
-    enterCritical();
-    int idx = findNetworkInternal(bssid);
-    exitCritical();
-    
-    if (idx < 0) {
-        // New network - queue for deferred add
-        DetectedNetwork net = {0};
-        memcpy(net.bssid, bssid, 6);
-        net.rssi = rssi;
-        net.rssiAvg = rssi;
-        net.channel = currentChannel;
-        net.authmode = WIFI_AUTH_OPEN;
-        net.firstSeen = now;
-        net.lastSeen = now;
-        net.lastBeaconSeen = now;
-        net.beaconCount = 1;
-        net.beaconIntervalEmaMs = 0;
-        net.isTarget = false;
-        net.hasPMF = pmf.required;
-        net.hasHandshake = false;
-        net.attackAttempts = 0;
-        net.isHidden = false;
-        net.lastDataSeen = 0;
-        net.cooldownUntil = 0;
-        net.clientBitset = 0;
-        net.clientBitsetHigh = 0;
+    // Check SSID cache to determine if this BSSID is known (lock-free, Core 1 only writes cache)
+    // For new vs existing distinction, we use the deferred queue: enqueue the full
+    // network for new adds. The Core 1 dequeue in processDeferredEvents() checks
+    // for duplicates under spinlock before inserting.
+    // For updates, always enqueue a lightweight update event.
 
-        // Parse SSID from IE
-        uint16_t offset = 36;
-        while (offset + 2 < len) {
-            uint8_t id = payload[offset];
-            uint8_t ieLen = payload[offset + 1];
-            
-            if (offset + 2 + ieLen > len) break;
-            
-            if (id == 0) {
-                if (ieLen > 0 && ieLen <= 32) {
-                    memcpy(net.ssid, payload + offset + 2, ieLen);
-                    net.ssid[ieLen] = 0;
-                    
-                    // Check for all-null SSID (hidden)
-                    bool allNull = true;
-                    for (uint8_t i = 0; i < ieLen; i++) {
-                        if (net.ssid[i] != 0) { allNull = false; break; }
-                    }
-                    if (allNull) {
-                        net.isHidden = true;
-                    }
-                } else if (ieLen == 0) {
+    // Build new-network struct (in case it's new)
+    DetectedNetwork net = {0};
+    memcpy(net.bssid, bssid, 6);
+    net.rssi = rssi;
+    net.rssiAvg = rssi;
+    net.channel = currentChannel;
+    net.authmode = WIFI_AUTH_OPEN;
+    net.firstSeen = now;
+    net.lastSeen = now;
+    net.lastBeaconSeen = now;
+    net.beaconCount = 1;
+    net.beaconIntervalEmaMs = 0;
+    net.isTarget = false;
+    net.hasPMF = pmf.required;
+    net.hasHandshake = false;
+    net.attackAttempts = 0;
+    net.isHidden = false;
+    net.lastDataSeen = 0;
+    net.cooldownUntil = 0;
+    net.clientBitset = 0;
+    net.clientBitsetHigh = 0;
+
+    // Parse SSID from IE
+    uint16_t offset = 36;
+    while (offset + 2 < len) {
+        uint8_t id = payload[offset];
+        uint8_t ieLen = payload[offset + 1];
+        
+        if (offset + 2 + ieLen > len) break;
+        
+        if (id == 0) {
+            if (ieLen > 0 && ieLen <= 32) {
+                memcpy(net.ssid, payload + offset + 2, ieLen);
+                net.ssid[ieLen] = 0;
+                
+                // Check for all-null SSID (hidden)
+                bool allNull = true;
+                for (uint8_t i = 0; i < ieLen; i++) {
+                    if (net.ssid[i] != 0) { allNull = false; break; }
+                }
+                if (allNull) {
                     net.isHidden = true;
                 }
-                break;
+            } else if (ieLen == 0) {
+                net.isHidden = true;
             }
-            
-            offset += 2 + ieLen;
+            break;
         }
         
-        // Get channel from DS Parameter Set IE
-        offset = 36;
-        while (offset + 2 < len) {
-            uint8_t id = payload[offset];
-            uint8_t ieLen = payload[offset + 1];
-            
-            if (id == 3 && ieLen == 1) {
-                net.channel = payload[offset + 2];
-                break;
-            }
-            
-            offset += 2 + ieLen;
-        }
-        
-        // Parse auth mode from RSN (0x30) and WPA vendor (0xDD) IEs
-        // RSN + MFPR        = pure WPA3 (PMF required, no fallback)
-        // RSN + MFPC only   = WPA2/WPA3 transitional (PMF capable, clients choose)
-        // RSN alone          = WPA2
-        // WPA vendor alone   = WPA1
-        // RSN + WPA vendor   = WPA1/WPA2 mixed
-        bool hasRSN = false;
-        offset = 36;
-        while (offset + 2 < len) {
-            uint8_t id = payload[offset];
-            uint8_t ieLen = payload[offset + 1];
-
-            if (offset + 2 + ieLen > len) break;
-
-            if (id == 0x30 && ieLen >= 2) {  // RSN IE
-                hasRSN = true;
-                net.authmode = WIFI_AUTH_WPA2_PSK;
-            } else if (id == 0xDD && ieLen >= 8) {  // Vendor specific
-                if (payload[offset + 2] == 0x00 && payload[offset + 3] == 0x50 &&
-                    payload[offset + 4] == 0xF2 && payload[offset + 5] == 0x01) {
-                    if (!hasRSN) {
-                        net.authmode = WIFI_AUTH_WPA_PSK;
-                    } else {
-                        net.authmode = WIFI_AUTH_WPA_WPA2_PSK;
-                    }
-                }
-            }
-
-            offset += 2 + ieLen;
-        }
-
-        // Apply PMF classification on top of RSN detection
-        if (hasRSN && net.authmode == WIFI_AUTH_WPA2_PSK) {
-            if (pmf.required) {
-                net.authmode = WIFI_AUTH_WPA3_PSK;         // MFPR=1: pure WPA3-SAE
-            } else if (pmf.capable) {
-                net.authmode = WIFI_AUTH_WPA2_WPA3_PSK;    // MFPC=1 only: transitional
-            }
-        }
-        
-        if (net.channel == 0) {
-            net.channel = currentChannel;
-        }
-        
-        // Queue for deferred add
-        enqueuePendingNetwork(net);
-    } else {
-        // Update existing network
-        enterCritical();
-        if (idx >= 0 && idx < (int)networks.size()) {
-            DetectedNetwork& net = networks[idx];
-            net.rssi = rssi;
-            net.rssiAvg = updateRssiAvg(net.rssiAvg, rssi);
-            net.lastSeen = now;
-            net.beaconCount++;
-            if (net.lastBeaconSeen > 0) {
-                uint32_t delta = now - net.lastBeaconSeen;
-                if (delta > 0 && delta < BEACON_INTERVAL_MAX_MS) {
-                    if (net.beaconIntervalEmaMs == 0) {
-                        net.beaconIntervalEmaMs = (uint16_t)delta;
-                    } else {
-                        uint32_t blended = (uint32_t)net.beaconIntervalEmaMs * 7 + delta;
-                        net.beaconIntervalEmaMs = (uint16_t)(blended / 8);
-                    }
-                }
-            }
-            net.lastBeaconSeen = now;
-            net.hasPMF |= pmf.required;
-        }
-        exitCritical();
+        offset += 2 + ieLen;
     }
+    
+    // Get channel from DS Parameter Set IE
+    offset = 36;
+    while (offset + 2 < len) {
+        uint8_t id = payload[offset];
+        uint8_t ieLen = payload[offset + 1];
+        
+        if (id == 3 && ieLen == 1) {
+            net.channel = payload[offset + 2];
+            break;
+        }
+        
+        offset += 2 + ieLen;
+    }
+    
+    // Parse auth mode from RSN (0x30) and WPA vendor (0xDD) IEs
+    // RSN + MFPR        = pure WPA3 (PMF required, no fallback)
+    // RSN + MFPC only   = WPA2/WPA3 transitional (PMF capable, clients choose)
+    // RSN alone          = WPA2
+    // WPA vendor alone   = WPA1
+    // RSN + WPA vendor   = WPA1/WPA2 mixed
+    bool hasRSN = false;
+    offset = 36;
+    while (offset + 2 < len) {
+        uint8_t id = payload[offset];
+        uint8_t ieLen = payload[offset + 1];
+
+        if (offset + 2 + ieLen > len) break;
+
+        if (id == 0x30 && ieLen >= 2) {  // RSN IE
+            hasRSN = true;
+            net.authmode = WIFI_AUTH_WPA2_PSK;
+        } else if (id == 0xDD && ieLen >= 8) {  // Vendor specific
+            if (payload[offset + 2] == 0x00 && payload[offset + 3] == 0x50 &&
+                payload[offset + 4] == 0xF2 && payload[offset + 5] == 0x01) {
+                if (!hasRSN) {
+                    net.authmode = WIFI_AUTH_WPA_PSK;
+                } else {
+                    net.authmode = WIFI_AUTH_WPA_WPA2_PSK;
+                }
+            }
+        }
+
+        offset += 2 + ieLen;
+    }
+
+    // Apply PMF classification on top of RSN detection
+    if (hasRSN && net.authmode == WIFI_AUTH_WPA2_PSK) {
+        if (pmf.required) {
+            net.authmode = WIFI_AUTH_WPA3_PSK;         // MFPR=1: pure WPA3-SAE
+        } else if (pmf.capable) {
+            net.authmode = WIFI_AUTH_WPA2_WPA3_PSK;    // MFPC=1 only: transitional
+        }
+    }
+    
+    if (net.channel == 0) {
+        net.channel = currentChannel;
+    }
+    
+    // Always try to enqueue as new network. processDeferredEvents() on Core 1
+    // checks for duplicates under spinlock and skips if already known.
+    enqueuePendingNetwork(net);
+
+    // Also enqueue an update event for RSSI/beaconCount/PMF on existing networks.
+    // If the network is new, processDeferredEvents handles it. If existing, the
+    // update event applies the latest data. Harmless if both fire.
+    PendingNetUpdate upd = {};
+    memcpy(upd.bssid, bssid, 6);
+    upd.type = PendingUpdateType::BEACON;
+    upd.rssi = rssi;
+    upd.timestamp = now;
+    upd.hasPMF = pmf.required;
+    enqueuePendingUpdate(upd);
 }
 
 static void processProbeResponse(const uint8_t* payload, uint16_t len, int8_t rssi) {
@@ -508,29 +531,22 @@ static void processProbeResponse(const uint8_t* payload, uint16_t len, int8_t rs
         offset += 2 + ieLen;
     }
     
-    // [BUG5 FIX] Do lookup inside critical section to prevent TOCTOU race
-    // cleanupStaleNetworks() can modify vector between lookup and use
-    enterCritical();
-    int idx = findNetworkInternal(bssid);
-    
-    if (idx < 0) {
-        exitCritical();
-        if (ssidFound && !ssidAllNull) {
-            revealSsidIfKnown(bssid, ssidBuf);
-        }
-        return;
+    // Enqueue deferred update (Core 1 applies under spinlock)
+    PendingNetUpdate upd = {};
+    memcpy(upd.bssid, bssid, 6);
+    upd.type = PendingUpdateType::PROBE_RESP;
+    upd.rssi = rssi;
+    upd.timestamp = now;
+    upd.ssidValid = (ssidFound && !ssidAllNull);
+    if (upd.ssidValid) {
+        memcpy(upd.ssid, ssidBuf, 33);
     }
-    
-    // idx is valid and we hold the lock - safe to use
-    if ((networks[idx].ssid[0] == 0 || networks[idx].isHidden) && ssidFound && !ssidAllNull) {
-        memcpy(networks[idx].ssid, ssidBuf, 33);
-        networks[idx].isHidden = false;
+    enqueuePendingUpdate(upd);
+
+    // Also store in pending SSID cache for new network deferred adds
+    if (ssidFound && !ssidAllNull) {
+        storePendingSsid(bssid, ssidBuf);
     }
-    
-    networks[idx].rssi = rssi;
-    networks[idx].rssiAvg = updateRssiAvg(networks[idx].rssiAvg, rssi);
-    networks[idx].lastSeen = now;
-    exitCritical();
 }
 
 static void processAssocRequest(const uint8_t* payload, uint16_t len, bool isReassoc) {
@@ -568,23 +584,17 @@ static void processAssocRequest(const uint8_t* payload, uint16_t len, bool isRea
 }
 
 static void markDataActivity(const uint8_t* bssid, const uint8_t* clientMac) {
-    enterCritical();
-
-    int idx = findNetworkInternal(bssid);
-    if (idx >= 0 && idx < (int)networks.size()) {
-        DetectedNetwork& net = networks[idx];
-        net.lastDataSeen = millis();
-        if (clientMac) {
-            uint8_t bit = clientHashIndex(clientMac);
-            if (bit < 64) {
-                net.clientBitset |= (1ULL << bit);
-            } else {
-                net.clientBitsetHigh |= (1ULL << (bit - 64));
-            }
-        }
+    PendingNetUpdate upd = {};
+    memcpy(upd.bssid, bssid, 6);
+    upd.type = PendingUpdateType::DATA_ACTIVITY;
+    upd.timestamp = millis();
+    if (clientMac) {
+        upd.clientHash = clientHashIndex(clientMac);
+        upd.hasClient = true;
+    } else {
+        upd.hasClient = false;
     }
-
-    exitCritical();
+    enqueuePendingUpdate(upd);
 }
 
 static void processDataFrame(const uint8_t* payload, uint16_t len, int8_t rssi) {
@@ -672,6 +682,16 @@ static void processDeferredEvents() {
         // Apply any deferred SSID reveal before adding
         applyPendingSsid(pending);
         
+        // Check for duplicate — processBeacon now always enqueues (no Core 0 lookup)
+        enterCritical();
+        int existingIdx = findNetworkInternal(pending.bssid);
+        exitCritical();
+        if (existingIdx >= 0) {
+            // Already known — skip insert (update queue handles RSSI/beacon updates)
+            processed++;
+            continue;
+        }
+
         // With reserve(MAX_RECON_NETWORKS) at init and no shrink_to_fit,
         // push_back never allocates. At capacity, evict weakest instead of growing.
         bool hasCapacity = networks.size() < networks.capacity();
@@ -725,6 +745,84 @@ static void processDeferredEvents() {
         }
         
         processed++;
+    }
+}
+
+// Apply deferred network updates from Core 0 (BEACON, PROBE_RESP, DATA_ACTIVITY).
+// Runs on Core 1 in update(). All spinlock acquisition happens here, never on Core 0.
+static void processDeferredUpdates() {
+    const uint8_t kMaxUpdatesPerLoop = 16;
+    uint8_t processed = 0;
+    PendingNetUpdate upd = {};
+
+    while (processed < kMaxUpdatesPerLoop && dequeuePendingUpdate(upd)) {
+        enterCritical();
+        int idx = findNetworkInternal(upd.bssid);
+        if (idx >= 0 && idx < (int)networks.size()) {
+            DetectedNetwork& net = networks[idx];
+            switch (upd.type) {
+                case PendingUpdateType::BEACON:
+                    net.rssi = upd.rssi;
+                    net.rssiAvg = updateRssiAvg(net.rssiAvg, upd.rssi);
+                    net.lastSeen = upd.timestamp;
+                    net.beaconCount++;
+                    if (net.lastBeaconSeen > 0) {
+                        uint32_t delta = upd.timestamp - net.lastBeaconSeen;
+                        if (delta > 0 && delta < BEACON_INTERVAL_MAX_MS) {
+                            if (net.beaconIntervalEmaMs == 0) {
+                                net.beaconIntervalEmaMs = (uint16_t)delta;
+                            } else {
+                                uint32_t blended = (uint32_t)net.beaconIntervalEmaMs * 7 + delta;
+                                net.beaconIntervalEmaMs = (uint16_t)(blended / 8);
+                            }
+                        }
+                    }
+                    net.lastBeaconSeen = upd.timestamp;
+                    net.hasPMF |= upd.hasPMF;
+                    break;
+                case PendingUpdateType::PROBE_RESP:
+                    net.rssi = upd.rssi;
+                    net.rssiAvg = updateRssiAvg(net.rssiAvg, upd.rssi);
+                    net.lastSeen = upd.timestamp;
+                    if (upd.ssidValid && (net.ssid[0] == 0 || net.isHidden)) {
+                        memcpy(net.ssid, upd.ssid, 33);
+                        net.isHidden = false;
+                        // Also update SSID cache
+                        updateSsidCache(upd.bssid, upd.ssid);
+                    }
+                    break;
+                case PendingUpdateType::DATA_ACTIVITY:
+                    net.lastDataSeen = upd.timestamp;
+                    if (upd.hasClient) {
+                        uint8_t bit = upd.clientHash;
+                        if (bit < 64) {
+                            net.clientBitset |= (1ULL << bit);
+                        } else {
+                            net.clientBitsetHigh |= (1ULL << (bit - 64));
+                        }
+                    }
+                    break;
+            }
+        }
+        exitCritical();
+        processed++;
+    }
+
+    // Also apply pending SSID reveals to existing networks
+    for (uint8_t i = 0; i < PENDING_SSID_SLOTS; i++) {
+        if (!pendingSsids[i].ready.load(std::memory_order_acquire)) continue;
+        enterCritical();
+        int idx = findNetworkInternal(pendingSsids[i].bssid);
+        if (idx >= 0 && idx < (int)networks.size()) {
+            if (networks[idx].ssid[0] == 0 || networks[idx].isHidden) {
+                strncpy(networks[idx].ssid, pendingSsids[i].ssid, 32);
+                networks[idx].ssid[32] = 0;
+                networks[idx].isHidden = false;
+                networks[idx].lastSeen = millis();
+            }
+            pendingSsids[i].ready.store(false, std::memory_order_release);
+        }
+        exitCritical();
     }
 }
 
@@ -796,6 +894,8 @@ void init() {
     pendingNetWrite = 0;
     pendingNetRead = 0;
     pendingSsidWrite = 0;
+    pendingUpdateWrite = 0;
+    pendingUpdateRead = 0;
     for (uint8_t i = 0; i < PENDING_SSID_SLOTS; i++) {
         pendingSsids[i].ready.store(false, std::memory_order_relaxed);
     }
@@ -836,6 +936,8 @@ void start() {
     pendingNetWrite = 0;
     pendingNetRead = 0;
     pendingSsidWrite = 0;
+    pendingUpdateWrite = 0;
+    pendingUpdateRead = 0;
     for (uint8_t i = 0; i < PENDING_SSID_SLOTS; i++) {
         pendingSsids[i].ready.store(false, std::memory_order_relaxed);
     }
@@ -994,16 +1096,17 @@ void restoreRxCallback() {
 void update() {
     if (!running || paused) return;
     
-    // CYD pattern: gate callback to prevent NetworkRecon's own beacon processing
-    // from calling enterCritical() on Core 0 while Core 1 accesses networks[].
-    // Without this, Core 0's beacon processing can deadlock against Core 1's
-    // enterCritical() → TG1WDT_SYS_RST. Mode callbacks handle their own gating.
+    // Gate: skip NetworkRecon's own beacon/probe/data processing in the callback
+    // while Core 1 is doing heavy work (cleanup, deferred processing). This prevents
+    // the update queue from overflowing. Mode callbacks still fire (they have their
+    // own queues). Core 0 never acquires vectorMux — pure enqueuer pattern.
     busy.store(true, std::memory_order_release);
     
     uint32_t now = millis();
     
     // Process deferred events from callback
     processDeferredEvents();
+    processDeferredUpdates();
     
     // Channel hopping
     uint32_t hopInterval = getHopIntervalMsInternal();

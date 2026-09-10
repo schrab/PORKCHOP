@@ -363,7 +363,6 @@ void persistWatermarks() {
     prefs.putUInt("magic", kWatermarkMagic);
     prefs.putUInt("minfree", (uint32_t)minFree);
     prefs.putUInt("minlarg", (uint32_t)minLargest);
-    prefs.putUInt("uptime", now / 1000);
     prefs.putUChar("minhpct", sessionMinHealthPct);
     prefs.putUChar("maxpres", sessionMaxPressure);
     prefs.end();

@@ -53,13 +53,16 @@ def patch_int_wdt():
     Patches the framework sdkconfig.h directly. Idempotent.
     """
     from pathlib import Path
-    candidates = [
-        Path.home() / ".platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_qspi/include/sdkconfig.h",
-        Path.home() / ".platformio/packages/framework-arduinoespressif32/tools/sdk/esp32s3/qio_opi/include/sdkconfig.h",
-    ]
+    base = Path.home() / ".platformio/packages"
+    if not base.exists():
+        print("[patch_int_wdt] WARNING: .platformio/packages not found", file=sys.stderr)
+        return
+    candidates = []
+    for pkg_dir in sorted(base.glob("framework-arduinoespressif32*"), reverse=True):
+        sdk_base = pkg_dir / "tools/sdk/esp32s3"
+        for variant in sdk_base.glob("*/include/sdkconfig.h"):
+            candidates.append(variant)
     for p in candidates:
-        if not p.exists():
-            continue
         text = p.read_text(encoding="utf-8")
         old = "#define CONFIG_ESP_INT_WDT_TIMEOUT_MS 300"
         new = "#define CONFIG_ESP_INT_WDT_TIMEOUT_MS 5000 /* PORKCHOP: 300->5000 for OINK autosave */"

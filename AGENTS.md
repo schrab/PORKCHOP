@@ -219,6 +219,9 @@ promiscuous packet callback (one at a time).
 - `enterCritical()` / `exitCritical()` protect the shared `networks[]` vector.
   These are safe on Core 1 (main thread) but **MUST NOT** be called from Core 0
   (promiscuous callback) — cross-core spinlock deadlock → TG1WDT.
+- `NetworkRecon` itself operates as a pure enqueuer: Core 0 promiscuous callback
+  enqueues new networks to `pendingNetworks[]` and updates to `pendingUpdates[]`
+  (lock-free). Core 1 `update()` dequeues and mutates `networks[]` under `vectorMux`.
 - Mode-owned capture data (OINK `handshakes[]`, `pmkids[]`) is **Core 1 territory**.
   The callback is a PURE ENQUEUER — copies raw frame data to `pendingHsPool[]`,
   no vector iteration. Core 1 dequeue does all vector lookups and writes.

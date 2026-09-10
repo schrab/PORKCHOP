@@ -158,6 +158,11 @@ void hal_input_update() {
 }
 
 uint8_t hal_input_getch() {
+    // Check synthesized ESC from long-press LEFT
+    if (leftLongFired) {
+        leftLongFired = false;
+        return KEY_ESC;
+    }
     for (int i = 0; i < NUM_JOY_PINS; i++) {
         if (risingEdge[i]) {
             risingEdge[i] = false;

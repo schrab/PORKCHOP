@@ -21,7 +21,8 @@
 
 // --- SD Card: via SPI2_HOST ---
 #define PIN_SD_MOSI           5
-#define PIN_SD_MISO           3
+#define PIN_SD_MISO           3   // NOTE: GPIO 3 is JTAG_EN strapping pin. Works with current board;
+                                  // SD modules with MISO pull-ups may alter boot behavior.
 #define PIN_SD_SCLK           4
 #define PIN_SD_CS             6
 #define SD_SPI_HOST           SPI2_HOST

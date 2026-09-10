@@ -487,18 +487,15 @@ void Display::update() {
 
         // Draw each line centered
         char buf[128];
-        // SAFETY: Reserve space for strtok modifications
-        if (sizeof(buf) > strlen(toastMessage)) {
-            strncpy(buf, toastMessage, sizeof(buf) - 1);
-            buf[sizeof(buf) - 1] = '\0';
+        strncpy(buf, toastMessage, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
 
-            int y = boxY + 6;
-            char* line = strtok(buf, "\n");
-            while (line) {
-                mainCanvas.drawString(line, DISPLAY_W / 2, y);
-                y += lineH;
-                line = strtok(nullptr, "\n");
-            }
+        int y = boxY + 6;
+        char* line = strtok(buf, "\n");
+        while (line) {
+            mainCanvas.drawString(line, DISPLAY_W / 2, y);
+            y += lineH;
+            line = strtok(nullptr, "\n");
         }
         mainCanvas.setTextDatum(TL_DATUM);
     } else if (toastActive) {

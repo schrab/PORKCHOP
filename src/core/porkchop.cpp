@@ -622,8 +622,8 @@ void Porkchop::setMode(PorkchopMode mode) {
 void Porkchop::postEvent(PorkchopEvent event, void* data) {
     // Prevent event queue overflow that could cause heap fragmentation
     if (eventQueue.size() >= MAX_EVENT_QUEUE_SIZE) {
-        // Drop oldest event to maintain queue size
-        eventQueue.clear();
+        // Drop oldest event to make room
+        eventQueue.erase(eventQueue.begin());
     }
     eventQueue.push_back({event, data});
 }
@@ -640,8 +640,7 @@ void Porkchop::registerCallback(PorkchopEvent event, EventCallback callback) {
     }
     // Add bounds checking to prevent unlimited growth
     if (callbacks.size() >= MAX_EVENT_QUEUE_SIZE) {
-        // Remove the oldest callback if we're at capacity
-        callbacks.erase(callbacks.begin(), callbacks.end());
+        return;  // At capacity, reject new registration
     }
     callbacks.push_back({event, callback});
 }

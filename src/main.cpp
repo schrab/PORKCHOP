@@ -231,7 +231,7 @@ void loop() {
         static uint32_t lastBakedCheck = 0;
 
         if (bakedActive) {
-            if (millis() - bakedStartMs >= bakedDurationMs) {
+            if (millis() - bakedStartMs >= bakedDurationMs || hal_input_isChange()) {
                 bakedActive = false;
             } else {
                 yield();

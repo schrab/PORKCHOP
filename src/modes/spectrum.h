@@ -235,8 +235,8 @@ private:
         char ssid[33];
     };
     static PendingAttackPMKID attackPMKIDPool[4];
-    static volatile uint8_t attackPmkidWrite;
-    static volatile uint8_t attackPmkidRead;
+    static std::atomic<uint8_t> attackPmkidWrite;
+    static std::atomic<uint8_t> attackPmkidRead;
     
     // Beacon frame storage for PCAP (shared, attack mode is single-BSSID)
     static uint8_t attackBeaconBuf[SPECTRUM_MAX_BEACON_SIZE];
@@ -253,8 +253,8 @@ private:
         uint8_t capturedMask;
     };
     static PendingHandshakeEntry pendingHandshakePool[SPECTRUM_HS_PENDING];
-    static volatile uint8_t pendingHsWrite;
-    static volatile uint8_t pendingHsRead;
+    static std::atomic<uint8_t> pendingHsWrite;
+    static std::atomic<uint8_t> pendingHsRead;
     
     // Dial mode state (tilt-to-tune when device upright)
     static bool dialMode;                    // Auto-enabled when UPS (upright)

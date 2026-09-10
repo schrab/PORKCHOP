@@ -38,6 +38,10 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
   Safe to call from Core 1 (main thread) but MUST NOT be called from
   Core 0 (promiscuous callback context) — cross-core spinlock contention blocks
   Core 0 with interrupts disabled → TG1WDT.
+- `NetworkRecon` itself follows the **PURE ENQUEUER** pattern: Core 0 enqueues new
+  networks to `pendingNetworks[]` and updates (beacons, probe responses, data activity)
+  to a 32-slot `pendingUpdates[]` ring buffer lock-free. Core 1 `update()` dequeues
+  and applies them under `vectorMux`.
 - Mode callbacks are **PURE ENQUEUERS**: copy raw frame data to mode-owned ring buffers,
   no vector iteration. Core 1 dequeue handlers do all vector lookups and writes.
 - `oinkQueueMux` ONLY protects the OINK queue (`pendingHsPool[]`), not capture vectors.
@@ -57,6 +61,10 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
   RAM (not PSRAM) to avoid dual-core PSRAM bus stall TG1WDT. Static `.dram0.bss`
   reduces free heap below sprite allocation threshold. See root AGENTS.md for
   the full PSRAM/bus-stall analysis.
+
+### HeapHealth persistence
+- Watermarks persisted to NVS namespace `porkheap` rate-limited to 60s.
+- Monotonically increasing `uptime` is omitted from periodic NVS saves to prevent flash wear-out (~1440 writes/day). Only new watermark extremes (`minfree`, `minlarg`, `minhpct`, `maxpres`) trigger NVS modifications.
 
 ### WarTales flush cadence
 - Open file handle per session. Flush every 10 events or 10s.

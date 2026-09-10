@@ -222,8 +222,8 @@ uint8_t SpectrumMode::capturedPMKIDCount = 0;
 volatile bool SpectrumMode::pendingAttackPMKID = false;
 volatile bool SpectrumMode::pendingAttackPMKIDSaved = false;
 SpectrumMode::PendingAttackPMKID SpectrumMode::attackPMKIDPool[4] = {};
-volatile uint8_t SpectrumMode::attackPmkidWrite = 0;
-volatile uint8_t SpectrumMode::attackPmkidRead = 0;
+std::atomic<uint8_t> SpectrumMode::attackPmkidWrite{0};
+std::atomic<uint8_t> SpectrumMode::attackPmkidRead{0};
 
 // Beacon frame storage (shared across handshakes, single-BSSID attack)
 uint8_t SpectrumMode::attackBeaconBuf[SPECTRUM_MAX_BEACON_SIZE] = {};
@@ -234,8 +234,8 @@ volatile bool SpectrumMode::attackBeaconCaptured = false;
 SpectrumCapturedHandshake SpectrumMode::capturedHandshakes[SPECTRUM_HS_MAX] = {};
 uint8_t SpectrumMode::capturedHandshakeCount = 0;
 SpectrumMode::PendingHandshakeEntry SpectrumMode::pendingHandshakePool[SPECTRUM_HS_PENDING] = {};
-volatile uint8_t SpectrumMode::pendingHsWrite = 0;
-volatile uint8_t SpectrumMode::pendingHsRead = 0;
+std::atomic<uint8_t> SpectrumMode::pendingHsWrite{0};
+std::atomic<uint8_t> SpectrumMode::pendingHsRead{0};
 
 static inline int8_t smoothIIR(int8_t current, int8_t sample, uint8_t alpha) {
     int16_t accum = (int16_t)current * (alpha - 1) + sample;

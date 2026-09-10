@@ -362,9 +362,6 @@ bool Config::init() {
 
     initialized = true;
 
-    // ATGM336H on this board is always 9600 — force it regardless of saved config
-    gpsConfig.baudRate = 9600;
-
     return true;
 }
 
