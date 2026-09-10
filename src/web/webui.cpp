@@ -97,13 +97,17 @@ static void _serveClient(int cfd) {
                 "Connection: keep-alive\r\n"
                 "Content-Length: %lu\r\n\r\n", (unsigned long)bodyLen);
             send(cfd, hdr, strlen(hdr), 0);
-            const uint16_t* buf = spr ? (const uint16_t*)spr->getPointer() : nullptr;
+            const uint8_t* buf = spr ? (const uint8_t*)spr->getPointer() : nullptr;
             uint32_t sent = 0;
             for (uint16_t y = 0; y < outH; y++) {
                 if (buf) {
-                    const uint16_t* src = buf + (y * 4) * 320;
+                    const uint8_t* src = buf + (y * 4) * 320;
                     for (uint16_t x = 0; x < outW; x++) {
-                        uint16_t px = src[x * 4];
+                        uint8_t c = src[x * 4];
+                        uint16_t r = ((c >> 5) & 7) * 31 / 7;
+                        uint16_t g = ((c >> 2) & 7) * 63 / 7;
+                        uint16_t b = (c & 3) * 31 / 3;
+                        uint16_t px = (r << 11) | (g << 5) | b;
                         _row[x * 2] = px >> 8;
                         _row[x * 2 + 1] = px & 0xFF;
                     }

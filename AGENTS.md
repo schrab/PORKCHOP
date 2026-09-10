@@ -278,7 +278,7 @@ void hal_display_setBrightness(uint8_t brightness);  // LEDC PWM on BL pin
 
 // M5Canvas-compatible sprite wrapper
 class DisplayCanvas {
-    void createSprite(w, h, bpp=16);   // Create off-screen sprite at given color depth
+    void createSprite(w, h, bpp=8);    // Create off-screen sprite at given color depth (8-bit RGB332 default)
     void deleteSprite();
     void pushSprite(x, y);           // Flush sprite to display
     void fillSprite(color);

@@ -238,7 +238,7 @@ void Display::init() {
     // non-null garbage value (e.g. 0xa5a5a5a5 from PSRAM heap poison) the guard
     // passes and the crash occurs. Give it a real sprite to prevent that.
     topBar.createSprite(DISPLAY_W, TOP_BAR_H, 8);
-    mainCanvas.createSprite(DISPLAY_W, MAIN_H, 16);
+    mainCanvas.createSprite(DISPLAY_W, MAIN_H, 8);
     bottomBar.createSprite(DISPLAY_W, BOTTOM_BAR_H, 8);
     
     topBar.setTextSize(1);
