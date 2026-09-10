@@ -151,29 +151,33 @@ struct PendingNetUpdate {
 };
 
 static const uint8_t PENDING_UPDATE_SLOTS = 32;
-static PendingNetUpdate pendingUpdates[PENDING_UPDATE_SLOTS];
+// Dynamically allocated from internal RAM in start(), freed in stop().
+// Must NOT be static in .dram0.bss — avoids pushing boot free heap below 91KB sprite threshold.
+static PendingNetUpdate* s_pendingUpdates = nullptr;
 static std::atomic<uint8_t> pendingUpdateWrite{0};
 static std::atomic<uint8_t> pendingUpdateRead{0};
 
 static bool enqueuePendingUpdate(const PendingNetUpdate& upd) {
+    if (!s_pendingUpdates) return false;
     uint8_t write = pendingUpdateWrite.load(std::memory_order_relaxed);
     uint8_t next = (uint8_t)((write + 1) % PENDING_UPDATE_SLOTS);
     uint8_t read = pendingUpdateRead.load(std::memory_order_acquire);
     if (next == read) {
         return false;  // Queue full, drop
     }
-    pendingUpdates[write] = upd;
+    s_pendingUpdates[write] = upd;
     pendingUpdateWrite.store(next, std::memory_order_release);
     return true;
 }
 
 static bool dequeuePendingUpdate(PendingNetUpdate& out) {
+    if (!s_pendingUpdates) return false;
     uint8_t read = pendingUpdateRead.load(std::memory_order_relaxed);
     uint8_t write = pendingUpdateWrite.load(std::memory_order_acquire);
     if (read == write) {
         return false;
     }
-    out = pendingUpdates[read];
+    out = s_pendingUpdates[read];
     pendingUpdateRead.store((uint8_t)((read + 1) % PENDING_UPDATE_SLOTS), std::memory_order_release);
     return true;
 }
@@ -927,6 +931,9 @@ void start() {
     if (!s_ssidCache) {
         s_ssidCache = (SsidCacheEntry*)heap_caps_calloc(SSID_CACHE_SIZE, sizeof(SsidCacheEntry), MALLOC_CAP_INTERNAL);
     }
+    if (!s_pendingUpdates) {
+        s_pendingUpdates = (PendingNetUpdate*)heap_caps_calloc(PENDING_UPDATE_SLOTS, sizeof(PendingNetUpdate), MALLOC_CAP_INTERNAL);
+    }
 
     Serial.printf("[RECON] Starting background scan... free=%u\r\n",
                   ESP.getFreeHeap());
@@ -1010,10 +1017,14 @@ void stop() {
     
     WiFiUtils::stopPromiscuous();
     
-    // Free SSID cache (internal RAM, allocated in start())
+    // Free SSID cache and pending updates (internal RAM, allocated in start())
     if (s_ssidCache) {
         free(s_ssidCache);
         s_ssidCache = nullptr;
+    }
+    if (s_pendingUpdates) {
+        free(s_pendingUpdates);
+        s_pendingUpdates = nullptr;
     }
     
     // Don't clear networks - they persist for mode reuse

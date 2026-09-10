@@ -26,6 +26,10 @@ void DisplayCanvas::createSprite(int32_t w, int32_t h, int8_t bpp) {
     m_sprite.setColorDepth(bpp);
     void* buf = m_sprite.createSprite(w, h);
     m_created = (buf != nullptr);
+    Serial.printf("[DISPLAY] createSprite(%dx%d, %dbpp) -> buf=%p (created=%d) free_int=%u largest_int=%u\r\n",
+                  (int)w, (int)h, (int)bpp, buf, (int)m_created,
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
 }
 
 void DisplayCanvas::deleteSprite() {

@@ -56,11 +56,14 @@ Central state machine, persistent configuration, XP/leveling, background WiFi sc
   `lockChannel()`/`unlockChannel()` calls (they become no-ops). User-initiated
   via UP/DOWN in OINK/DNH. Cleared on `stop()` (mode exit). `isChannelLocked()`
   returns true when either manual or mode lock is active.
-- **SSID cache allocation**: 64-entry BSSID→SSID cache (2.75KB) dynamically
-  allocated from internal heap in `start()`, freed in `stop()`. Must be internal
-  RAM (not PSRAM) to avoid dual-core PSRAM bus stall TG1WDT. Static `.dram0.bss`
-  reduces free heap below sprite allocation threshold. See root AGENTS.md for
-  the full PSRAM/bus-stall analysis.
+- **Dynamic allocation pattern (SSID cache & pendingUpdates)**: Both the 64-entry
+  SSID cache (2.75KB) and the 32-slot `pendingUpdates` ring buffer (1.66KB) must be in
+  internal RAM (not PSRAM, to prevent dual-core bus contention TG1WDT), but MUST NOT be
+  placed in static `.dram0.bss`. Static placement reduces free contiguous internal DRAM
+  at boot below the 90.88KB threshold required by `mainCanvas.createSprite(320, 142, 16)`.
+  Both are dynamically allocated via `heap_caps_calloc(..., MALLOC_CAP_INTERNAL)` in
+  `NetworkRecon::start()` and freed in `stop()`, so they draw from heap remaining *after*
+  `Display::init()` allocates the sprite.
 
 ### HeapHealth persistence
 - Watermarks persisted to NVS namespace `porkheap` rate-limited to 60s.
